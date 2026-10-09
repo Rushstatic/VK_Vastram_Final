@@ -1,0 +1,8 @@
+{
+  "name": "Remix VK VASTRAM — Classical Indian Textiles \u0026 Sarees",
+  "description": "Authentic handwoven sarees, pure silk heritage textiles, and artisanal organic bedsheets crafted with traditional Indian elegance.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

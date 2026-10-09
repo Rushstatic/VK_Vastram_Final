@@ -1,0 +1,200 @@
+@import "tailwindcss";
+
+@theme {
+  --font-serif: 'Cormorant Garamond', Georgia, serif;
+  --font-sans: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+  
+  --color-canvas: #FAF8F5;
+  --color-canvas-pure: #FFFFFF;
+  --color-surface: #F4EFE6;
+  --color-surface-subtle: #ECE5D8;
+  --color-surface-dark: #1C1917;
+  
+  --color-ink: #1C1917;
+  --color-ink-secondary: #57534E;
+  --color-ink-muted: #78716C;
+  --color-ink-faint: #A8A29E;
+  
+  --color-gold: #B88E3E;
+  --color-gold-dark: #967029;
+  --color-gold-subtle: #F7F1E5;
+  
+  --color-crimson: #78281F;
+  --color-forest: #1F382B;
+  
+  --color-hairline: rgba(28, 25, 23, 0.09);
+  --color-hairline-dark: rgba(255, 255, 255, 0.12);
+}
+
+@layer base {
+  body {
+    background-color: var(--color-canvas);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    letter-spacing: -0.01em;
+  }
+
+  h1, h2, h3, h4, .font-serif {
+    font-family: var(--font-serif);
+  }
+}
+
+.animate-spin-slow {
+  animation: spin 8s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* Custom refined scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #FAF8F5;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #D6CEC1;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #B88E3E;
+}
+
+@keyframes subtle-glow {
+  0%, 100% { text-shadow: 0 0 0px rgba(120, 40, 31, 0); }
+  50% { text-shadow: 0 0 6px rgba(120, 40, 31, 0.3); }
+}
+
+.animate-subtle-glow {
+  animation: subtle-glow 5s ease-in-out infinite;
+}
+
+@keyframes heroTextEnter {
+  0% {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-hero-text {
+  animation: heroTextEnter 650ms cubic-bezier(0.215, 0.61, 0.355, 1) forwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-hero-text {
+    animation: none !important;
+  }
+}
+
+@keyframes pageEnter {
+  0% {
+    opacity: 0.7;
+    transform: translateY(6px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-page-enter {
+  animation: pageEnter 250ms cubic-bezier(0.215, 0.61, 0.355, 1) forwards;
+}
+
+/* Luxury Smooth Navigation Drawer Animations */
+@keyframes drawerSlideIn {
+  from {
+    transform: translateX(-100%);
+    opacity: 0.95;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+@keyframes drawerSlideOut {
+  from {
+    transform: translateX(0);
+    opacity: 1;
+  }
+  to {
+    transform: translateX(-100%);
+    opacity: 0.95;
+  }
+}
+
+@keyframes backdropFadeIn {
+  from {
+    opacity: 0;
+    backdrop-filter: blur(0px);
+  }
+  to {
+    opacity: 1;
+    backdrop-filter: blur(4px);
+  }
+}
+
+@keyframes backdropFadeOut {
+  from {
+    opacity: 1;
+    backdrop-filter: blur(4px);
+  }
+  to {
+    opacity: 0;
+    backdrop-filter: blur(0px);
+  }
+}
+
+@keyframes navItemReveal {
+  from {
+    opacity: 0;
+    transform: translateX(-12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes cartSlideIn {
+  from {
+    transform: translateX(100%);
+    opacity: 0.95;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+@keyframes searchModalIn {
+  from {
+    opacity: 0;
+    transform: translateY(-8px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-page-enter {
+    animation: none !important;
+  }
+  .animate-hero-text {
+    animation: none !important;
+  }
+}

@@ -15,7 +15,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const isProduction = process.env.NODE_ENV === 'production';
 // Development identity/admin shortcuts must be explicitly opted into and can never run in production.
 const allowDevelopmentAuth = !isProduction && process.env.ALLOW_DEV_AUTH === 'true';
-const PORT = 3000;
+const PORT = Number(process.env.PORT) || 3000;
 
 // Configuration variables
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || '';
@@ -70,7 +70,7 @@ async function dispatchReadyBackInStockEmails(variantId: string): Promise<void> 
             from: process.env.RESEND_FROM_EMAIL,
             to: [subscription.email],
             subject: `${productName} is back in stock | VK VASTRAM`,
-            html: `<div style="font-family:Georgia,serif;color:#1c1917;max-width:600px;margin:24px auto;line-height:1.6"><h1 style="color:#78281f;font-weight:normal">A drape you loved is available again.</h1><p><strong>${productName.replace(/[&<>"']/g, (c: string) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c] || c))}</strong>${variant.variant_name ? ` — ${String(variant.variant_name).replace(/[&<>"']/g, '')}` : ''} is back in stock.</p>${productUrl ? `<p><a href="${productUrl}" style="display:inline-block;background:#1c1917;color:#fff;padding:12px 18px;text-decoration:none">View product</a></p>` : ''}<p style="font-size:12px;color:#78716c">You received this because you requested a restock notification from VK VASTRAM.</p></div>`
+            html: `<div style="font-family:Georgia,serif;color:#1c1917;max-width:600px;margin:24px auto;line-height:1.6"><h1 style="color:#78281f;font-weight:normal">A drape you loved is available again.</h1><p><strong>${productName.replace(/[&<>"']/g, (c: string) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c] || c))}</strong>${variant.variant_name ? ` â€” ${String(variant.variant_name).replace(/[&<>"']/g, '')}` : ''} is back in stock.</p>${productUrl ? `<p><a href="${productUrl}" style="display:inline-block;background:#1c1917;color:#fff;padding:12px 18px;text-decoration:none">View product</a></p>` : ''}<p style="font-size:12px;color:#78716c">You received this because you requested a restock notification from VK VASTRAM.</p></div>`
           })
         });
         if (!response.ok) continue;
@@ -1730,6 +1730,7 @@ const orderPayload = {
               trackingUrl: ord.tracking_url || '',
               shippedAt: ord.shipped_at || null,
               deliveredAt: ord.delivered_at || null,
+              cancelledAt: ord.cancelled_at || null,
               notes: ord.notes || '',
               createdAt: ord.created_at,
               items: (ord.items || []).map((i: any) => ({
@@ -3215,7 +3216,7 @@ const orderPayload = {
         }
         subtotal += Number(v.price_override ?? v.products.price) * quantity;
       }
-      if (subtotal < Number(coupon.minimum_order_value || 0)) { res.status(400).json({ success: false, error: `Minimum cart value for this coupon is ₹${Number(coupon.minimum_order_value || 0).toLocaleString('en-IN')}.` }); return; }
+      if (subtotal < Number(coupon.minimum_order_value || 0)) { res.status(400).json({ success: false, error: `Minimum cart value for this coupon is â‚¹${Number(coupon.minimum_order_value || 0).toLocaleString('en-IN')}.` }); return; }
       let discountAmount = coupon.discount_type === 'percentage' ? subtotal * Number(coupon.discount_value) / 100 : Number(coupon.discount_value);
       if (coupon.maximum_discount != null) discountAmount = Math.min(discountAmount, Number(coupon.maximum_discount));
       discountAmount = Math.max(0, Math.min(subtotal, Math.round(discountAmount * 100) / 100));
@@ -4041,3 +4042,4 @@ const orderPayload = {
 }
 
 startServer();
+

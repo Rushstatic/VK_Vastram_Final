@@ -137,7 +137,11 @@ export const AdminImport: React.FC = () => {
         const collection = String(getField(raw, ['Collection', 'Collection Name']) || '').trim();
 
         const rawStock = getField(raw, ['Stock', 'Quantity', 'Stock Quantity', 'Inventory']);
-        const stockQuantity = rawStock !== undefined && !isNaN(Number(rawStock)) ? Math.max(0, parseInt(rawStock, 10)) : 5;
+        const parsedStock = rawStock !== undefined && String(rawStock).trim() !== '' ? Number(rawStock) : NaN;
+        const stockQuantity = Number.isInteger(parsedStock) && parsedStock >= 0 ? parsedStock : 0;
+        if (!Number.isInteger(parsedStock) || parsedStock < 0) {
+          errors.push('Valid non-negative Stock is required; stock will not default silently to 5');
+        }
 
         const fabric = String(getField(raw, ['Fabric', 'Material', 'Fabric Composition']) || '').trim();
         const weave = String(getField(raw, ['Weave', 'Craft', 'Weave Type']) || '').trim();
@@ -184,13 +188,17 @@ export const AdminImport: React.FC = () => {
   };
 
   const handleExecuteImport = async () => {
-    if (parsedRows.length === 0) return;
+    const validRows = parsedRows.filter((row) => row.isValid);
+    if (validRows.length === 0) {
+      setGlobalError('There are no valid rows to import. Fix the row errors and try again.');
+      return;
+    }
 
     setStatus('importing');
     setGlobalError(null);
 
     // Prepare payload
-    const payload = parsedRows.map((r) => ({
+    const payload = validRows.map((r) => ({
       sku: r.sku,
       name: r.name,
       slug: r.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, ''),
@@ -641,14 +649,14 @@ export const AdminImport: React.FC = () => {
 
           {parsedRows.length > 8 && (
             <p className="text-[11px] text-[#78716C] text-center">
-              Showing first 8 of {parsedRows.length} rows. All rows will be processed on execution.
+              Showing first 8 of {parsedRows.length} rows. Only valid rows will be sent; invalid rows are skipped.
             </p>
           )}
 
           {/* Action Trigger */}
           <div className="flex items-center justify-between pt-2">
             <span className="text-xs text-[#57534E]">
-              Ready to synchronize {parsedRows.length} records to Supabase.
+              Ready to synchronize {validCount} valid records to Supabase. {errorCount > 0 ? `${errorCount} invalid rows will be skipped.` : ''}
             </span>
             <Button
               onClick={handleExecuteImport}

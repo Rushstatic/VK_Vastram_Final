@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import * as XLSX from 'xlsx';
 import {
   Plus,
   Search,
@@ -54,6 +55,12 @@ export const AdminProductsList: React.FC<AdminProductsListProps> = ({
   useEffect(() => {
     fetchProducts();
   }, [statusFilter, categoryFilter]);
+
+  const exportProductsExcel = () => {
+    const rows = products.map((p: any) => ({ 'Product ID': p.id, SKU: p.sku || '', Name: p.name || p.title || '', Category: p.category || '', 'Saree Type': p.sareeType || p.saree_type || '', Price: Number(p.price || 0), 'Compare At Price': Number(p.compareAtPrice || p.compare_at_price || 0), Status: p.status || '', Stock: p.stockQuantity ?? p.stock_quantity ?? p.stock ?? '', 'Created At': p.createdAt || p.created_at || '' }));
+    if (!rows.length) { alert('No products loaded to export.'); return; }
+    const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Products'); XLSX.writeFile(wb, `vk-vastram-products-${new Date().toISOString().slice(0,10)}.xlsx`);
+  };
 
   const handleSearchSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -113,6 +120,7 @@ export const AdminProductsList: React.FC<AdminProductsListProps> = ({
         </div>
 
         <div className="flex items-center gap-2.5">
+          <button onClick={exportProductsExcel} className="px-3 py-2 text-xs border border-[#1C1917]/15 rounded-xs hover:bg-[#F4EFE6]">Export Excel</button>
           <button
             onClick={fetchProducts}
             title="Refresh product list"
@@ -208,11 +216,16 @@ export const AdminProductsList: React.FC<AdminProductsListProps> = ({
                   <tr key={product.id} className="hover:bg-[#F4EFE6]/50 transition-colors">
                     {/* Name & Image */}
                     <td className="px-5 py-3.5 flex items-center gap-3">
-                      <img
-                        src={product.primaryImage}
-                        alt={product.name}
-                        className="w-11 h-14 object-cover rounded-xs bg-[#EFE9DC] shrink-0 border border-[#1C1917]/5"
-                      />
+                      {product.primaryImage ? (
+                        <img
+                          src={product.primaryImage}
+                          alt={product.name}
+                          loading="lazy"
+                          className="w-11 h-14 object-cover rounded-xs bg-[#EFE9DC] shrink-0 border border-[#1C1917]/5"
+                        />
+                      ) : (
+                        <div className="w-11 h-14 flex items-center justify-center text-[9px] text-[#78716C] bg-[#EFE9DC] shrink-0 border border-[#1C1917]/5" aria-label="No product image">No image</div>
+                      )}
                       <div className="min-w-0 max-w-xs">
                         <p className="font-medium text-[#1C1917] font-serif text-sm truncate">
                           {product.name}

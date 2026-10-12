@@ -16,14 +16,19 @@ interface GeneralSettings {
   support_phone: string;
   whatsapp_number: string;
   studio_address: string;
+  gstin: string;
   announcement_bar_text: string;
   free_shipping_threshold: number;
+  fall_pico_price: number;
+  maharashtra_shipping: number;
+  other_state_shipping: number;
 }
 
 interface PolicySettings {
   exchange_window_days: number;
   dispatch_window_hours: string;
   cod_max_limit: number;
+  cod_enabled: boolean;
   currency: string;
 }
 
@@ -40,14 +45,19 @@ export const AdminSettings: React.FC = () => {
     support_phone: '+91 98234 56789',
     whatsapp_number: '+91 98234 56789',
     studio_address: 'VK Vastram Design Pavilion, Jayanagar Heritage Enclave, Bengaluru, Karnataka 560041',
+    gstin: '',
     announcement_bar_text: 'Authentic Handwoven Sarees & Pure Cotton Living Textiles · Generational Craftsmanship',
-    free_shipping_threshold: 0,
+    free_shipping_threshold: 1999,
+    fall_pico_price: 0,
+    maharashtra_shipping: 100,
+    other_state_shipping: 150,
   });
 
   const [policies, setPolicies] = useState<PolicySettings>({
     exchange_window_days: 7,
     dispatch_window_hours: '24-48',
     cod_max_limit: 15000,
+    cod_enabled: false,
     currency: 'INR',
   });
 
@@ -66,10 +76,10 @@ export const AdminSettings: React.FC = () => {
       const { data } = await (supabase as any).from('site_settings').select('*');
       if (data) {
         const genRow = data.find((row: any) => row.key === 'general');
-        if (genRow?.value) setGeneral(genRow.value);
+        if (genRow?.value) setGeneral((prev) => ({ ...prev, ...genRow.value, free_shipping_threshold: genRow.value.free_shipping_threshold ?? prev.free_shipping_threshold }));
 
         const polRow = data.find((row: any) => row.key === 'policies');
-        if (polRow?.value) setPolicies(polRow.value);
+        if (polRow?.value) setPolicies({ cod_enabled: false, ...polRow.value });
       }
     } catch {
       // ignore
@@ -84,6 +94,12 @@ export const AdminSettings: React.FC = () => {
 
   const handleSaveAll = async (e: React.FormEvent) => {
     e.preventDefault();
+    const normalizedGstin = (general.gstin || '').trim().toUpperCase();
+    if (normalizedGstin && !/^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/.test(normalizedGstin)) {
+      setFeedback('Enter a valid 15-character GSTIN, or leave the field blank until registration is complete.');
+      return;
+    }
+    setGeneral((prev) => ({ ...prev, gstin: normalizedGstin }));
     setSaving(true);
     setFeedback(null);
 
@@ -100,7 +116,7 @@ export const AdminSettings: React.FC = () => {
             'Content-Type': 'application/json',
             ...(token ? { Authorization: `Bearer ${token}` } : {}),
           },
-          body: JSON.stringify({ general, policies }),
+          body: JSON.stringify({ general: { ...general, gstin: normalizedGstin }, policies }),
         });
 
         if (res.ok) {
@@ -118,7 +134,7 @@ export const AdminSettings: React.FC = () => {
           const results = await Promise.all([
             (supabase as any).from('site_settings').upsert({
               key: 'general',
-              value: general,
+              value: { ...general, gstin: normalizedGstin },
               updated_at: new Date().toISOString(),
             }),
             (supabase as any).from('site_settings').upsert({
@@ -140,6 +156,26 @@ export const AdminSettings: React.FC = () => {
       savedSuccessfully = true;
     }
 
+    // Verify the persisted policy row before announcing success or broadcasting a
+    // checkout update. This catches backend/RLS/configuration failures that otherwise
+    // leave checkout showing stale COD availability.
+    if (savedSuccessfully && isSupabaseConfigured()) {
+      try {
+        const { data: persistedRow, error: verifyError } = await (supabase as any)
+          .from('site_settings')
+          .select('value')
+          .eq('key', 'policies')
+          .maybeSingle();
+        if (verifyError || !persistedRow?.value || persistedRow.value.cod_enabled !== (policies.cod_enabled === true)) {
+          savedSuccessfully = false;
+          setFeedback('Settings were not confirmed in the database. Please retry and check admin permissions.');
+        }
+      } catch {
+        savedSuccessfully = false;
+        setFeedback('Could not verify saved settings. Please reload and check the database connection.');
+      }
+    }
+
     setSaving(false);
 
     if (savedSuccessfully) {
@@ -155,11 +191,13 @@ export const AdminSettings: React.FC = () => {
         supportPhone: general.support_phone,
         whatsappNumber: general.whatsapp_number,
         studioAddress: general.studio_address,
+        gstin: normalizedGstin,
         announcementBarText: general.announcement_bar_text,
         freeShippingThreshold: general.free_shipping_threshold,
         exchangeWindowDays: policies.exchange_window_days,
         dispatchWindowHours: policies.dispatch_window_hours,
         codMaxLimit: policies.cod_max_limit,
+        codEnabled: policies.cod_enabled === true,
         currency: policies.currency,
         currencySymbol: '₹',
       };
@@ -269,6 +307,30 @@ export const AdminSettings: React.FC = () => {
             </div>
 
             <div>
+              <label className="block font-semibold text-[#1C1917] mb-1">Free Delivery Threshold (₹)</label>
+              <input type="number" min="0" step="1" value={general.free_shipping_threshold ?? 1999}
+                onChange={(e) => setGeneral({ ...general, free_shipping_threshold: Math.max(0, Number(e.target.value) || 0) })}
+                className="w-full bg-[#F4EFE6] border border-[#1C1917]/15 p-2 rounded-xs" />
+              <p className="mt-1 text-[10px] text-[#78716C]">Set 0 to disable the free-delivery threshold message.</p>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div>
+                <label className="block font-semibold text-[#1C1917] mb-1">Fall & Pico Price (₹)</label>
+                <input type="number" min="0" step="1" value={general.fall_pico_price ?? 0} onChange={(e) => setGeneral({ ...general, fall_pico_price: Math.max(0, Number(e.target.value) || 0) })} className="w-full bg-[#F4EFE6] border border-[#1C1917]/15 p-2 rounded-xs" />
+                <p className="mt-1 text-[10px] text-[#78716C]">0 means complimentary. Positive value is displayed on the product page.</p>
+              </div>
+              <div>
+                <label className="block font-semibold text-[#1C1917] mb-1">Maharashtra Shipping (₹)</label>
+                <input type="number" min="0" step="1" value={general.maharashtra_shipping ?? 100} onChange={(e) => setGeneral({ ...general, maharashtra_shipping: Math.max(0, Number(e.target.value) || 0) })} className="w-full bg-[#F4EFE6] border border-[#1C1917]/15 p-2 rounded-xs" />
+              </div>
+              <div>
+                <label className="block font-semibold text-[#1C1917] mb-1">Other States Shipping (₹)</label>
+                <input type="number" min="0" step="1" value={general.other_state_shipping ?? 150} onChange={(e) => setGeneral({ ...general, other_state_shipping: Math.max(0, Number(e.target.value) || 0) })} className="w-full bg-[#F4EFE6] border border-[#1C1917]/15 p-2 rounded-xs" />
+              </div>
+            </div>
+
+            <div>
               <label className="block font-semibold text-[#1C1917] mb-1">
                 Tagline / Subtitle
               </label>
@@ -370,6 +432,19 @@ export const AdminSettings: React.FC = () => {
                 className="w-full bg-[#F4EFE6] border border-[#1C1917]/15 p-2 rounded-xs"
               />
             </div>
+            <div>
+              <label className="block font-semibold text-[#1C1917] mb-1">GSTIN</label>
+              <input
+                type="text"
+                value={general.gstin || ''}
+                onChange={(e) => setGeneral({ ...general, gstin: e.target.value.toUpperCase().replace(/\s+/g, '') })}
+                placeholder="15-character GSTIN (optional)"
+                maxLength={15}
+                autoCapitalize="characters"
+                className="w-full bg-[#F4EFE6] border border-[#1C1917]/15 p-2 rounded-xs font-mono uppercase"
+              />
+              <p className="mt-1 text-[10px] text-[#78716C]">Printed on invoices when configured. Leave blank until a valid GSTIN is available.</p>
+            </div>
 
             <div className="md:col-span-2">
               <label className="block font-semibold text-[#1C1917] mb-1">
@@ -429,6 +504,19 @@ export const AdminSettings: React.FC = () => {
               />
             </div>
 
+            <div className="sm:col-span-2 p-4 border border-[#1C1917]/10 rounded-xs bg-[#F4EFE6]/60">
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <label htmlFor="cod-enabled" className="block font-semibold text-[#1C1917] mb-1">Cash on Delivery (COD)</label>
+                  <p className="text-xs text-[#57534E]">Turn COD on only when your team is ready to fulfil cash orders.</p>
+                </div>
+                <label className="inline-flex items-center gap-2 cursor-pointer text-xs font-semibold">
+                  <input id="cod-enabled" type="checkbox" checked={policies.cod_enabled === true} onChange={(e) => setPolicies({ ...policies, cod_enabled: e.target.checked })} className="h-4 w-4 accent-[#967029]" />
+                  {policies.cod_enabled ? 'Enabled' : 'Disabled'}
+                </label>
+              </div>
+              {!policies.cod_enabled && <p className="mt-2 text-xs text-[#800020]">Customer message: “COD is unavailable due to high demand.”</p>}
+            </div>
             <div>
               <label className="block font-semibold text-[#1C1917] mb-1">
                 Maximum COD Order Limit (₹)

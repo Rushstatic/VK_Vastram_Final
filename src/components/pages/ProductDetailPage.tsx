@@ -26,6 +26,7 @@ import { ProductReviewsSection } from '../catalog/ProductReviewsSection';
 import { ColorSwatch } from '../ui/ColorSwatch';
 import { ProductGallery } from '../product/ProductGallery';
 import { formatVariantSku } from '../../lib/skuHelper';
+import { supabase, isSupabaseConfigured } from '../../lib/supabase';
 
 interface ProductDetailPageProps {
   slug: string;
@@ -33,8 +34,8 @@ interface ProductDetailPageProps {
   onNavigate: (page: PageView) => void;
   isWishlisted: boolean;
   onToggleWishlist: (product: Product) => void;
-  onAddToCart: (product: Product, quantity: number, color?: string, size?: string) => void;
-  onBuyNow: (product: Product, quantity: number, color?: string, size?: string) => void;
+  onAddToCart: (product: Product, quantity: number, color?: string, size?: string, variantId?: string) => void;
+  onBuyNow: (product: Product, quantity: number, color?: string, size?: string, variantId?: string) => void;
 }
 
 export const ProductDetailPage: React.FC<ProductDetailPageProps> = ({
@@ -61,8 +62,8 @@ export const ProductDetailPage: React.FC<ProductDetailPageProps> = ({
             sku: formatVariantSku(product.sku || 'VKV-SAR-001', 1),
             variantName: product.colors?.[0] || 'Standard Free Size',
             color: product.colors?.[0] || undefined,
-            stockQuantity: product.stockQuantity ?? 10,
-            availableQuantity: product.stockQuantity ?? 10,
+            stockQuantity: product.stockQuantity ?? 0,
+            availableQuantity: product.stockQuantity ?? 0,
             price: product.price,
             isActive: true,
             images: product.imagesWithRoles || [],
@@ -78,18 +79,25 @@ export const ProductDetailPage: React.FC<ProductDetailPageProps> = ({
   const [shareCopied, setShareCopied] = useState(false);
   const [activeDetailSection, setActiveDetailSection] = useState<'specs' | 'care' | 'shipping'>('specs');
   const [recentlyViewed, setRecentlyViewed] = useState<Product[]>([]);
+  const [restockSubmitting, setRestockSubmitting] = useState(false);
+  const [restockMessage, setRestockMessage] = useState('');
 
   // Optional Saree Services
   const [includeFallPico, setIncludeFallPico] = useState(false);
-  const [includeGiftPackaging, setIncludeGiftPackaging] = useState(false);
 
-  // Sync selected variant when variants or product change
+  // Default to an active in-stock variant. Once the shopper explicitly selects a
+  // variant, preserve that selection even if another variant has more stock.
   useEffect(() => {
     if (variants.length > 0) {
-      // If current selectedVariantId is not in the new variants list, reset to first
       setSelectedVariantId((prev) => {
-        const exists = variants.some((v) => v.id === prev);
-        return exists ? prev : variants[0].id;
+        const existingSelection = variants.find((v) => v.id === prev);
+        if (existingSelection) return prev;
+        const firstAvailable = variants.find((v) =>
+          v.isActive !== false &&
+          Number(v.availableQuantity ?? v.stockQuantity ?? 0) > 0
+        );
+        const firstActive = variants.find((v) => v.isActive !== false);
+        return (firstAvailable || firstActive || variants[0]).id;
       });
     }
   }, [variants]);
@@ -102,7 +110,7 @@ export const ProductDetailPage: React.FC<ProductDetailPageProps> = ({
         productId: product?.id || '',
         sku: product?.sku || '',
         variantName: 'Standard',
-        stockQuantity: product?.stockQuantity ?? 10,
+        stockQuantity: product?.stockQuantity ?? 0,
         isActive: true,
       };
     }
@@ -113,12 +121,16 @@ export const ProductDetailPage: React.FC<ProductDetailPageProps> = ({
   useEffect(() => {
     if (product?.id) {
       if (variants.length > 0) {
-        setSelectedVariantId(variants[0].id);
+        const firstAvailable = variants.find((v) =>
+          v.isActive !== false &&
+          Number(v.availableQuantity ?? v.stockQuantity ?? 0) > 0
+        );
+        const firstActive = variants.find((v) => v.isActive !== false);
+        setSelectedVariantId((firstAvailable || firstActive || variants[0]).id);
       }
       setSelectedSize(product.sizes && product.sizes.length > 0 ? product.sizes[0] : '');
       setQuantity(1);
       setIncludeFallPico(false);
-      setIncludeGiftPackaging(false);
 
       // Record in Recently Viewed
       recentlyViewedService.recordView(product);
@@ -140,11 +152,10 @@ export const ProductDetailPage: React.FC<ProductDetailPageProps> = ({
   const displayPrice = currentVariant.price ?? product?.price ?? 0;
   const displayMrp = currentVariant.mrpOverride ?? product?.mrp;
   const displaySku = currentVariant.sku || product?.sku;
-  const availableStock = currentVariant.availableQuantity ?? currentVariant.stockQuantity ?? 10;
-  const isSoldOut =
-    product?.inStock === false ||
-    currentVariant.isActive === false ||
-    availableStock <= 0;
+  const availableStock = currentVariant.availableQuantity ?? currentVariant.stockQuantity ?? 0;
+  // Variant inventory is authoritative; a stale parent-product inStock flag must not
+  // mark every colour/edition sold out when this selected variant has stock.
+  const isSoldOut = currentVariant.isActive === false || availableStock <= 0;
 
   // Variant-specific Images or fallback to product images (never leak other variants)
   const activeGalleryImages = useMemo(() => {
@@ -174,6 +185,22 @@ export const ProductDetailPage: React.FC<ProductDetailPageProps> = ({
     return Array.from(new Set(list));
   }, [currentVariant, product]);
 
+  // Hooks must run in the same order even while a product is loading.
+  const { settings } = useSiteSettings();
+  const announcementText = settings?.announcementBarText || 'Complimentary Insured Delivery on Orders Above ₹1,999';
+  const exchangeWindow = settings?.exchangeWindowDays || 7;
+  const fallPicoPrice = Math.max(0, Number((settings as any)?.fallPicoPrice ?? 0));
+
+  const isMeaninglessColor = (c?: string | null) => {
+    if (!c || typeof c !== 'string') return true;
+    const clean = c.trim().toLowerCase();
+    return clean === '' || clean === 'null' || clean === 'undefined' || clean === '—' || clean === '-' || clean === 'n/a' || clean === 'none';
+  };
+  const availableColors = useMemo(() => {
+    const list = variants.map((v) => v.color).filter((c): c is string => !isMeaninglessColor(c));
+    return Array.from(new Set(list));
+  }, [variants]);
+
   // If product is still loading, render neutral luxury placeholder instead of flashing an unrelated product
   if (!product) {
     return (
@@ -193,6 +220,36 @@ export const ProductDetailPage: React.FC<ProductDetailPageProps> = ({
     );
   }
 
+  const handleNotifyWhenAvailable = async () => {
+    if (!product || !currentVariant?.id) return;
+    setRestockMessage('');
+    if (!isSupabaseConfigured()) {
+      setRestockMessage('Customer accounts are temporarily unavailable. Please try again later.');
+      return;
+    }
+    const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+    const session = sessionData?.session;
+    if (sessionError || !session?.access_token) {
+      onNavigate({ type: 'register', redirectAfter: { type: 'product', slug } });
+      return;
+    }
+    setRestockSubmitting(true);
+    try {
+      const response = await fetch('/api/back-in-stock/subscribe', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
+        body: JSON.stringify({ productId: product.id, variantId: currentVariant.id }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok || !result.success) throw new Error(result.error || 'Could not save your restock request.');
+      setRestockMessage(result.alreadyAvailable ? 'This variant is back in stock. Refresh the page to purchase.' : (result.emailDeliveryConfigured ? 'Request saved. We’ll email you when this variant is restocked.' : 'Request saved. Restock email delivery is not configured by the store yet.'));
+    } catch (error: any) {
+      setRestockMessage(error?.message || 'Could not save your restock request.');
+    } finally {
+      setRestockSubmitting(false);
+    }
+  };
+
   const handleAddToCart = () => {
     if (isSoldOut) return;
     onAddToCart(
@@ -203,7 +260,8 @@ export const ProductDetailPage: React.FC<ProductDetailPageProps> = ({
       },
       quantity,
       currentVariant.color,
-      selectedSize
+      selectedSize,
+      currentVariant.id
     );
     setAddedAnimation(true);
     setTimeout(() => setAddedAnimation(false), 2000);
@@ -219,7 +277,8 @@ export const ProductDetailPage: React.FC<ProductDetailPageProps> = ({
       },
       quantity,
       currentVariant.color,
-      selectedSize
+      selectedSize,
+      currentVariant.id
     );
   };
 
@@ -231,26 +290,8 @@ export const ProductDetailPage: React.FC<ProductDetailPageProps> = ({
     }
   };
 
-  const { settings } = useSiteSettings();
-  const announcementText = settings?.announcementBarText || 'Complimentary Insured Delivery on Orders Above ₹1,999';
-  const exchangeWindow = settings?.exchangeWindowDays || 7;
-
   // Algorithm-driven complementary creations (max 10)
   const complementaryProducts = getComplementaryProducts(product, products, 10);
-
-  const isMeaninglessColor = (c?: string | null) => {
-    if (!c || typeof c !== 'string') return true;
-    const clean = c.trim().toLowerCase();
-    return clean === '' || clean === 'null' || clean === 'undefined' || clean === '—' || clean === '-' || clean === 'n/a' || clean === 'none';
-  };
-
-  // Colors available across product variants
-  const availableColors = useMemo(() => {
-    const list = variants
-      .map((v) => v.color)
-      .filter((c): c is string => !isMeaninglessColor(c));
-    return Array.from(new Set(list));
-  }, [variants]);
 
   return (
     <div className="bg-[#FAF8F5] py-8 sm:py-12">
@@ -447,7 +488,7 @@ export const ProductDetailPage: React.FC<ProductDetailPageProps> = ({
                         }`}
                       >
                         <span>{v.variantName || v.sku}</span>
-                        {v.priceOverride && (
+                        {v.priceOverride != null && (
                           <span className={isSel ? 'text-amber-200 font-mono text-[11px]' : 'text-[#967029] font-mono text-[11px]'}>
                             ₹{v.priceOverride.toLocaleString('en-IN')}
                           </span>
@@ -496,7 +537,7 @@ export const ProductDetailPage: React.FC<ProductDetailPageProps> = ({
                   <label className="flex items-center justify-between cursor-pointer group">
                     <span className="flex items-center gap-2 text-[#57534E] group-hover:text-[#1C1917]">
                       <Scissors className="w-3.5 h-3.5 text-[#967029]" />
-                      <span>Complimentary Fall & Pico Edge Finishing</span>
+                      <span>Fall & Pico Edge Finishing <strong className="text-[#78281F]">{fallPicoPrice > 0 ? `+ ₹${fallPicoPrice.toLocaleString('en-IN')}` : 'Complimentary'}</strong></span>
                     </span>
                     <input
                       type="checkbox"
@@ -505,18 +546,7 @@ export const ProductDetailPage: React.FC<ProductDetailPageProps> = ({
                       className="accent-[#78281F] cursor-pointer"
                     />
                   </label>
-                  <label className="flex items-center justify-between cursor-pointer group">
-                    <span className="flex items-center gap-2 text-[#57534E] group-hover:text-[#1C1917]">
-                      <Package className="w-3.5 h-3.5 text-[#967029]" />
-                      <span>Rigid Gold-Embossed Gift Box with Calligraphed Note</span>
-                    </span>
-                    <input
-                      type="checkbox"
-                      checked={includeGiftPackaging}
-                      onChange={(e) => setIncludeGiftPackaging(e.target.checked)}
-                      className="accent-[#78281F] cursor-pointer"
-                    />
-                  </label>
+
                 </div>
               </div>
             )}
@@ -548,15 +578,20 @@ export const ProductDetailPage: React.FC<ProductDetailPageProps> = ({
             {/* 10. Purchase Actions */}
             <div className="space-y-3 pt-1">
               {isSoldOut ? (
-                <Button
-                  variant="primary"
-                  fullWidth
-                  size="lg"
-                  disabled
-                  className="font-semibold tracking-wide uppercase opacity-60 cursor-not-allowed"
-                >
-                  SOLD OUT
-                </Button>
+                <div className="space-y-2">
+                  <Button
+                    variant="primary"
+                    fullWidth
+                    size="lg"
+                    onClick={() => void handleNotifyWhenAvailable()}
+                    disabled={restockSubmitting}
+                    className="font-semibold tracking-wide uppercase"
+                  >
+                    {restockSubmitting ? 'SAVING REQUEST…' : 'NOTIFY ME WHEN AVAILABLE'}
+                  </Button>
+                  {restockMessage && <p className="text-xs text-[#57534E]" role="status">{restockMessage}</p>}
+                  <p className="text-[11px] text-[#78716C]">Sign in or create an account to save your restock request.</p>
+                </div>
               ) : (
                 <>
                   {/* Primary CTA: BUY NOW */}

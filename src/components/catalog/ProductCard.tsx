@@ -52,10 +52,10 @@ export const ProductCard: React.FC<ProductCardProps> = ({
 
   const activeStock = activeVariant
     ? (activeVariant.availableQuantity ?? activeVariant.stockQuantity)
-    : (product.stockQuantity ?? 10);
+    : (product.stockQuantity ?? 0);
 
   const isSoldOut =
-    product.inStock === false ||
+    (!activeVariant && product.inStock === false) ||
     (activeVariant ? activeVariant.isActive === false : false) ||
     activeStock <= 0;
 

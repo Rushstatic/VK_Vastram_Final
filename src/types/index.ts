@@ -63,7 +63,11 @@ export interface Product {
   categoryLabel: string;
   tag?: string; // e.g. "Pure Silk", "Handblock Printed", "Festive Edition"
   sku?: string;
+  /** Managed product-level attributes stored in products.metadata JSONB. */
+  metadata?: Record<string, any>;
   price: number;
+  /** Optional product-level GST rate override; null means use the configured default. */
+  gstRate?: number | null;
   mrp?: number;
   onSale?: boolean;
   status?: 'draft' | 'active' | 'archived';
@@ -204,6 +208,14 @@ export interface OrderData {
   orderStatus: OrderStatus;
   paymentMethod?: 'online' | 'cod';
   payment?: PaymentData;
+  refundStatus?: 'not_applicable' | 'pending' | 'processing' | 'completed' | 'failed';
+  cancelledAt?: string | null;
+  cancellationReason?: string;
+  courierName?: string;
+  trackingNumber?: string;
+  trackingUrl?: string;
+  shippedAt?: string | null;
+  deliveredAt?: string | null;
   notes?: string;
   items?: OrderItemData[];
   createdAt: string;
@@ -221,7 +233,9 @@ export type AdminSubView =
   | 'inventory'
   | 'orders'
   | 'homepage'
-  | 'settings';
+  | 'settings'
+  | 'coupons'
+  | 'saree-types';
 
 export type PageView =
   | { type: 'home' }

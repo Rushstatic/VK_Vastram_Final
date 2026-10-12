@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useRef } from 'react';
 import { X, ChevronLeft, ChevronRight, ZoomIn, ZoomOut, RotateCcw } from 'lucide-react';
 import { normalizeImageUrl } from '../../lib/imageHelper';
 import { ProductVariantImage } from '../../types';
@@ -21,6 +21,8 @@ export const MobileImageViewer: React.FC<MobileImageViewerProps> = ({
 }) => {
   const [currentIndex, setCurrentIndex] = useState(initialIndex);
   const [zoomScale, setZoomScale] = useState(1);
+  const [imageLoadError, setImageLoadError] = useState(false);
+  const [imageLoaded, setImageLoaded] = useState(false);
   const modalRef = useRef<HTMLDivElement>(null);
   const imageContainerRef = useRef<HTMLDivElement>(null);
 
@@ -33,6 +35,7 @@ export const MobileImageViewer: React.FC<MobileImageViewerProps> = ({
     if (isOpen) {
       setCurrentIndex(initialIndex);
       setZoomScale(1);
+      setImageLoadError(false);
     }
   }, [isOpen, initialIndex]);
 
@@ -66,18 +69,45 @@ export const MobileImageViewer: React.FC<MobileImageViewerProps> = ({
     };
   }, [isOpen]);
 
+  const currentItem = images[currentIndex] || images[0];
+  const currentUrl = typeof currentItem === 'string' ? currentItem : currentItem?.imageUrl;
+  const currentRole = currentItem && typeof currentItem === 'object' ? currentItem.role : undefined;
+  const normalizedCurrentUrl = normalizeImageUrl(currentUrl);
+
+  useLayoutEffect(() => {
+    // Clear stale image state before paint; passive reset effects can race cached image loads.
+    setImageLoaded(false);
+    setImageLoadError(false);
+  }, [normalizedCurrentUrl, isOpen]);
+
+  useEffect(() => {
+    if (!isOpen || !normalizedCurrentUrl || imageLoaded) return;
+    const timeout = window.setTimeout(() => setImageLoadError(true), 12000);
+    return () => window.clearTimeout(timeout);
+  }, [normalizedCurrentUrl, isOpen, imageLoaded]);
+
   if (!isOpen || images.length === 0) return null;
 
-  const currentItem = images[currentIndex];
-  const currentUrl = typeof currentItem === 'string' ? currentItem : currentItem.imageUrl;
-  const currentRole = typeof currentItem === 'object' ? currentItem.role : undefined;
+  const handleImageLoaded = (event: React.SyntheticEvent<HTMLImageElement>) => {
+    setImageLoaded(true);
+    setImageLoadError(false);
+    if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return;
+    gsap.fromTo(event.currentTarget,
+      { opacity: 0, scale: 0.94, rotationY: 7, transformPerspective: 900 },
+      { opacity: 1, scale: 1, rotationY: 0, duration: 0.65, ease: 'back.out(1.25)', clearProps: 'transform' }
+    );
+  };
 
   const handleNext = () => {
+    setImageLoadError(false);
+    setImageLoaded(false);
     setZoomScale(1);
     setCurrentIndex((prev) => (prev + 1) % images.length);
   };
 
   const handlePrev = () => {
+    setImageLoadError(false);
+    setImageLoaded(false);
     setZoomScale(1);
     setCurrentIndex((prev) => (prev - 1 + images.length) % images.length);
   };
@@ -170,15 +200,31 @@ export const MobileImageViewer: React.FC<MobileImageViewerProps> = ({
         onDoubleClick={handleDoubleTap}
         className="relative flex-1 flex items-center justify-center p-2 sm:p-6 overflow-hidden"
       >
-        <img
-          src={normalizeImageUrl(currentUrl)}
-          alt={`${productName} view ${currentIndex + 1}`}
-          className="max-h-[85vh] max-w-[95vw] object-contain transition-transform duration-200 cursor-grab active:cursor-grabbing"
-          style={{
-            transform: `scale(${zoomScale})`,
-          }}
-          draggable={false}
-        />
+        {normalizedCurrentUrl && !imageLoadError && !imageLoaded && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-[#FAF8F5]/80" role="status" aria-live="polite">
+            <span className="h-9 w-9 rounded-full border-2 border-white/20 border-t-[#B88E3E] animate-spin" aria-hidden="true" />
+            <span className="font-serif italic text-sm">Unveiling the weave…</span>
+          </div>
+        )}
+        {normalizedCurrentUrl && !imageLoadError ? (
+          <img
+            key={normalizedCurrentUrl}
+            src={normalizedCurrentUrl}
+            alt={`${productName} view ${currentIndex + 1}`}
+            onLoad={handleImageLoaded}
+            onError={() => { setImageLoaded(false); setImageLoadError(true); }}
+            loading="eager"
+            decoding="async"
+            className={`max-h-[85vh] max-w-[95vw] object-contain transition-opacity duration-200 cursor-grab active:cursor-grabbing ${imageLoaded ? 'opacity-100' : 'opacity-0'}`}
+            style={{ transform: zoomScale > 1 ? `scale(${zoomScale})` : undefined, visibility: imageLoaded ? 'visible' : 'hidden' }}
+            draggable={false}
+          />
+        ) : (
+          <div className="max-w-md text-center px-6 py-8 text-[#FAF8F5]" role="status">
+            <p className="font-serif text-lg">Image unavailable</p>
+            <p className="mt-2 text-sm text-white/60">This product image could not be loaded. Check its public image URL in the product gallery and save it again.</p>
+          </div>
+        )}
 
         {/* Previous Button (desktop & tablet) */}
         {images.length > 1 && (
@@ -254,6 +300,8 @@ export const MobileImageViewer: React.FC<MobileImageViewerProps> = ({
                 <button
                   key={idx}
                   onClick={() => {
+                    setImageLoadError(false);
+                    setImageLoaded(false);
                     setZoomScale(1);
                     setCurrentIndex(idx);
                   }}
@@ -263,7 +311,7 @@ export const MobileImageViewer: React.FC<MobileImageViewerProps> = ({
                       : 'border-white/20 opacity-40 hover:opacity-80'
                   }`}
                 >
-                  <img src={normalizeImageUrl(url)} alt={`Thumb ${idx + 1}`} className="w-full h-full object-cover" />
+                  <img src={normalizeImageUrl(url) || undefined} alt={`Thumb ${idx + 1}`} loading="lazy" decoding="async" className="w-full h-full object-cover" />
                 </button>
               );
             })}

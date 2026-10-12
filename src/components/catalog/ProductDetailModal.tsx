@@ -6,6 +6,8 @@ import { ImageContainer } from '../ui/ImageContainer';
 import { Button } from '../ui/Button';
 import { useSiteSettings } from '../../hooks/useSiteSettings';
 import { ColorSwatch } from '../ui/ColorSwatch';
+import { MobileImageViewer } from '../product/MobileImageViewer';
+import { normalizeImageUrl } from '../../lib/imageHelper';
 
 interface ProductDetailModalProps {
   product: Product | null;
@@ -13,7 +15,7 @@ interface ProductDetailModalProps {
   onClose: () => void;
   isWishlisted?: boolean;
   onToggleWishlist?: (product: Product) => void;
-  onAddToCart?: (product: Product, quantity: number, color?: string, size?: string) => void;
+  onAddToCart?: (product: Product, quantity: number, color?: string, size?: string, variantId?: string) => void;
 }
 
 export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
@@ -30,6 +32,7 @@ export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
   const [quantity, setQuantity] = useState(1);
   const [activeTab, setActiveTab] = useState<'details' | 'care' | 'shipping'>('details');
   const [addedAnimation, setAddedAnimation] = useState(false);
+  const [isImageViewerOpen, setIsImageViewerOpen] = useState(false);
 
   // Sync color/size on product change
   React.useEffect(() => {
@@ -37,46 +40,50 @@ export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
       setSelectedColor(product.colors && product.colors.length > 0 ? product.colors[0] : '');
       setSelectedSize(product.sizes && product.sizes.length > 0 ? product.sizes[0] : '');
       setSelectedImage('');
+      setIsImageViewerOpen(false);
       setQuantity(1);
     }
   }, [product?.id]);
 
-  if (!isOpen || !product) return null;
-
-  // Active matched variant
+  // Hooks remain unconditional while the modal is closed/open to avoid a hook-order crash.
   const activeVariant = React.useMemo(() => {
-    if (!product.variants || product.variants.length === 0) return null;
-    if (!selectedColor) return product.variants[0] || null;
-    return (
-      product.variants.find(
-        (v) => v.color && v.color.toLowerCase() === selectedColor.toLowerCase()
-      ) || product.variants[0] || null
-    );
-  }, [product.variants, selectedColor]);
+    const variants = product?.variants || [];
+    if (variants.length === 0) return null;
+    if (!selectedColor) return variants[0] || null;
+    return variants.find(
+      (v) => v.color && v.color.toLowerCase() === selectedColor.toLowerCase()
+    ) || variants[0] || null;
+  }, [product?.variants, selectedColor]);
 
-  // Reset selected image when changing color/variant to prevent cross-variant thumbnail stickiness
+  // Reset selected image when changing color/variant to prevent cross-variant thumbnail stickiness.
   React.useEffect(() => {
     setSelectedImage('');
   }, [selectedColor, activeVariant?.id]);
 
+  const { settings } = useSiteSettings();
+  const announcementText = settings?.announcementBarText || 'Shipping charges calculated at checkout.';
+  const exchangeWindow = settings?.exchangeWindowDays || 7;
+
+  if (!isOpen || !product) return null;
+
   const displayPrice = activeVariant?.price ?? product.price;
   const displayMrp = activeVariant?.mrpOverride ?? product.mrp;
   const displaySku = activeVariant?.sku || product.sku;
-  const availableStock = activeVariant?.availableQuantity ?? activeVariant?.stockQuantity ?? product.stockQuantity ?? 10;
+  const availableStock = activeVariant?.availableQuantity ?? activeVariant?.stockQuantity ?? product.stockQuantity ?? 0;
 
   const isSoldOut =
-    product.inStock === false ||
     (activeVariant && activeVariant.isActive === false) ||
     availableStock <= 0;
 
-  const variantImage = activeVariant?.images?.[0]?.imageUrl;
-  const currentImage = selectedImage || variantImage || product.primaryImage;
-
-  const images = (
-    activeVariant?.images && activeVariant.images.length > 0
-      ? activeVariant.images.map((i) => i.imageUrl)
-      : [product.primaryImage, product.secondaryImage, ...(product.additionalImages || [])]
-  ).filter(Boolean) as string[];
+  const variantImages = (activeVariant?.images || [])
+    .map((image) => image.imageUrl)
+    .filter((url): url is string => typeof url === 'string' && Boolean(url.trim()));
+  const productImages = [product.primaryImage, product.secondaryImage, ...(product.additionalImages || [])]
+    .filter((url): url is string => typeof url === 'string' && Boolean(url.trim()));
+  // A variant may carry an image record with an empty URL. Fall back to the product
+  // gallery so the main stage never stays blank while valid secondary images exist.
+  const images = variantImages.length > 0 ? variantImages : productImages;
+  const currentImage = (selectedImage && images.includes(selectedImage) ? selectedImage : '') || images[0] || '';
 
   const handleAddToCart = () => {
     if (isSoldOut) return;
@@ -89,16 +96,15 @@ export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
         },
         quantity,
         selectedColor,
-        selectedSize
+        selectedSize,
+        activeVariant?.id
       );
       setAddedAnimation(true);
       setTimeout(() => setAddedAnimation(false), 2000);
     }
   };
 
-  const { settings } = useSiteSettings();
-  const announcementText = settings?.announcementBarText || 'Shipping charges calculated at checkout.';
-  const exchangeWindow = settings?.exchangeWindowDays || 7;
+  const currentImageIndex = Math.max(0, images.findIndex((image) => normalizeImageUrl(image) === normalizeImageUrl(currentImage)));
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 overflow-y-auto">
@@ -123,12 +129,20 @@ export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
         {/* Left Column: Image Gallery */}
         <div className="w-full md:w-1/2 p-4 sm:p-6 bg-[#F4EFE6]/60 flex flex-col justify-between">
           <div className="relative overflow-hidden rounded-sm bg-[#FAF8F5] border border-[#1C1917]/5 shadow-xs">
-            <ImageContainer
-              src={currentImage}
-              alt={product.name}
-              aspectRatio="3/4"
-              className="w-full"
-            />
+            <button
+              type="button"
+              onClick={() => setIsImageViewerOpen(true)}
+              aria-label={`Open full-screen gallery for ${product.name}`}
+              className="block w-full cursor-zoom-in focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#B88E3E]"
+            >
+              <ImageContainer
+                src={currentImage}
+                alt={product.name}
+                aspectRatio="3/4"
+                priority
+                className="w-full"
+              />
+            </button>
             {product.tag && (
               <span className="absolute top-3 left-3 bg-[#FAF8F5]/95 text-[#1C1917] border border-[#1C1917]/10 text-[10px] font-medium uppercase tracking-wider px-2.5 py-1">
                 {product.tag}
@@ -150,7 +164,7 @@ export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
                   }`}
                 >
                   <img
-                    src={img}
+                    src={normalizeImageUrl(img)}
                     alt={`${product.name} angle ${idx + 1}`}
                     className="w-full h-full object-cover"
                   />
@@ -394,6 +408,13 @@ export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
           </div>
         </div>
       </div>
+      <MobileImageViewer
+        isOpen={isImageViewerOpen}
+        onClose={() => setIsImageViewerOpen(false)}
+        images={images}
+        initialIndex={currentImageIndex}
+        productName={product.name}
+      />
     </div>
   );
 };

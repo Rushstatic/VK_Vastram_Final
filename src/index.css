@@ -198,3 +198,20 @@
     animation: none !important;
   }
 }
+
+
+/* VK VASTRAM product-image loading shimmer: soft textile-like sweep */
+@keyframes vk-image-shimmer-sweep {
+  0% { transform: translateX(-120%) skewX(-12deg); opacity: 0; }
+  20% { opacity: .55; }
+  70% { opacity: .35; }
+  100% { transform: translateX(120%) skewX(-12deg); opacity: 0; }
+}
+.vk-image-shimmer {
+  background: linear-gradient(105deg, transparent 25%, rgba(255,255,255,.62) 45%, rgba(184,142,62,.12) 52%, transparent 72%);
+  animation: vk-image-shimmer-sweep 1.45s ease-in-out infinite;
+  will-change: transform;
+}
+@media (prefers-reduced-motion: reduce) {
+  .vk-image-shimmer { animation: none; }
+}

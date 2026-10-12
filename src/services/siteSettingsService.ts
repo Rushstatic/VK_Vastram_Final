@@ -11,8 +11,12 @@ export interface SiteSettingsData {
   supportPhone: string;
   whatsappNumber: string;
   studioAddress: string;
+  gstin: string;
   announcementBarText: string;
   freeShippingThreshold: number;
+  fallPicoPrice: number;
+  maharashtraShipping: number;
+  otherStateShipping: number;
   exchangeWindowDays: number;
   dispatchWindowHours: string;
   codMaxLimit: number;
@@ -31,8 +35,12 @@ const DEFAULT_SETTINGS: SiteSettingsData = {
   supportPhone: '+91 98234 56789',
   whatsappNumber: '+91 98234 56789',
   studioAddress: 'VK Vastram Design Pavilion, Jayanagar Heritage Enclave, Bengaluru, Karnataka 560041',
+  gstin: '',
   announcementBarText: 'Shipping charges calculated at checkout.',
-  freeShippingThreshold: 0,
+  freeShippingThreshold: 1999,
+  fallPicoPrice: 0,
+  maharashtraShipping: 100,
+  otherStateShipping: 150,
   exchangeWindowDays: 7,
   dispatchWindowHours: '24-48',
   codMaxLimit: 15000,
@@ -72,8 +80,12 @@ export const siteSettingsService = {
         supportPhone: gen.support_phone || DEFAULT_SETTINGS.supportPhone,
         whatsappNumber: gen.whatsapp_number || DEFAULT_SETTINGS.whatsappNumber,
         studioAddress: gen.studio_address || DEFAULT_SETTINGS.studioAddress,
+        gstin: String(gen.gstin || '').trim().toUpperCase(),
         announcementBarText: gen.announcement_bar_text || DEFAULT_SETTINGS.announcementBarText,
         freeShippingThreshold: gen.free_shipping_threshold ?? DEFAULT_SETTINGS.freeShippingThreshold,
+        fallPicoPrice: gen.fall_pico_price ?? DEFAULT_SETTINGS.fallPicoPrice,
+        maharashtraShipping: gen.maharashtra_shipping ?? DEFAULT_SETTINGS.maharashtraShipping,
+        otherStateShipping: gen.other_state_shipping ?? DEFAULT_SETTINGS.otherStateShipping,
         exchangeWindowDays: pol.exchange_window_days ?? DEFAULT_SETTINGS.exchangeWindowDays,
         dispatchWindowHours: pol.dispatch_window_hours || DEFAULT_SETTINGS.dispatchWindowHours,
         codMaxLimit: pol.cod_max_limit ?? DEFAULT_SETTINGS.codMaxLimit,

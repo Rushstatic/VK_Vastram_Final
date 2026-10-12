@@ -78,11 +78,12 @@ export const AdminAttributesManager: React.FC = () => {
     setFeedback(null);
     if (isSupabaseConfigured()) {
       try {
-        await (supabase as any).from('site_settings').upsert({
+        const { error } = await (supabase as any).from('site_settings').upsert({
           key: 'attributes',
           value: { colors: updatedColors },
           updated_at: new Date().toISOString(),
         });
+        if (error) throw error;
         setFeedback('Centralized color dictionary saved and synchronized.');
       } catch (err: any) {
         setFeedback(`Failed to save: ${err.message}`);

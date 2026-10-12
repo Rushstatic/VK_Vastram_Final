@@ -40,6 +40,8 @@ import { AdminCollections } from './components/admin/AdminCollections';
 import { AdminInventory } from './components/admin/AdminInventory';
 import { AdminHomepage } from './components/admin/AdminHomepage';
 import { AdminSettings } from './components/admin/AdminSettings';
+import { AdminCoupons } from './components/admin/AdminCoupons';
+import { AdminSareeTypes } from './components/admin/AdminSareeTypes';
 import { Container } from './components/ui/Container';
 import { SectionHeading } from './components/ui/SectionHeading';
 import { ScrollReveal } from './components/ui/ScrollReveal';
@@ -106,7 +108,7 @@ const getPageFromPath = (path: string): PageView => {
     const sub = parts[2] as AdminSubView;
     const allowedSubViews: AdminSubView[] = [
       'dashboard', 'products', 'products-new', 'products-edit', 'import',
-      'categories', 'collections', 'inventory', 'orders', 'homepage', 'settings'
+      'categories', 'collections', 'inventory', 'orders', 'homepage', 'settings', 'coupons', 'saree-types'
     ];
     if (sub && allowedSubViews.includes(sub)) {
       return { type: 'admin', subView: sub };
@@ -216,14 +218,27 @@ export default function App() {
             orderService.linkGuestOrders(session.user.id, session.user.email).catch(() => {});
           }
 
-          // Check if admin
-          if (profile && (profile as any).role === 'admin') {
+          // Check the authoritative database role directly. customerService.getProfile()
+          // intentionally maps only customer-facing fields and therefore does not expose role.
+          // Checking role on that mapped object made valid admin sessions appear logged out after refresh.
+          const { data: adminProfile, error: adminProfileError } = await (supabase as any)
+            .from('profiles')
+            .select('id, role, full_name, email')
+            .eq('id', session.user.id)
+            .maybeSingle();
+          if (!adminProfileError && adminProfile?.role === 'admin') {
             setAdminUser({
               id: session.user.id,
-              email: session.user.email || '',
-              fullName: profile.fullName || 'Administrator',
+              email: adminProfile.email || session.user.email || '',
+              fullName: adminProfile.full_name || profile?.fullName || 'Administrator',
               role: 'admin',
             });
+            // Restore the requested admin route after the persisted Supabase session
+            // and database-backed admin role have both been verified.
+            const requestedPage = getPageFromPath(window.location.pathname);
+            if (requestedPage.type === 'admin' || requestedPage.type === 'admin-login') {
+              setCurrentPage({ type: 'admin', subView: requestedPage.type === 'admin' ? (requestedPage.subView || 'dashboard') : 'dashboard' });
+            }
           }
         }
       });
@@ -237,6 +252,19 @@ export default function App() {
               email: session.user.email || '',
               fullName: profile?.fullName || session.user.user_metadata?.full_name || 'Valued Patron',
             });
+            // Keep admin state synchronized when Supabase restores or refreshes a session.
+            const { data: roleProfile } = await (supabase as any)
+              .from('profiles').select('id, role, full_name, email')
+              .eq('id', session.user.id).maybeSingle();
+            if (roleProfile?.role === 'admin') {
+              setAdminUser({ id: session.user.id, email: roleProfile.email || session.user.email || '', fullName: roleProfile.full_name || profile?.fullName || 'Administrator', role: 'admin' });
+              const requestedPage = getPageFromPath(window.location.pathname);
+              if (requestedPage.type === 'admin' || requestedPage.type === 'admin-login') {
+                setCurrentPage({ type: 'admin', subView: requestedPage.type === 'admin' ? (requestedPage.subView || 'dashboard') : 'dashboard' });
+              }
+            } else if (event === 'SIGNED_OUT') {
+              setAdminUser(null);
+            }
             const isLoginEvent = event === 'SIGNED_IN';
             syncUserCart(session.user.id, isLoginEvent);
           } else if (event === 'SIGNED_OUT') {
@@ -338,7 +366,8 @@ export default function App() {
     product: Product,
     quantity = 1,
     selectedColor?: string,
-    selectedSize?: string
+    selectedSize?: string,
+    variantId?: string
   ) => {
     const validAddQty = sanitizeQuantity(quantity, product.stockQuantity || MAX_CART_ITEM_QUANTITY);
 
@@ -348,7 +377,7 @@ export default function App() {
         await cartService.addItemToUserCart(
           customerUser.id,
           product.id,
-          undefined,
+          variantId || (product.variants?.length === 1 ? product.variants[0].id : undefined),
           validAddQty,
           selectedColor,
           selectedSize
@@ -361,11 +390,13 @@ export default function App() {
     } else {
       console.log(`[CART_MUTATION] source=handleAddToCart (guest) product=${product.id} qty=${validAddQty}`);
       setCart((prev) => {
-        const itemKey = `guest-${product.id}-${selectedColor || 'default'}-${selectedSize || 'default'}`;
+        const resolvedVariantId = variantId || product.variants?.find((v) => v.isActive !== false && Number(v.availableQuantity ?? v.stockQuantity ?? 0) > 0)?.id || (product.variants?.length === 1 ? product.variants[0].id : undefined);
+        const itemKey = `guest-${product.id}-${resolvedVariantId || selectedColor || 'default'}-${selectedSize || 'default'}`;
         const existing = prev.find(
           (item) =>
             item.id === itemKey ||
             ((item.product.id === product.id || item.product.slug === product.slug) &&
+              (item.variantId || '') === (resolvedVariantId || '') &&
               (item.selectedColor || '') === (selectedColor || '') &&
               (item.selectedSize || '') === (selectedSize || ''))
         );
@@ -383,6 +414,7 @@ export default function App() {
             ...prev,
             {
               id: itemKey,
+              variantId: resolvedVariantId,
               product,
               quantity: validAddQty,
               selectedColor: selectedColor || (product.colors ? product.colors[0] : undefined),
@@ -401,9 +433,10 @@ export default function App() {
     product: Product,
     quantity = 1,
     selectedColor?: string,
-    selectedSize?: string
+    selectedSize?: string,
+    variantId?: string
   ) => {
-    await handleAddToCart(product, quantity, selectedColor, selectedSize);
+    await handleAddToCart(product, quantity, selectedColor, selectedSize, variantId);
     setIsCartOpen(false);
     handleNavigate({ type: 'checkout' });
   };
@@ -480,7 +513,9 @@ export default function App() {
     orderNumber: string,
     options?: { paymentVerified?: boolean; paymentMethod?: 'online' | 'cod'; guestAccessToken?: string }
   ) => {
+    // Order success callback is invoked only after the order/payment flow confirms success.
     setCart([]);
+    cartService.clearGuestCart();
     handleNavigate({
       type: 'order-confirmation',
       orderId,
@@ -605,6 +640,8 @@ export default function App() {
         {adminSubView === 'inventory' && <AdminInventory />}
         {adminSubView === 'homepage' && <AdminHomepage />}
         {adminSubView === 'settings' && <AdminSettings />}
+        {adminSubView === 'coupons' && <AdminCoupons />}
+        {adminSubView === 'saree-types' && <AdminSareeTypes />}
       </AdminLayout>
     );
   }
@@ -890,8 +927,8 @@ export default function App() {
         onClose={() => setQuickViewProduct(null)}
         isWishlisted={quickViewProduct ? wishlistIds.includes(quickViewProduct.id) : false}
         onToggleWishlist={handleToggleWishlist}
-        onAddToCart={(product, qty, color, size) => {
-          handleAddToCart(product, qty, color, size);
+        onAddToCart={(product, qty, color, size, variantId) => {
+          handleAddToCart(product, qty, color, size, variantId);
           setIsCartOpen(true);
         }}
       />

@@ -77,7 +77,7 @@ export const productService = {
         .select(`
           *,
           category:categories(name, slug),
-          images:product_images(id, image_url, alt_text, is_primary, sort_order, variant_id, role, fit, focal_x, focal_y, scale),
+          images:product_images(id, image_url, storage_path, alt_text, is_primary, sort_order, variant_id, role, fit, focal_x, focal_y, scale),
           variants:product_variants(*)
         `)
         .eq('status', 'active');
@@ -88,8 +88,12 @@ export const productService = {
 
       const { data, error } = await query;
 
-      if (error || !data || data.length === 0) {
-        return PRODUCTS;
+      if (error) {
+        console.error('[productService.getProducts] Supabase query failed; storefront products unavailable:', error.message);
+        return [];
+      }
+      if (!data || data.length === 0) {
+        return [];
       }
 
       const mapped: Product[] = data.map((item: any) => {
@@ -97,14 +101,14 @@ export const productService = {
         const rawImages = item.images || [];
         const primaryImg =
           rawImages.find((img: any) => img.is_primary && !img.variant_id)?.image_url ||
-          rawImages.find((img: any) => img.is_primary)?.image_url ||
-          rawImages[0]?.image_url ||
+          (rawImages.find((img: any) => img.is_primary)?.image_url || rawImages.find((img: any) => img.is_primary)?.storage_path) ||
+          (rawImages[0]?.image_url || rawImages[0]?.storage_path) ||
           '';
 
         const secondaryImg =
-          rawImages.find((img: any) => !img.is_primary && !img.variant_id)?.image_url ||
-          rawImages.find((img: any) => !img.is_primary)?.image_url ||
-          rawImages[1]?.image_url ||
+          (rawImages.find((img: any) => !img.is_primary && !img.variant_id)?.image_url || rawImages.find((img: any) => !img.is_primary && !img.variant_id)?.storage_path) ||
+          (rawImages.find((img: any) => !img.is_primary)?.image_url || rawImages.find((img: any) => !img.is_primary)?.storage_path) ||
+          (rawImages[1]?.image_url || rawImages[1]?.storage_path) ||
           primaryImg;
 
         const isCleanColor = (c: any) => {
@@ -146,7 +150,7 @@ export const productService = {
 
           return {
             id: img.id,
-            imageUrl: normalizeImageUrl(img.image_url),
+            imageUrl: normalizeImageUrl(img.image_url || img.storage_path),
             role,
             isPrimary: Boolean(img.is_primary),
             sortOrder: img.sort_order || idx + 1,
@@ -172,7 +176,7 @@ export const productService = {
           if (Array.isArray(vAttrs.images) && vAttrs.images.length > 0) {
             attrVariantImages = vAttrs.images.map((vi: any, viIdx: number) => ({
               id: vi.id,
-              imageUrl: normalizeImageUrl(typeof vi === 'string' ? vi : vi.imageUrl),
+              imageUrl: normalizeImageUrl(typeof vi === 'string' ? vi : (vi.imageUrl || vi.image_url || vi.storage_path)),
               role: (typeof vi === 'object' && vi.role ? vi.role : viIdx === 0 ? 'hero' : 'gallery') as ProductImageRole,
               isPrimary: Boolean(vi.isPrimary),
               sortOrder: vi.sortOrder || viIdx + 1,
@@ -246,14 +250,16 @@ export const productService = {
           id: item.id,
           slug: item.slug,
           name: item.name,
-          category: (item.category?.slug as ProductCategory) || 'sarees',
+          category: (item.category?.slug || item.category_slug || item.category) as ProductCategory || 'sarees',
           categoryId: item.category_id,
           collectionId: item.collection_id,
-          subCategory: item.weave || item.metadata?.subCategory || undefined,
+          subCategory: item.metadata?.sareeType || item.metadata?.subCategory || item.weave || undefined,
+          metadata: item.metadata || {},
           categoryLabel: item.category?.name || 'Sarees',
           tag: item.metadata?.tag || (item.new_arrival ? 'New Arrival' : undefined),
           sku: item.sku || '',
           price: Number(item.price),
+          gstRate: item.gst_rate === null || item.gst_rate === undefined ? null : Number(item.gst_rate),
           mrp: item.mrp ? Number(item.mrp) : undefined,
           status: item.status || 'active',
           onSale: Boolean(item.mrp && Number(item.mrp) > Number(item.price)),
@@ -283,8 +289,9 @@ export const productService = {
       });
 
       return mapped;
-    } catch {
-      return PRODUCTS;
+    } catch (err) {
+      console.error('[productService.getProducts] Unexpected storefront mapping error:', err);
+      return [];
     }
   },
 

@@ -38,22 +38,44 @@ export function normalizeImageUrl(url?: string | null): string {
     }
   }
 
-  // 2. Already a full HTTP/HTTPS URL
-  if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
-    return trimmed;
+  // 2. Google Drive share links are not direct image URLs. Convert common share
+  // formats to the public file endpoint used by <img> elements.
+  if (/^(https?:\/\/)?(drive\.google\.com|docs\.google\.com)\//i.test(trimmed)) {
+    const idFromPath = trimmed.match(/\/file\/d\/([a-zA-Z0-9_-]+)/)?.[1];
+    const idFromQuery = (() => {
+      try { return new URL(trimmed.startsWith('http') ? trimmed : `https://${trimmed}`).searchParams.get('id'); }
+      catch { return null; }
+    })();
+    const driveId = idFromPath || idFromQuery;
+    if (driveId) return `https://drive.google.com/uc?export=view&id=${encodeURIComponent(driveId)}`;
   }
 
-  // 3. Base64 data URL
+  // 3. Already a full HTTP/HTTPS URL
+  if (/^https?:\/\//i.test(trimmed)) {
+    return trimmed;
+  }
+  if (trimmed.startsWith('//')) {
+    return `https:${trimmed}`;
+  }
+
+  // 4. Repair relative Supabase Storage URLs emitted by older imports.
+  // Example: /storage/v1/object/public/store-assets/catalog/saree.jpg
+  const relativeStorage = trimmed.match(/^\/?storage\/v1\/object\/public\/([^/]+)\/(.+)$/i);
+  if (relativeStorage && SUPABASE_URL) {
+    return `${SUPABASE_URL.replace(/\/$/, '')}/storage/v1/object/public/${relativeStorage[1]}/${relativeStorage[2].split('/').map(encodeURIComponent).join('/')}`;
+  }
+
+  // 5. Base64 data URL
   if (trimmed.startsWith('data:image/')) {
     return trimmed;
   }
 
-  // 4. Vite asset bundle URL (e.g. /assets/xxx.jpg or /@fs/...)
+  // 6. Vite asset bundle URL (e.g. /assets/xxx.jpg or /@fs/...)
   if (trimmed.startsWith('/assets/') || trimmed.startsWith('/@fs/')) {
     return trimmed;
   }
 
-  // 5. Supabase Storage path resolution
+  // 7. Supabase Storage path resolution
   if (SUPABASE_URL && !SUPABASE_URL.includes('placeholder') && !SUPABASE_URL.includes('your-project')) {
     const cleanPath = trimmed.startsWith(`${DEFAULT_BUCKET}/`)
       ? trimmed.slice(DEFAULT_BUCKET.length + 1)

@@ -33,19 +33,30 @@ export const orderService = {
     }
 
     if (!isSupabaseConfigured()) {
-      const subtotal = items.reduce((sum, i) => sum + i.product.price * i.quantity, 0);
       return {
-        isValid: true,
+        isValid: false,
         hasPriceChanges: false,
-        hasStockError: false,
-        authoritativeSubtotal: subtotal,
-        validatedItems: items,
+        hasStockError: true,
+        stockErrorMessage: 'Checkout is temporarily unavailable. Please try again shortly.',
+        authoritativeSubtotal: 0,
+        validatedItems: [],
+      };
+    }
+
+    if (items.some((item) => !Number.isSafeInteger(item.quantity) || item.quantity <= 0 || item.quantity > 2_147_483_647 || !item.product?.id)) {
+      return {
+        isValid: false,
+        hasPriceChanges: false,
+        hasStockError: true,
+        stockErrorMessage: 'Your bag contains an invalid item quantity or product. Please refresh your bag.',
+        authoritativeSubtotal: 0,
+        validatedItems: [],
       };
     }
 
     try {
       const productIds = Array.from(new Set(items.map((i) => i.product.id)));
-      const { data: dbProducts } = await (supabase as any)
+      const { data: dbProducts, error: productQueryError } = await (supabase as any)
         .from('products')
         .select(`
           id,
@@ -56,27 +67,51 @@ export const orderService = {
         `)
         .in('id', productIds);
 
+      if (productQueryError) throw productQueryError;
+      if (!Array.isArray(dbProducts)) throw new Error('Product validation returned no usable data.');
+
       const priceChangeMessages: string[] = [];
       let hasStockError = false;
       let stockErrorMessage = '';
       let authoritativeSubtotal = 0;
+      const seenVariants = new Set<string>();
 
       const validatedItems: CartItem[] = items.map((item) => {
         const dbProd = dbProducts?.find((p: any) => p.id === item.product.id);
-        if (!dbProd || dbProd.status === 'archived') {
+        if (!dbProd || dbProd.status !== 'active') {
           hasStockError = true;
           stockErrorMessage = `"${item.product.name}" is no longer available in catalog.`;
           return item;
         }
 
         // Find relevant variant
-        const dbVariant = dbProd.variants?.find((v: any) =>
-          item.variantId ? v.id === item.variantId : true
-        );
+        const availableVariants = (dbProd.variants || []).filter((v: any) => v.is_active !== false);
+        const dbVariant = item.variantId
+          ? availableVariants.find((v: any) => v.id === item.variantId)
+          : availableVariants.length === 1 ? availableVariants[0] : undefined;
 
-        const currentPrice = Number(dbVariant?.price_override || dbProd.price || item.product.price);
-        const physicalStock = Number(dbVariant?.stock_quantity ?? 10);
-        const reservedStock = Number(dbVariant?.reserved_quantity ?? 0);
+        if (!dbVariant) {
+          hasStockError = true;
+          stockErrorMessage = `"${item.product.name}" has no valid selected variant. Please refresh your bag and try again.`;
+          return item;
+        }
+        if (seenVariants.has(dbVariant.id)) {
+          hasStockError = true;
+          stockErrorMessage = 'Your bag contains the same product variant more than once. Please refresh your bag.';
+          return item;
+        }
+        seenVariants.add(dbVariant.id);
+
+        const currentPrice = Number(dbVariant.price_override ?? dbProd.price);
+        const physicalStock = Number(dbVariant.stock_quantity);
+        const reservedStock = Number(dbVariant.reserved_quantity ?? 0);
+        if (!Number.isFinite(currentPrice) || currentPrice < 0 ||
+            !Number.isFinite(physicalStock) || !Number.isFinite(reservedStock) ||
+            physicalStock < 0 || reservedStock < 0) {
+          hasStockError = true;
+          stockErrorMessage = `Unable to verify price or stock for "${item.product.name}". Please try again.`;
+          return item;
+        }
         const availableStock = Math.max(0, physicalStock - reservedStock);
 
         if (availableStock < item.quantity) {
@@ -96,6 +131,7 @@ export const orderService = {
 
         return {
           ...item,
+          variantId: dbVariant.id,
           product: {
             ...item.product,
             price: currentPrice,
@@ -113,14 +149,15 @@ export const orderService = {
         authoritativeSubtotal,
         validatedItems,
       };
-    } catch {
-      const subtotal = items.reduce((sum, i) => sum + i.product.price * i.quantity, 0);
+    } catch (error) {
+      console.error('Checkout catalog validation failed:', error);
       return {
-        isValid: true,
+        isValid: false,
         hasPriceChanges: false,
-        hasStockError: false,
-        authoritativeSubtotal: subtotal,
-        validatedItems: items,
+        hasStockError: true,
+        stockErrorMessage: 'We could not verify current prices and stock. Please try again.',
+        authoritativeSubtotal: 0,
+        validatedItems: [],
       };
     }
   },
@@ -138,12 +175,13 @@ export const orderService = {
     billingAddress?: CustomerAddress;
     items: CartItem[];
     paymentMethod: 'online' | 'cod';
+    couponCode?: string;
     notes?: string;
   }): Promise<{ success: boolean; orderId?: string; orderNumber?: string; guestAccessToken?: string; error?: string }> {
-    const { userId, customerName, customerEmail, customerPhone, shippingAddress, billingAddress, items, paymentMethod, notes } = params;
+    const { userId, customerName, customerEmail, customerPhone, shippingAddress, billingAddress, items, paymentMethod, couponCode, notes } = params;
 
     // Idempotency lock
-    const lockKey = `${userId || customerEmail || 'guest'}-${items.map((i) => `${i.product.id}:${i.quantity}`).join(',')}`;
+    const lockKey = `${userId || customerEmail || 'guest'}-${items.map((i) => `${i.product.id}:${i.variantId || 'missing-variant'}:${i.quantity}`).join(',')}`;
     if (activeSubmissionLocks.has(lockKey)) {
       return { success: false, error: 'An order request is already processing. Please wait a moment.' };
     }
@@ -185,10 +223,11 @@ export const orderService = {
             ...(token ? { Authorization: `Bearer ${token}` } : {}),
           },
           body: JSON.stringify({
-            items,
+            items: validation.validatedItems,
             shippingAddress: normalizedShipping,
             billingAddress: normalizedBilling,
             paymentMethod,
+            couponCode: couponCode?.trim().toUpperCase() || undefined,
             customerName: customerName || normalizedShipping.recipientName,
             customerEmail: customerEmail || normalizedShipping.email,
             customerPhone: customerPhone || normalizedShipping.phone,
@@ -196,83 +235,12 @@ export const orderService = {
           }),
         });
 
-        if (serverResponse.ok) {
-          const srvData = await serverResponse.json();
-          if (srvData.success && srvData.orderId) {
-            if (paymentMethod === 'cod') {
-              cartService.clearGuestCart();
-            }
-            return {
-              success: true,
-              orderId: srvData.orderId,
-              orderNumber: srvData.orderNumber,
-              guestAccessToken: srvData.guestAccessToken,
-            };
-          }
-        }
-      } catch (srvErr) {
-        console.warn('Backend /api/orders/create call fell back to direct client insertion:', srvErr);
-      }
-
-      const subtotal = validation.authoritativeSubtotal;
-      const shippingAmount = 0; // Neutral shipping foundation (finalized during delivery configuration)
-      const taxAmount = 0; // Tax calculation foundation
-      const discountAmount = 0;
-      const totalAmount = subtotal + shippingAmount + taxAmount - discountAmount;
-
-      const dateStr = new Date().toISOString().slice(0, 7).replace('-', '');
-      const randomSeq = Math.floor(1000 + Math.random() * 9000);
-      const generatedOrderNumber = `VKV-${dateStr}-${randomSeq}`;
-      const generatedGuestToken = !userId ? Array.from(crypto.getRandomValues(new Uint8Array(24))).map(b => b.toString(16).padStart(2, '0')).join('') : undefined;
-
-      if (!isSupabaseConfigured()) {
-        // Local simulation fallback
-        const mockOrderId = `ord-${Date.now()}`;
-        const mockOrder: OrderData = {
-          id: mockOrderId,
-          orderNumber: generatedOrderNumber,
-          userId,
-          customerName: customerName || normalizedShipping.recipientName,
-          customerEmail: customerEmail || normalizedShipping.email,
-          customerPhone: customerPhone || normalizedShipping.phone,
-          isGuest: !userId,
-          shippingAddressSnapshot: { ...normalizedShipping, guestAccessToken: generatedGuestToken },
-          billingAddressSnapshot: { ...normalizedBilling, guestAccessToken: generatedGuestToken },
-          subtotal,
-          discountAmount,
-          shippingAmount,
-          taxAmount,
-          totalAmount,
-          currency: 'INR',
-          paymentStatus: 'pending',
-          orderStatus: paymentMethod === 'cod' ? 'confirmed' : 'pending',
-          paymentMethod,
-          notes,
-          items: items.map((i) => ({
-            productName: i.product.name,
-            sku: i.product.sku || i.product.slug,
-            price: i.product.price,
-            quantity: i.quantity,
-            totalAmount: i.product.price * i.quantity,
-            primaryImage: i.product.primaryImage,
-            productMetadata: {
-              color: i.selectedColor,
-              size: i.selectedSize,
-              category: i.product.categoryLabel,
-            },
-          })),
-          createdAt: new Date().toISOString(),
-        };
-
-        const storageKey = userId ? `vk_orders_${userId}` : 'vk_orders_guest';
-        const existingMockOrders = JSON.parse(localStorage.getItem(storageKey) || '[]');
-        existingMockOrders.unshift(mockOrder);
-        localStorage.setItem(storageKey, JSON.stringify(existingMockOrders));
-
-        if (!userId) {
-          const allGuests = JSON.parse(localStorage.getItem('vk_all_guest_orders') || '[]');
-          allGuests.unshift(mockOrder);
-          localStorage.setItem('vk_all_guest_orders', JSON.stringify(allGuests));
+        const srvData = await serverResponse.json().catch(() => ({}));
+        if (!serverResponse.ok || !srvData.success || !srvData.orderId) {
+          return {
+            success: false,
+            error: srvData.error || 'The order service could not create your order. Please try again.',
+          };
         }
 
         if (paymentMethod === 'cod') {
@@ -280,104 +248,18 @@ export const orderService = {
         }
         return {
           success: true,
-          orderId: mockOrderId,
-          orderNumber: generatedOrderNumber,
-          guestAccessToken: generatedGuestToken,
+          orderId: srvData.orderId,
+          orderNumber: srvData.orderNumber,
+          guestAccessToken: srvData.guestAccessToken,
+        };
+      } catch (srvErr) {
+        console.error('Backend order creation request failed:', srvErr);
+        return {
+          success: false,
+          error: 'Unable to reach the order service. No order was created. Please try again.',
         };
       }
 
-      // 3. Insert into public.orders
-      const completeShippingSnapshot = {
-        ...normalizedShipping,
-        ...(generatedGuestToken ? { guestAccessToken: generatedGuestToken } : {}),
-      };
-      const completeBillingSnapshot = {
-        ...normalizedBilling,
-        ...(generatedGuestToken ? { guestAccessToken: generatedGuestToken } : {}),
-      };
-
-      const { data: createdOrder, error: orderError } = await (supabase as any)
-        .from('orders')
-        .insert({
-          user_id: userId || null,
-          customer_name: customerName || normalizedShipping.recipientName || null,
-          customer_email: customerEmail || normalizedShipping.email || null,
-          customer_phone: customerPhone || normalizedShipping.phone || null,
-          is_guest: !userId,
-          order_number: generatedOrderNumber,
-          shipping_address_snapshot: completeShippingSnapshot,
-          billing_address_snapshot: completeBillingSnapshot,
-          subtotal,
-          discount_amount: discountAmount,
-          shipping_amount: shippingAmount,
-          tax_amount: taxAmount,
-          total_amount: totalAmount,
-          currency: 'INR',
-          payment_status: 'pending',
-          order_status: paymentMethod === 'cod' ? 'confirmed' : 'pending',
-          notes: notes || null,
-        })
-        .select('id, order_number')
-        .single();
-
-      if (orderError || !createdOrder) {
-        return { success: false, error: orderError?.message || 'Database error creating order.' };
-      }
-
-      const orderId = createdOrder.id;
-
-      // 4. Insert into public.order_items (immutable snapshots)
-      const orderItemRows = items.map((item) => ({
-        order_id: orderId,
-        product_variant_id: item.variantId || null,
-        product_name_snapshot: item.product.name,
-        sku_snapshot: item.product.sku || item.product.slug,
-        price_snapshot: item.product.price,
-        quantity: item.quantity,
-        total_amount: item.product.price * item.quantity,
-        product_metadata_snapshot: {
-          color: item.selectedColor || null,
-          size: item.selectedSize || null,
-          category: item.product.categoryLabel || null,
-          primaryImage: item.product.primaryImage || null,
-        },
-      }));
-
-      const { error: itemsError } = await (supabase as any)
-        .from('order_items')
-        .insert(orderItemRows);
-
-      if (itemsError) {
-        return { success: false, error: itemsError.message || 'Error attaching order items.' };
-      }
-
-      // 5. Record initial payment record in public.payments
-      await (supabase as any).from('payments').insert({
-        order_id: orderId,
-        provider: paymentMethod === 'cod' ? 'cod' : 'razorpay',
-        amount: totalAmount,
-        currency: 'INR',
-        status: 'pending',
-        method: paymentMethod === 'cod' ? 'Cash on Delivery' : 'Online Payment (Razorpay Pending)',
-      });
-
-      // 6. Convert/Clear active cart only if COD (online payment clears upon success)
-      if (paymentMethod === 'cod') {
-        if (userId) {
-          const cartId = await cartService.getOrCreateUserCartId(userId);
-          if (cartId) {
-            await (supabase as any).from('cart_items').delete().eq('cart_id', cartId);
-          }
-        }
-        cartService.clearGuestCart();
-      }
-
-      return {
-        success: true,
-        orderId,
-        orderNumber: createdOrder.order_number,
-        guestAccessToken: generatedGuestToken,
-      };
     } catch (err: any) {
       return { success: false, error: err?.message || 'Unexpected error creating order.' };
     } finally {
@@ -427,6 +309,14 @@ export const orderService = {
           currency: ord.currency || 'INR',
           paymentStatus: ord.payment_status,
           orderStatus: ord.order_status,
+          refundStatus: ord.refund_status || 'not_applicable',
+          cancelledAt: ord.cancelled_at || null,
+          cancellationReason: ord.cancellation_reason || '',
+          courierName: ord.courier_name || '',
+          trackingNumber: ord.tracking_number || '',
+          trackingUrl: ord.tracking_url || '',
+          shippedAt: ord.shipped_at || null,
+          deliveredAt: ord.delivered_at || null,
           paymentMethod: paymentRecord?.provider === 'cod' ? 'cod' : 'online',
           payment: paymentRecord
             ? {
@@ -616,6 +506,14 @@ export const orderService = {
           currency: ord.currency || 'INR',
           paymentStatus: ord.payment_status,
           orderStatus: ord.order_status,
+          refundStatus: ord.refund_status || 'not_applicable',
+          cancelledAt: ord.cancelled_at || null,
+          cancellationReason: ord.cancellation_reason || '',
+          courierName: ord.courier_name || '',
+          trackingNumber: ord.tracking_number || '',
+          trackingUrl: ord.tracking_url || '',
+          shippedAt: ord.shipped_at || null,
+          deliveredAt: ord.delivered_at || null,
           paymentMethod: paymentRecord?.provider === 'cod' ? 'cod' : 'online',
           payment: paymentRecord
             ? {

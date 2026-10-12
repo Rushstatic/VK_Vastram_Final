@@ -7,11 +7,14 @@ import { fileURLToPath } from 'url';
 import { createServer as createViteServer } from 'vite';
 import { createClient } from '@supabase/supabase-js';
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { invokeCheckedRpc, OrderSafetyError, validateOrderLines } from './server/orderSafety.ts';
 
 dotenv.config();
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const isProduction = process.env.NODE_ENV === 'production';
+// Development identity/admin shortcuts must be explicitly opted into and can never run in production.
+const allowDevelopmentAuth = !isProduction && process.env.ALLOW_DEV_AUTH === 'true';
 const PORT = 3000;
 
 // Configuration variables
@@ -42,6 +45,45 @@ const supabaseAdmin: SupabaseClient | null =
     : null;
 
 const db = useSupabase ? supabaseAdmin : null;
+
+/** Sends queued restock notices when Resend is configured; never fails inventory commits. */
+async function dispatchReadyBackInStockEmails(variantId: string): Promise<void> {
+  if (!db || !process.env.RESEND_API_KEY || !process.env.RESEND_FROM_EMAIL || !(process.env.SITE_URL || process.env.APP_URL)) return;
+  try {
+    const { data: variant, error: variantError } = await db.from('product_variants')
+      .select('id,product_id,variant_name,sku,products(name,slug)')
+      .eq('id', variantId).maybeSingle();
+    if (variantError || !variant) return;
+    const productRecord = Array.isArray((variant as any).products) ? (variant as any).products[0] : (variant as any).products;
+    const productName = String(productRecord?.name || 'VK VASTRAM product');
+    const baseUrl = String(process.env.SITE_URL || process.env.APP_URL || '').replace(/\/$/, '');
+    const productUrl = baseUrl && productRecord?.slug ? `${baseUrl}/product/${encodeURIComponent(productRecord.slug)}` : baseUrl;
+    const { data: subscriptions, error: subscriptionError } = await db.from('back_in_stock_subscriptions')
+      .select('id,email').eq('product_variant_id', variantId).eq('status', 'ready').limit(100);
+    if (subscriptionError || !subscriptions?.length) return;
+    for (const subscription of subscriptions) {
+      try {
+        const response = await fetch('https://api.resend.com/emails', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${process.env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            from: process.env.RESEND_FROM_EMAIL,
+            to: [subscription.email],
+            subject: `${productName} is back in stock | VK VASTRAM`,
+            html: `<div style="font-family:Georgia,serif;color:#1c1917;max-width:600px;margin:24px auto;line-height:1.6"><h1 style="color:#78281f;font-weight:normal">A drape you loved is available again.</h1><p><strong>${productName.replace(/[&<>"']/g, (c: string) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c] || c))}</strong>${variant.variant_name ? ` — ${String(variant.variant_name).replace(/[&<>"']/g, '')}` : ''} is back in stock.</p>${productUrl ? `<p><a href="${productUrl}" style="display:inline-block;background:#1c1917;color:#fff;padding:12px 18px;text-decoration:none">View product</a></p>` : ''}<p style="font-size:12px;color:#78716c">You received this because you requested a restock notification from VK VASTRAM.</p></div>`
+          })
+        });
+        if (!response.ok) continue;
+        await db.from('back_in_stock_subscriptions').update({ status: 'notified', notified_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq('id', subscription.id).eq('status', 'ready');
+      } catch (emailError) {
+        console.warn('[back-in-stock] email delivery failed for queued subscription');
+      }
+    }
+  } catch (error) {
+    console.warn('[back-in-stock] unable to dispatch ready subscriptions');
+  }
+}
+
 
 // In-memory processed webhook cache for fast lookup optimization
 const processedWebhookEventIds = new Set<string>();
@@ -138,23 +180,8 @@ function verifyOrderAccess(
   }
 
   // 3. Guest order (order.user_id is null)
-  // If user is logged in and their email matches the order snapshot email
-  if (req.user?.email) {
-    const orderEmail =
-      order.customer_email ||
-      order.shipping_address_snapshot?.email ||
-      order.shipping_address_snapshot?.customerEmail;
-    if (orderEmail && orderEmail.toLowerCase() === req.user.email.toLowerCase()) {
-      return { authorized: true, statusCode: 200 };
-    }
-  }
-
   const providedGuestToken = extractGuestToken(req);
   if (!providedGuestToken) {
-    // If order was created without a token hash snapshot, allow
-    if (!order.guest_access_token_hash && !order.shipping_address_snapshot?.guest_access_token_hash && !order.shipping_address_snapshot?.guestAccessToken) {
-      return { authorized: true, statusCode: 200 };
-    }
     return {
       authorized: false,
       statusCode: 401,
@@ -165,13 +192,7 @@ function verifyOrderAccess(
   const providedHash = hashGuestToken(providedGuestToken);
 
   let tokenMatches = false;
-  const snapshotHash =
-    order.shipping_address_snapshot?.guest_access_token_hash ||
-    order.shipping_address_snapshot?.guestAccessToken;
-  const rawToken =
-    order.guest_access_token ||
-    order.shipping_address_snapshot?.guestAccessToken ||
-    order.shipping_address_snapshot?.guest_access_token;
+  const snapshotHash = order.shipping_address_snapshot?.guest_access_token_hash;
 
   if (order.guest_access_token_hash) {
     tokenMatches = timingSafeCompare(providedHash, order.guest_access_token_hash);
@@ -181,15 +202,6 @@ function verifyOrderAccess(
       timingSafeCompare(providedHash, snapshotHash) ||
       timingSafeCompare(providedGuestToken, snapshotHash);
   }
-  if (!tokenMatches && rawToken) {
-    tokenMatches =
-      timingSafeCompare(providedHash, rawToken) ||
-      timingSafeCompare(providedGuestToken, rawToken);
-  }
-  if (!tokenMatches && !order.guest_access_token_hash && !snapshotHash && !rawToken) {
-    tokenMatches = true;
-  }
-
   if (!tokenMatches) {
     return {
       authorized: false,
@@ -211,15 +223,6 @@ interface InMemoryVariant {
 }
 
 const inMemoryStockMap = new Map<string, InMemoryVariant>();
-const inMemoryOrderReservations = new Map<
-  string,
-  {
-    orderId: string;
-    expiresAt: number;
-    status: 'reserved' | 'sold' | 'released';
-    items: { variant_id: string; quantity: number }[];
-  }
->();
 const inMemoryOrdersMap = new Map<string, any>();
 const inMemoryReviewsMap = new Map<string, any>();
 
@@ -228,96 +231,6 @@ function withStockMutex<T>(fn: () => Promise<T> | T): Promise<T> {
   const next = inMemoryStockMutex.then(() => fn());
   inMemoryStockMutex = next.then(() => {}, () => {});
   return next;
-}
-
-async function reserveInMemoryStock(
-  orderId: string,
-  items: { variant_id: string; quantity: number }[],
-  reservationMinutes: number = 15
-): Promise<{ success: boolean; error?: string; message?: string }> {
-  return withStockMutex(() => {
-    const now = Date.now();
-    for (const [, res] of inMemoryOrderReservations.entries()) {
-      if (res.status === 'reserved' && res.expiresAt < now) {
-        for (const item of res.items) {
-          const v = inMemoryStockMap.get(item.variant_id);
-          if (v) {
-            v.reserved_quantity = Math.max(0, v.reserved_quantity - item.quantity);
-          }
-        }
-        res.status = 'released';
-      }
-    }
-
-    const sortedItems = [...items].sort((a, b) => (a.variant_id || '').localeCompare(b.variant_id || ''));
-
-    for (const item of sortedItems) {
-      if (!item.variant_id || !item.quantity || item.quantity <= 0) continue;
-      let v = inMemoryStockMap.get(item.variant_id);
-      if (!v) {
-        v = { variant_id: item.variant_id, stock_quantity: 10, reserved_quantity: 0 };
-        inMemoryStockMap.set(item.variant_id, v);
-      }
-      const available = v.stock_quantity - v.reserved_quantity;
-      if (available < item.quantity) {
-        return {
-          success: false,
-          error: 'INSUFFICIENT_STOCK',
-          message: 'One or more items are no longer available in the requested quantity.',
-        };
-      }
-    }
-
-    for (const item of sortedItems) {
-      if (!item.variant_id || !item.quantity || item.quantity <= 0) continue;
-      const v = inMemoryStockMap.get(item.variant_id)!;
-      v.reserved_quantity += item.quantity;
-    }
-
-    inMemoryOrderReservations.set(orderId, {
-      orderId,
-      expiresAt: Date.now() + reservationMinutes * 60 * 1000,
-      status: 'reserved',
-      items: sortedItems,
-    });
-
-    return { success: true };
-  });
-}
-
-async function confirmInMemorySale(orderId: string): Promise<{ success: boolean }> {
-  return withStockMutex(() => {
-    const res = inMemoryOrderReservations.get(orderId);
-    if (!res || res.status === 'sold') {
-      return { success: true };
-    }
-    for (const item of res.items) {
-      const v = inMemoryStockMap.get(item.variant_id);
-      if (v) {
-        v.stock_quantity = Math.max(0, v.stock_quantity - item.quantity);
-        v.reserved_quantity = Math.max(0, v.reserved_quantity - item.quantity);
-      }
-    }
-    res.status = 'sold';
-    return { success: true };
-  });
-}
-
-async function releaseInMemoryReservation(orderId: string): Promise<{ success: boolean }> {
-  return withStockMutex(() => {
-    const res = inMemoryOrderReservations.get(orderId);
-    if (!res || res.status !== 'reserved') {
-      return { success: true };
-    }
-    for (const item of res.items) {
-      const v = inMemoryStockMap.get(item.variant_id);
-      if (v) {
-        v.reserved_quantity = Math.max(0, v.reserved_quantity - item.quantity);
-      }
-    }
-    res.status = 'released';
-    return { success: true };
-  });
 }
 
 async function returnInMemoryStock(variantId: string, quantity: number): Promise<{ success: boolean }> {
@@ -338,7 +251,7 @@ async function returnInMemoryStock(variantId: string, quantity: number): Promise
 async function authenticateUser(req: AuthenticatedRequest, res: Response, next: () => void) {
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    if (!supabaseAdmin) {
+    if (allowDevelopmentAuth && !supabaseAdmin) {
       req.user = {
         id: 'guest-or-dev-user',
         email: 'customer@vkvastram.com',
@@ -346,14 +259,19 @@ async function authenticateUser(req: AuthenticatedRequest, res: Response, next: 
       };
       return next();
     }
-    res.status(401).json({ success: false, error: 'Authorization header missing or invalid.' });
+    res.status(!supabaseAdmin && isProduction ? 503 : 401).json({
+      success: false,
+      error: !supabaseAdmin && isProduction
+        ? 'Authentication service is unavailable.'
+        : 'Authorization header missing or invalid.',
+    });
     return;
   }
 
   const token = authHeader.replace('Bearer ', '').trim();
 
-  // Support test simulation tokens even when Supabase is configured
-  if (token.startsWith('user_') || token.startsWith('mock_') || token.startsWith('dev_')) {
+  // Never accept simulated identities unless explicitly enabled for local development.
+  if (allowDevelopmentAuth && (token.startsWith('user_') || token.startsWith('mock_') || token.startsWith('dev_'))) {
     const parts = token.split('_');
     const isUnverified = token.toLowerCase().includes('unverified');
     req.user = {
@@ -365,12 +283,16 @@ async function authenticateUser(req: AuthenticatedRequest, res: Response, next: 
   }
 
   if (!supabaseAdmin) {
-    req.user = {
-      id: 'dev-user',
-      email: 'customer@vkvastram.com',
-      email_confirmed_at: new Date().toISOString(),
-    };
-    return next();
+    if (allowDevelopmentAuth) {
+      req.user = {
+        id: 'dev-user',
+        email: 'customer@vkvastram.com',
+        email_confirmed_at: new Date().toISOString(),
+      };
+      return next();
+    }
+    res.status(503).json({ success: false, error: 'Authentication service is unavailable.' });
+    return;
   }
 
   try {
@@ -410,8 +332,8 @@ async function optionalAuthenticateUser(req: AuthenticatedRequest, res: Response
 
   const token = authHeader.replace('Bearer ', '').trim();
 
-  // Support test simulation tokens even when Supabase is configured
-  if (token.startsWith('user_') || token.startsWith('mock_') || token.startsWith('dev_')) {
+  // Never accept simulated identities unless explicitly enabled for local development.
+  if (allowDevelopmentAuth && (token.startsWith('user_') || token.startsWith('mock_') || token.startsWith('dev_'))) {
     const parts = token.split('_');
     const isUnverified = token.toLowerCase().includes('unverified');
     req.user = {
@@ -423,12 +345,16 @@ async function optionalAuthenticateUser(req: AuthenticatedRequest, res: Response
   }
 
   if (!supabaseAdmin) {
-    req.user = {
-      id: 'dev-user',
-      email: 'customer@vkvastram.com',
-      email_confirmed_at: new Date().toISOString(),
-    };
-    return next();
+    if (allowDevelopmentAuth) {
+      req.user = {
+        id: 'dev-user',
+        email: 'customer@vkvastram.com',
+        email_confirmed_at: new Date().toISOString(),
+      };
+      return next();
+    }
+    res.status(503).json({ success: false, error: 'Authentication service is unavailable.' });
+    return;
   }
 
   try {
@@ -506,6 +432,15 @@ async function startServer() {
         const { orderId } = req.body;
         const userId = req.user?.id;
 
+        if (!db || (isProduction && !SUPABASE_SERVICE_ROLE_KEY)) {
+          res.status(503).json({ success: false, error: 'Persistent payment storage is unavailable.' });
+          return;
+        }
+        if (isProduction && (!RAZORPAY_KEY_ID || !RAZORPAY_KEY_SECRET || RAZORPAY_KEY_SECRET.includes('placeholder'))) {
+          res.status(503).json({ success: false, error: 'Razorpay is not configured.' });
+          return;
+        }
+
         if (!orderId) {
           res.status(400).json({ success: false, error: 'Order ID is required.' });
           return;
@@ -521,9 +456,7 @@ async function startServer() {
         // 1. Authoritative lookup from Supabase Database
         // IGNORE any client-supplied amount, total, or discounts
         let order: any = null;
-        if (inMemoryOrdersMap.has(orderId)) {
-          order = inMemoryOrdersMap.get(orderId);
-        } else if (db) {
+        if (db) {
           const { data, error } = await db
             .from('orders')
             .select(`
@@ -535,28 +468,18 @@ async function startServer() {
               payment_status,
               order_status,
               reservation_expires_at,
-              shipping_address_snapshot
+              shipping_address_snapshot,
+              guest_access_token_hash
             `)
             .eq('id', orderId)
-            .single();
-          if (!error && data) {
-            order = data;
-          }
+            .maybeSingle();
+          if (error) throw error;
+          if (data) order = data;
         }
 
         if (!order) {
-          order = {
-            id: orderId,
-            order_number: `VKV-${Date.now()}`,
-            user_id: userId || null,
-            total_amount: 5000,
-            currency: 'INR',
-            payment_status: 'pending',
-            order_status: 'pending',
-            reservation_expires_at: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
-            shipping_address_snapshot: { recipientName: customerName, email: customerEmail, phone: customerPhone },
-          };
-          inMemoryOrdersMap.set(orderId, order);
+          res.status(db ? 404 : (isProduction ? 503 : 404)).json({ success: false, error: 'Order not found.' });
+          return;
         }
 
         let isAdmin = false;
@@ -578,7 +501,7 @@ async function startServer() {
 
           // Status Validation: Check if already paid or cancelled
           if (order.payment_status === 'captured') {
-            res.status(400).json({
+            res.status(409).json({
               success: false,
               error: 'Order has already been paid and finalized.',
             });
@@ -586,53 +509,16 @@ async function startServer() {
           }
 
           if (order.order_status === 'cancelled') {
-            res.status(400).json({
+            res.status(409).json({
               success: false,
               error: 'Cannot initiate payment for a cancelled order.',
             });
             return;
           }
 
-          // Check if reservation has expired and attempt atomic re-reservation
-          if ((order as any).reservation_expires_at) {
-            const isExpired = new Date((order as any).reservation_expires_at).getTime() < Date.now();
-          if (isExpired && order.payment_status === 'pending') {
-            const dbToUse = db || supabaseAdmin;
-            if (dbToUse) {
-              const { data: fetchedItems } = await dbToUse
-                .from('order_items')
-                .select('product_variant_id, quantity')
-                .eq('order_id', orderId);
-
-              const reservationItems = (fetchedItems || [])
-                .map((i: any) => ({
-                  variant_id: i.product_variant_id,
-                  quantity: i.quantity,
-                }))
-                .filter((i: any) => i.variant_id);
-
-              if (reservationItems.length > 0) {
-                const { data: reRes, error: reErr } = await dbToUse.rpc(
-                  'reserve_inventory_for_order',
-                  {
-                    p_order_id: orderId,
-                    p_items: reservationItems,
-                    p_reservation_minutes: 15,
-                  }
-                );
-
-                if (reErr || (reRes && !reRes.success)) {
-                  res.status(409).json({
-                    success: false,
-                    error: 'INSUFFICIENT_STOCK',
-                    message:
-                      'Your payment reservation has expired and the requested items are no longer available in stock. Please return to your shopping bag.',
-                  });
-                  return;
-                }
-              }
-            }
-          }
+          if (order.reservation_expires_at && new Date(order.reservation_expires_at).getTime() <= Date.now()) {
+            res.status(410).json({ success: false, error: 'Order inventory reservation has expired.' });
+            return;
           }
 
           // Read authoritative numbers directly from database record
@@ -672,7 +558,7 @@ async function startServer() {
         let razorpayOrderId = '';
 
         // 2. Create Razorpay Order via official API using server-side credentials
-        if (RAZORPAY_KEY_ID && RAZORPAY_KEY_SECRET && !RAZORPAY_KEY_ID.includes('placeholder')) {
+        if (RAZORPAY_KEY_ID && RAZORPAY_KEY_SECRET && !RAZORPAY_KEY_ID.includes('placeholder') && !RAZORPAY_KEY_SECRET.includes('placeholder')) {
           const authString = Buffer.from(`${RAZORPAY_KEY_ID}:${RAZORPAY_KEY_SECRET}`).toString('base64');
           const rzpResponse = await fetch('https://api.razorpay.com/v1/orders', {
             method: 'POST',
@@ -705,20 +591,26 @@ async function startServer() {
           const rzpData = await rzpResponse.json();
           razorpayOrderId = rzpData.id;
         } else {
-          // Test sandbox simulation ID when test credentials are simulated
-          razorpayOrderId = `order_test_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+          res.status(503).json({ success: false, error: 'Razorpay is not configured.' });
+          return;
         }
 
         // 3. Persist Razorpay Order ID in database payments table
-        if (db) {
-          const { data: existingPayment } = await db
+        if (!supabaseAdmin) {
+          res.status(503).json({ success: false, error: 'Persistent payment storage is unavailable.' });
+          return;
+        }
+        if (supabaseAdmin) {
+          const { data: existingPayment, error: lookupPaymentError } = await supabaseAdmin
             .from('payments')
             .select('id')
             .eq('order_id', orderId)
             .maybeSingle();
 
+          if (lookupPaymentError) throw lookupPaymentError;
+
           if (existingPayment) {
-            await db
+            const { error: paymentUpdateError } = await supabaseAdmin
               .from('payments')
               .update({
                 provider: 'razorpay',
@@ -730,8 +622,9 @@ async function startServer() {
                 updated_at: new Date().toISOString(),
               })
               .eq('id', existingPayment.id);
+            if (paymentUpdateError) throw paymentUpdateError;
           } else {
-            await db.from('payments').insert({
+            const { error: paymentInsertError } = await supabaseAdmin.from('payments').insert({
               order_id: orderId,
               provider: 'razorpay',
               provider_order_id: razorpayOrderId,
@@ -740,12 +633,13 @@ async function startServer() {
               status: 'pending',
               method: 'Razorpay Online',
             });
+            if (paymentInsertError) throw paymentInsertError;
           }
         }
 
         res.json({
           success: true,
-          keyId: RAZORPAY_KEY_ID || 'rzp_test_vastram_demo',
+          keyId: RAZORPAY_KEY_ID,
           razorpayOrderId,
           amount: amountInPaise,
           currency,
@@ -789,6 +683,38 @@ async function startServer() {
           return;
         }
 
+        if (!supabaseAdmin || !db || (isProduction && !SUPABASE_SERVICE_ROLE_KEY)) {
+          res.status(503).json({ success: false, verified: false, error: 'Persistent payment storage is unavailable.' });
+          return;
+        }
+
+        const { data: authorizedOrder, error: authorizedOrderError } = await supabaseAdmin
+          .from('orders').select('id, order_number, user_id, total_amount, currency, payment_status, order_status, shipping_address_snapshot, guest_access_token_hash')
+          .eq('id', orderId).maybeSingle();
+        if (authorizedOrderError) throw authorizedOrderError;
+        if (!authorizedOrder) {
+          res.status(404).json({ success: false, verified: false, error: 'Order not found.' });
+          return;
+        }
+        let authorizedAdmin = false;
+        if (req.user) {
+          const { data: profile, error: profileError } = await supabaseAdmin.from('profiles').select('role').eq('id', req.user.id).maybeSingle();
+          if (profileError) throw profileError;
+          authorizedAdmin = profile?.role === 'admin';
+        }
+        const orderAccess = verifyOrderAccess(authorizedOrder, req, authorizedAdmin);
+        if (!orderAccess.authorized) {
+          res.status(orderAccess.statusCode).json({ success: false, verified: false, error: orderAccess.error });
+          return;
+        }
+        const { data: associatedPayment, error: paymentLookupError } = await supabaseAdmin
+          .from('payments').select('id, provider_order_id, status, amount, currency').eq('order_id', orderId).maybeSingle();
+        if (paymentLookupError) throw paymentLookupError;
+        if (!associatedPayment || associatedPayment.provider_order_id !== razorpayOrderId || !associatedPayment.id) {
+          res.status(400).json({ success: false, verified: false, error: 'No matching persisted payment attempt.' });
+          return;
+        }
+
         // Step 2: CRYPTOGRAPHIC SIGNATURE VERIFICATION FIRST (BEFORE ANY IDEMPOTENCY / ALREADY-PAID SHORTCUT)
         let isSignatureValid = false;
 
@@ -799,40 +725,39 @@ async function startServer() {
             .digest('hex');
 
           try {
-            isSignatureValid = crypto.timingSafeEqual(
-              Buffer.from(generatedSignature, 'utf8'),
-              Buffer.from(razorpaySignature, 'utf8')
-            );
+            isSignatureValid = timingSafeCompare(generatedSignature, razorpaySignature);
           } catch {
             isSignatureValid = false;
           }
-        } else {
-          // In simulation test mode without real secrets:
-          isSignatureValid = Boolean(razorpaySignature && razorpayPaymentId);
         }
 
         // If signature is invalid: REJECT IMMEDIATELY. Never proceed to state transitions!
         if (!isSignatureValid) {
           console.warn(`[SECURITY] Cryptographic signature verification failed for order ${orderId}`);
 
-          if (supabaseAdmin) {
-            await supabaseAdmin
-              .from('payments')
-              .update({
-                status: 'failed',
-                provider_payment_id: razorpayPaymentId,
-                provider_signature: razorpaySignature,
-                error_reason: 'Cryptographic signature mismatch',
-                updated_at: new Date().toISOString(),
-              })
-              .eq('order_id', orderId);
-          }
-
           res.status(400).json({
             success: false,
             verified: false,
             error: 'Payment signature could not be verified. Your order has not been marked as paid.',
           });
+          return;
+        }
+
+        if (!RAZORPAY_KEY_ID || !RAZORPAY_KEY_SECRET || RAZORPAY_KEY_SECRET.includes('placeholder')) {
+          res.status(503).json({ success: false, verified: false, error: 'Razorpay verification is not configured.' });
+          return;
+        }
+        const providerResponse = await fetch(`https://api.razorpay.com/v1/payments/${encodeURIComponent(razorpayPaymentId)}`, {
+          headers: { Authorization: `Basic ${Buffer.from(`${RAZORPAY_KEY_ID}:${RAZORPAY_KEY_SECRET}`).toString('base64')}` },
+        });
+        if (!providerResponse.ok) {
+          res.status(502).json({ success: false, verified: false, error: 'Unable to confirm payment with Razorpay.' });
+          return;
+        }
+        const providerPayment: any = await providerResponse.json();
+        const expectedAmount = Math.round(Number(authorizedOrder.total_amount) * 100);
+        if (providerPayment.id !== razorpayPaymentId || providerPayment.order_id !== razorpayOrderId || providerPayment.status !== 'captured' || Number(providerPayment.amount) !== expectedAmount || providerPayment.currency !== (authorizedOrder.currency || 'INR') || Number(associatedPayment.amount) !== Number(authorizedOrder.total_amount) || associatedPayment.currency !== (authorizedOrder.currency || 'INR')) {
+          res.status(400).json({ success: false, verified: false, error: 'Razorpay payment does not match this order.' });
           return;
         }
 
@@ -870,11 +795,13 @@ async function startServer() {
 
           // Step 4: Strict Association Check:
           // Verify that this Razorpay Order ID matches the persisted payment record for this specific order!
-          const { data: paymentRecord } = await supabaseAdmin
+          const { data: paymentRecord, error: paymentRecordError } = await supabaseAdmin
             .from('payments')
             .select('id, provider_order_id, status')
             .eq('order_id', orderId)
             .maybeSingle();
+
+          if (paymentRecordError) throw paymentRecordError;
 
           if (
             paymentRecord &&
@@ -892,50 +819,34 @@ async function startServer() {
             return;
           }
 
-          // Step 5: Idempotency Check (ONLY AFTER SIGNATURE & ASSOCIATION VERIFIED)
-          if (order.payment_status === 'captured') {
-            res.json({
-              success: true,
-              verified: true,
-              orderId: order.id,
-              orderNumber: order.order_number,
-              message: 'Payment was already verified and captured.',
+          // Reconcile payment + order + inventory in one database transaction. The RPC locks
+          // the order row, matching the cancellation RPC's lock order to prevent races.
+          const { data: reconciliationResult, error: reconciliationError } = await supabaseAdmin.rpc(
+            'reconcile_captured_payment_for_order',
+            {
+              p_order_id: orderId,
+              p_provider_order_id: razorpayOrderId,
+              p_provider_payment_id: razorpayPaymentId,
+              p_provider_signature: razorpaySignature,
+            }
+          );
+          if (reconciliationError) throw reconciliationError;
+          if (!reconciliationResult || reconciliationResult.success !== true) {
+            throw new Error(reconciliationResult?.error || 'Atomic payment reconciliation failed');
+          }
+
+          if (reconciliationResult.refund_required === true) {
+            console.error(`[PAYMENT RECONCILIATION REQUIRED] Razorpay captured payment for cancelled order ${orderId}; order remains cancelled and inventory was not confirmed. Refund/manual review required.`);
+            res.status(409).json({
+              success: false,
+              verified: false,
+              captured: true,
+              refundRequired: true,
+              error: 'Payment was captured after the order was cancelled. The order remains cancelled and requires refund review.',
             });
             return;
           }
 
-          // Step 6: Transition Database State to CAPTURED & CONFIRMED
-          const now = new Date().toISOString();
-
-          await supabaseAdmin
-            .from('payments')
-            .update({
-              status: 'captured',
-              provider_order_id: razorpayOrderId,
-              provider_payment_id: razorpayPaymentId,
-              provider_signature: razorpaySignature,
-              verified_at: now,
-              updated_at: now,
-              method: 'Razorpay Online',
-            })
-            .eq('order_id', orderId);
-
-          await supabaseAdmin
-            .from('orders')
-            .update({
-              payment_status: 'captured',
-              order_status: 'confirmed',
-              updated_at: now,
-            })
-            .eq('id', orderId);
-
-          try {
-            await supabaseAdmin.rpc('confirm_inventory_sale_for_order', { p_order_id: orderId });
-          } catch {
-            await confirmInMemorySale(orderId);
-          }
-        } else {
-          await confirmInMemorySale(orderId);
         }
 
         res.json({
@@ -995,328 +906,77 @@ async function startServer() {
         const normalizedPincode = shippingAddress.pincode || shippingAddress.postalCode;
         shippingAddress.pincode = normalizedPincode;
 
+        if (!db || (isProduction && !SUPABASE_SERVICE_ROLE_KEY)) {
+          res.status(503).json({ success: false, error: 'Persistent order and inventory storage is unavailable.' });
+          return;
+        }
+        if (paymentMethod !== 'online' && paymentMethod !== 'cod') {
+          res.status(400).json({ success: false, error: 'Unsupported payment method.' });
+          return;
+        }
+
+        const orderLines = validateOrderLines(items);
         const userId = req.user?.id || null;
         const isGuest = !userId;
         const email = customerEmail || shippingAddress.email || req.user?.email || null;
         const phone = customerPhone || shippingAddress.phone || null;
         const name = customerName || shippingAddress.recipientName || null;
-
-        // Calculate authoritative totals
-        let subtotal = 0;
-        const orderItemsToInsert: any[] = [];
-
-        if (supabaseAdmin) {
-          const variantIds = items.map((i: any) => i.variantId).filter(Boolean);
-          const variantMap = new Map();
-          if (variantIds.length > 0) {
-            const { data: variants } = await supabaseAdmin
-              .from('product_variants')
-              .select('id, sku, price_override, stock_quantity, product:products(id, name, price, sku)')
-              .in('id', variantIds);
-            if (variants) {
-              variants.forEach((v: any) => variantMap.set(v.id, v));
-            }
-          }
-
-          for (const item of items) {
-            const v = item.variantId ? variantMap.get(item.variantId) : null;
-            const itemPrice = v?.price_override ?? v?.product?.price ?? item.product?.price ?? item.price ?? 0;
-            const itemName = v?.product?.name ?? item.product?.name ?? item.productName ?? item.name ?? 'Handloom Product';
-            const itemSku = v?.sku ?? v?.product?.sku ?? item.product?.sku ?? item.sku ?? 'SKU-VK';
-            const itemTotal = Number(itemPrice) * Number(item.quantity);
-            subtotal += itemTotal;
-
-            orderItemsToInsert.push({
-              product_variant_id: item.variantId || null,
-              product_name_snapshot: itemName,
-              sku_snapshot: itemSku,
-              price_snapshot: itemPrice,
-              quantity: item.quantity,
-              total_amount: itemTotal,
-              product_metadata_snapshot: {
-                color: item.selectedColor || null,
-                size: item.selectedSize || null,
-                category: item.product?.categoryLabel || null,
-                primaryImage: item.product?.primaryImage || item.primaryImage || null,
-              },
-            });
-          }
-        } else {
-          subtotal = items.reduce(
-            (sum: number, i: any) => sum + (Number(i.product?.price ?? i.price) || 0) * Number(i.quantity),
-            0
-          );
-          for (const item of items) {
-            const price = Number(item.product?.price ?? item.price) || 0;
-            orderItemsToInsert.push({
-              product_variant_id: item.variantId || null,
-              product_name_snapshot: item.product?.name || item.productName || item.name || 'Handloom Item',
-              sku_snapshot: item.product?.sku || item.product?.slug || item.sku || 'SKU-VK',
-              price_snapshot: price,
-              quantity: item.quantity,
-              total_amount: price * item.quantity,
-              product_metadata_snapshot: {
-                color: item.selectedColor || null,
-                size: item.selectedSize || null,
-                category: item.product?.categoryLabel || null,
-                primaryImage: item.product?.primaryImage || item.primaryImage || null,
-              },
-            });
-          }
-        }
-
-        const shippingAmount = 0;
-        const taxAmount = 0;
-        const discountAmount = 0;
-        const totalAmount = subtotal + shippingAmount + taxAmount - discountAmount;
-
-        const dateStr = new Date().toISOString().slice(0, 7).replace('-', '');
-        const randomHex = crypto.randomBytes(4).toString('hex').toUpperCase();
-        const orderNumber = `VKV-${dateStr}-${randomHex}`;
+        const orderNumber = 'VKV-' + new Date().toISOString().slice(0, 7).replace('-', '') + '-' + crypto.randomBytes(4).toString('hex').toUpperCase();
         const guestAccessToken = isGuest ? crypto.randomBytes(24).toString('hex') : null;
         const guestTokenHash = guestAccessToken ? hashGuestToken(guestAccessToken) : null;
-
         const completeShippingSnapshot = {
           ...shippingAddress,
           recipientName: name || shippingAddress.recipientName,
-          email: email || shippingAddress.email || '',
-          phone: phone || shippingAddress.phone || '',
+          email: email || '',
+          phone: phone || '',
           isGuest,
           guest_access_token_hash: guestTokenHash,
         };
+        const completeBillingSnapshot = billingAddress
+          ? { ...billingAddress, isGuest, guest_access_token_hash: guestTokenHash }
+          : completeShippingSnapshot;
+        
+const orderPayload = {
+  order_number: orderNumber,
+  user_id: userId,
+  customer_name: name,
+  customer_email: email,
+  customer_phone: phone,
+  is_guest: isGuest,
+  guest_access_token_hash: guestTokenHash,
+  shipping_address_snapshot: completeShippingSnapshot,
+  billing_address_snapshot: completeBillingSnapshot,
+  coupon_code: typeof req.body.couponCode === 'string'
+    ? req.body.couponCode.trim().toUpperCase() || null
+    : null,
+  customer_email_for_coupon: email,
+  notes: notes || null,
+};
 
-        let supabaseSuccess = false;
-        let orderId = '';
-        if (db) {
-          try {
-            await db.rpc('reconcile_expired_reservations');
-          } catch {
-            // ignore if procedure pending
-          }
 
-          const insertPayload: any = {
-            order_number: orderNumber,
-            user_id: userId,
-            shipping_address_snapshot: completeShippingSnapshot,
-            billing_address_snapshot: billingAddress
-              ? { ...billingAddress, isGuest, email: email || '', guest_access_token_hash: guestTokenHash }
-              : completeShippingSnapshot,
-            subtotal,
-            discount_amount: discountAmount,
-            shipping_amount: shippingAmount,
-            tax_amount: taxAmount,
-            total_amount: totalAmount,
-            currency: 'INR',
-            payment_status: 'pending',
-            order_status: paymentMethod === 'cod' ? 'confirmed' : 'pending',
-            notes: notes || null,
-          };
-
-          try {
-            const { data: createdOrder, error: orderError } = await db
-              .from('orders')
-              .insert(insertPayload)
-              .select('id, order_number')
-              .single();
-
-            if (!orderError && createdOrder?.id) {
-              supabaseSuccess = true;
-              orderId = createdOrder.id;
-
-              if (orderId) {
-                try {
-                  await db.from('orders').update({
-                    customer_email: email,
-                    customer_phone: phone,
-                    customer_name: name,
-                    is_guest: isGuest,
-                    guest_access_token_hash: guestTokenHash,
-                  }).eq('id', orderId);
-                } catch {
-                  // ignore if optional schema columns are not present
-                }
-              }
-
-              inMemoryOrdersMap.set(orderId, {
-                id: orderId,
-                order_number: orderNumber,
-                user_id: userId || null,
-                total_amount: totalAmount,
-                currency: 'INR',
-                payment_status: 'pending',
-                order_status: paymentMethod === 'cod' ? 'confirmed' : 'pending',
-                reservation_expires_at: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
-                shipping_address_snapshot: completeShippingSnapshot,
-              });
-
-              const itemRows = orderItemsToInsert.map((row) => ({ ...row, order_id: orderId }));
-              for (const row of itemRows) {
-                if (row.product_variant_id) {
-                  try {
-                    await db.from('product_variants').upsert({
-                      id: row.product_variant_id,
-                      product_id: '00000000-0000-0000-0000-000000000001',
-                      sku: row.sku_snapshot || `SKU-${row.product_variant_id.slice(0, 8)}`,
-                      variant_name: row.product_name_snapshot || 'Default Variant',
-                      stock_quantity: 100,
-                      reserved_quantity: 0,
-                    }, { onConflict: 'id', ignoreDuplicates: true });
-                  } catch {
-                    row.product_variant_id = null;
-                  }
-                }
-              }
-              const { error: itemsError } = await db.from('order_items').insert(itemRows);
-              if (itemsError) {
-                console.error('Error inserting order items:', itemsError);
-              }
-
-              // ATOMIC INVENTORY RESERVATION
-              const reservationItems = items
-                .map((i: any) => ({
-                  variant_id: i.variantId || null,
-                  quantity: Number(i.quantity) || 1,
-                }))
-                .filter((i: any) => i.variant_id);
-
-              let reservationSuccess = false;
-              let reservationErrorMessage = '';
-
-              if (reservationItems.length > 0) {
-                try {
-                  const { data: reserveRes, error: reserveErr } = await db.rpc(
-                    'reserve_inventory_for_order',
-                    {
-                      p_order_id: orderId,
-                      p_items: reservationItems,
-                      p_reservation_minutes: 15,
-                    }
-                  );
-
-                  if (!reserveErr && reserveRes) {
-                    if (reserveRes.success) {
-                      reservationSuccess = true;
-                    } else if (reserveRes.error === 'INSUFFICIENT_STOCK') {
-                      reservationSuccess = false;
-                      reservationErrorMessage =
-                        reserveRes.message || 'One or more items are no longer available in the requested quantity.';
-                    } else if (reserveRes.error === 'VARIANT_NOT_FOUND') {
-                      const memRes = await reserveInMemoryStock(orderId, reservationItems, 15);
-                      if (memRes.success) {
-                        reservationSuccess = true;
-                      } else {
-                        reservationErrorMessage =
-                          memRes.message || 'One or more items are no longer available in the requested quantity.';
-                      }
-                    }
-                  }
-                } catch {
-                  // RPC failed
-                }
-              }
-
-              if (!reservationSuccess && !reservationErrorMessage) {
-                const fallbackItems = items.map((i: any) => ({
-                  variant_id: i.variantId || i.product?.id || 'var-default',
-                  quantity: Number(i.quantity) || 1,
-                }));
-                const memRes = await reserveInMemoryStock(orderId, fallbackItems, 15);
-                if (memRes.success) {
-                  reservationSuccess = true;
-                } else {
-                  reservationErrorMessage =
-                    memRes.message || 'One or more items are no longer available in the requested quantity.';
-                }
-              }
-
-              if (!reservationSuccess) {
-                try {
-                  await db.from('order_items').delete().eq('order_id', orderId);
-                  await db.from('orders').delete().eq('id', orderId);
-                } catch {}
-
-                res.status(409).json({
-                  success: false,
-                  error: 'INSUFFICIENT_STOCK',
-                  message:
-                    reservationErrorMessage || 'One or more items are no longer available in the requested quantity.',
-                });
-                return;
-              }
-
-              if (paymentMethod === 'cod') {
-                try {
-                  await db.from('payments').insert({
-                    order_id: orderId,
-                    provider: 'cod',
-                    amount: totalAmount,
-                    currency: 'INR',
-                    status: 'pending',
-                    method: 'Cash on Delivery',
-                  });
-                  await db.rpc('confirm_inventory_sale_for_order', { p_order_id: orderId });
-                } catch {
-                  await confirmInMemorySale(orderId);
-                }
-              }
-
-              res.json({
-                success: true,
-                orderId,
-                orderNumber,
-                guestAccessToken,
-                isGuest,
-              });
-              return;
-            }
-          } catch {
-            supabaseSuccess = false;
-          }
-        }
-
-        // In-memory fallback (if supabaseAdmin null or supabase insert failed)
-        const mockOrderId = orderId || `ord-${Date.now()}`;
-        const fallbackItems = items.map((i: any) => ({
-          variant_id: i.variantId || i.product?.id || 'var-default',
-          quantity: Number(i.quantity) || 1,
-        }));
-
-        const memRes = await reserveInMemoryStock(mockOrderId, fallbackItems, 15);
-        if (!memRes.success) {
-          res.status(409).json({
-            success: false,
-            error: 'INSUFFICIENT_STOCK',
-            message: memRes.message || 'One or more items are no longer available in the requested quantity.',
-          });
-          return;
-        }
-
-        inMemoryOrdersMap.set(mockOrderId, {
-          id: mockOrderId,
-          order_number: orderNumber,
-          user_id: userId || null,
-          total_amount: totalAmount,
-          currency: 'INR',
-          payment_status: 'pending',
-          order_status: paymentMethod === 'cod' ? 'confirmed' : 'pending',
-          reservation_expires_at: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
-          shipping_address_snapshot: completeShippingSnapshot,
-        });
-
-        if (paymentMethod === 'cod') {
-          await confirmInMemorySale(mockOrderId);
+        const created = await invokeCheckedRpc(db, 'create_order_with_inventory_reservation', {
+          p_order: orderPayload,
+          p_items: orderLines,
+          p_payment_method: paymentMethod,
+          p_reservation_minutes: 15,
+        }, 'Order creation');
+        if (typeof created.order_id !== 'string' || !created.order_id || typeof created.order_number !== 'string' || !created.order_number) {
+          throw new OrderSafetyError('Order service returned an incomplete result.', 503, 'INVALID_RPC_RESULT');
         }
 
         res.json({
           success: true,
-          orderId: mockOrderId,
-          orderNumber,
+          orderId: created.order_id,
+          orderNumber: created.order_number,
           guestAccessToken,
           isGuest,
         });
       } catch (err: any) {
         console.error('Unhandled error in /api/orders/create:', err);
-        res.status(500).json({ success: false, error: err.message || 'Internal server error creating order.' });
+        res.status(err instanceof OrderSafetyError ? err.statusCode : 500).json({
+          success: false,
+          error: err instanceof OrderSafetyError ? err.message : 'Internal server error creating order.',
+        });
       }
     }
   );
@@ -1418,6 +1078,14 @@ async function startServer() {
             currency: order.currency || 'INR',
             paymentStatus: order.payment_status,
             orderStatus: order.order_status,
+            refundStatus: order.refund_status || 'not_applicable',
+            cancelledAt: order.cancelled_at || null,
+            cancellationReason: order.cancellation_reason || '',
+            courierName: order.courier_name || '',
+            trackingNumber: order.tracking_number || '',
+            trackingUrl: order.tracking_url || '',
+            shippedAt: order.shipped_at || null,
+            deliveredAt: order.delivered_at || null,
             paymentMethod: paymentRecord?.provider === 'cod' ? 'cod' : 'online',
             payment: paymentRecord
               ? {
@@ -1560,8 +1228,13 @@ async function startServer() {
       const webhookSignature = req.headers['x-razorpay-signature'] as string;
       const rawBody = req.rawBody;
 
+      if (!RAZORPAY_WEBHOOK_SECRET || RAZORPAY_WEBHOOK_SECRET.includes('placeholder') || !supabaseAdmin || !db || (isProduction && !SUPABASE_SERVICE_ROLE_KEY)) {
+        res.status(isProduction ? 503 : 400).json({ error: 'Webhook verification or persistent storage is not configured.' });
+        return;
+      }
+
       // 1. Verify Webhook Signature using RAZORPAY_WEBHOOK_SECRET (Separate from Key Secret)
-      if (RAZORPAY_WEBHOOK_SECRET && !RAZORPAY_WEBHOOK_SECRET.includes('placeholder')) {
+      {
         if (!webhookSignature || !rawBody) {
           res.status(400).json({ error: 'Missing webhook signature or raw payload.' });
           return;
@@ -1590,8 +1263,12 @@ async function startServer() {
       }
 
       const event = req.body;
-      const eventId = event.event_id || event.id || `evt_${Date.now()}`;
-      const eventType = event.event;
+      const eventId = (req.headers['x-razorpay-event-id'] as string) || event?.event_id || event?.id;
+      const eventType = event?.event;
+      if (typeof eventId !== 'string' || !eventId.trim() || typeof eventType !== 'string' || !event.payload) {
+        res.status(400).json({ error: 'Malformed webhook event.' });
+        return;
+      }
 
       // 2. Authoritative Database Idempotency Check via UNIQUE(event_id)
       if (processedWebhookEventIds.has(eventId)) {
@@ -1611,10 +1288,16 @@ async function startServer() {
 
         // PostgreSQL error 23505 indicates unique constraint violation (duplicate event)
         if (insertErr && (insertErr.code === '23505' || insertErr.message.includes('unique'))) {
-          processedWebhookEventIds.add(eventId);
-          res.status(200).json({ status: 'already_processed', eventId });
-          return;
-        }
+          const { data: priorEvent, error: priorError } = await supabaseAdmin.from('payment_webhook_events').select('status').eq('event_id', eventId).maybeSingle();
+          if (priorError) throw priorError;
+          if (priorEvent?.status === 'processed') {
+            processedWebhookEventIds.add(eventId);
+            res.status(200).json({ status: 'already_processed', eventId });
+            return;
+          }
+          const { error: retryError } = await supabaseAdmin.from('payment_webhook_events').update({ status: 'processing', payload: event, event_type: eventType }).eq('event_id', eventId);
+          if (retryError) throw retryError;
+        } else if (insertErr) throw insertErr;
       }
 
       // 3. Process Razorpay Event Payload
@@ -1623,68 +1306,54 @@ async function startServer() {
 
       const rzpOrderId = paymentEntity?.order_id || orderEntity?.id;
       const rzpPaymentId = paymentEntity?.id;
-      const internalOrderId = paymentEntity?.notes?.orderId || orderEntity?.notes?.orderId;
+      let internalOrderId: string | null = null;
+
+      if (!rzpOrderId || (eventType.startsWith('payment.') && !rzpPaymentId)) {
+        res.status(400).json({ error: 'Webhook is missing provider identifiers.' });
+        return;
+      }
+
+      const { data: matchedPayment, error: matchedPaymentError } = await supabaseAdmin
+        .from('payments').select('id, order_id, provider_order_id, provider_payment_id, amount, currency')
+        .eq('provider_order_id', rzpOrderId).maybeSingle();
+      if (matchedPaymentError) throw matchedPaymentError;
+      if (!matchedPayment || !matchedPayment.order_id || (rzpPaymentId && matchedPayment.provider_payment_id && matchedPayment.provider_payment_id !== rzpPaymentId)) {
+        res.status(400).json({ error: 'Webhook identifiers do not match a persisted payment.' });
+        return;
+      }
+      internalOrderId = matchedPayment.order_id;
+      if (paymentEntity && (Number(paymentEntity.amount) !== Math.round(Number(matchedPayment.amount) * 100) || paymentEntity.currency !== matchedPayment.currency)) {
+        res.status(400).json({ error: 'Webhook payment amount or currency mismatch.' });
+        return;
+      }
 
       if (supabaseAdmin) {
         const now = new Date().toISOString();
 
         if (eventType === 'payment.captured' || eventType === 'order.paid') {
-          // Reconcile payment status
-          let paymentQuery = supabaseAdmin.from('payments').update({
-            status: 'captured',
-            provider_payment_id: rzpPaymentId,
-            verified_at: now,
-            updated_at: now,
-          });
-
-          if (rzpOrderId) {
-            paymentQuery = paymentQuery.eq('provider_order_id', rzpOrderId);
-          } else if (internalOrderId) {
-            paymentQuery = paymentQuery.eq('order_id', internalOrderId);
+          if (!internalOrderId || !rzpOrderId || !rzpPaymentId) {
+            throw new Error('Captured payment webhook is missing the order/payment association');
           }
 
-          await paymentQuery;
-
-          // Reconcile order status
-          if (internalOrderId) {
-            await supabaseAdmin
-              .from('orders')
-              .update({
-                payment_status: 'captured',
-                order_status: 'confirmed',
-                updated_at: now,
-              })
-              .eq('id', internalOrderId);
-          } else if (rzpOrderId) {
-            // Find internal order through payments table
-            const { data: matchedPayment } = await supabaseAdmin
-              .from('payments')
-              .select('order_id')
-              .eq('provider_order_id', rzpOrderId)
-              .maybeSingle();
-
-            if (matchedPayment?.order_id) {
-              await supabaseAdmin
-                .from('orders')
-                .update({
-                  payment_status: 'captured',
-                  order_status: 'confirmed',
-                  updated_at: now,
-                })
-                .eq('id', matchedPayment.order_id);
-
-              try {
-                await supabaseAdmin.rpc('confirm_inventory_sale_for_order', { p_order_id: matchedPayment.order_id });
-              } catch {
-                await confirmInMemorySale(matchedPayment.order_id);
-              }
-            } else if (internalOrderId) {
-              try {
-                await supabaseAdmin.rpc('confirm_inventory_sale_for_order', { p_order_id: internalOrderId });
-              } catch {
-                await confirmInMemorySale(internalOrderId);
-              }
+          // The RPC locks the order row and atomically reconciles payment, order status,
+          // and inventory. This is serialized against cancel_order_and_reconcile_inventory.
+          const { data: reconciliationResult, error: reconciliationError } = await supabaseAdmin.rpc(
+            'reconcile_captured_payment_for_order',
+            {
+              p_order_id: internalOrderId,
+              p_provider_order_id: rzpOrderId,
+              p_provider_payment_id: rzpPaymentId,
+              p_provider_signature: null,
             }
+          );
+          if (reconciliationError) throw reconciliationError;
+          if (!reconciliationResult || reconciliationResult.success !== true) {
+            throw new Error(reconciliationResult?.error || 'Atomic webhook payment reconciliation failed');
+          }
+          if (reconciliationResult.refund_required === true) {
+            // The capture is persisted, but cancellation remains authoritative. Acknowledge
+            // the verified event and leave refund/manual review as an explicit exception.
+            console.error(`[PAYMENT RECONCILIATION REQUIRED] Razorpay captured payment for cancelled order ${internalOrderId}; order remains cancelled and inventory was not confirmed. Refund/manual review required.`);
           }
         } else if (eventType === 'payment.failed') {
           let paymentQuery = supabaseAdmin.from('payments').update({
@@ -1700,17 +1369,33 @@ async function startServer() {
             paymentQuery = paymentQuery.eq('order_id', internalOrderId);
           }
 
-          await paymentQuery;
+          // A late failure notification must never downgrade a captured payment.
+          paymentQuery = paymentQuery.neq('status', 'captured');
+          const { data: updatedPayment, error: paymentError } = await paymentQuery.select('id');
+          if (paymentError) throw paymentError;
+          if (!updatedPayment?.length) {
+            const { data: currentPayment, error: currentPaymentError } = await supabaseAdmin
+              .from('payments')
+              .select('status, provider_payment_id')
+              .eq('provider_order_id', rzpOrderId)
+              .maybeSingle();
+            if (currentPaymentError) throw currentPaymentError;
+            if (currentPayment?.status !== 'captured') {
+              throw new Error('Payment failure reconciliation matched no eligible payment');
+            }
+            // Already captured: treat this stale failure event as reconciled without downgrade.
+          }
         }
 
         // Update webhook event status to 'processed'
-        await supabaseAdmin
+        const { error: eventUpdateError } = await supabaseAdmin
           .from('payment_webhook_events')
           .update({
             order_id: internalOrderId || null,
             status: 'processed',
           })
           .eq('event_id', eventId);
+        if (eventUpdateError) throw eventUpdateError;
       }
 
       processedWebhookEventIds.add(eventId);
@@ -1735,13 +1420,18 @@ async function startServer() {
           return;
         }
 
-        if (supabaseAdmin) {
-          const { data: order } = await supabaseAdmin
+        if (!db || !supabaseAdmin || (isProduction && !SUPABASE_SERVICE_ROLE_KEY)) {
+          res.status(503).json({ success: false, error: 'Persistent inventory storage is unavailable.' });
+          return;
+        }
+        {
+          const { data: order, error: orderError } = await supabaseAdmin
             .from('orders')
-            .select('id, user_id, order_status, shipping_address_snapshot')
+            .select('id, user_id, order_status, shipping_address_snapshot, guest_access_token_hash')
             .eq('id', id)
             .maybeSingle();
 
+          if (orderError) throw new OrderSafetyError('Order storage is unavailable.', 503, orderError.code);
           if (!order) {
             res.status(404).json({ success: false, error: 'Order not found.' });
             return;
@@ -1749,11 +1439,12 @@ async function startServer() {
 
           let isAdmin = false;
           if (req.user) {
-            const { data: profile } = await supabaseAdmin
+            const { data: profile, error: profileError } = await supabaseAdmin
               .from('profiles')
               .select('role')
               .eq('id', req.user.id)
               .maybeSingle();
+            if (profileError) throw new OrderSafetyError('Account authorization could not be checked.', 503, profileError.code);
             isAdmin = profile?.role === 'admin';
           }
 
@@ -1763,32 +1454,16 @@ async function startServer() {
             return;
           }
 
-          if (order.order_status === 'cancelled') {
-            res.json({ success: true, message: 'Order is already cancelled.' });
-            return;
-          }
+          const cancellation = await invokeCheckedRpc(db, 'cancel_order_and_reconcile_inventory', {
+            p_order_id: id,
+            p_reason: 'Cancelled by customer',
+            p_cancelled_by: req.user?.id || null,
+          }, 'Order cancellation');
 
-          try {
-            await supabaseAdmin.rpc('release_inventory_for_order', {
-              p_order_id: id,
-              p_reason: 'Cancelled by customer',
-            });
-          } catch {
-            await releaseInMemoryReservation(id);
-          }
-
-          await supabaseAdmin
-            .from('orders')
-            .update({ order_status: 'cancelled', updated_at: new Date().toISOString() })
-            .eq('id', id);
-
-          res.json({ success: true, message: 'Order cancelled and inventory reservation released.' });
-        } else {
-          await releaseInMemoryReservation(id);
-          res.json({ success: true, message: 'Order cancelled and inventory reservation released.' });
+          res.json({ success: true, status: cancellation.status || 'cancelled', refundStatus: cancellation.refund_status || 'not_applicable', message: 'Order cancelled and inventory reconciled.' });
         }
       } catch (err: any) {
-        res.status(500).json({ success: false, error: err?.message || 'Error cancelling order.' });
+        res.status(err instanceof OrderSafetyError ? err.statusCode : 500).json({ success: false, error: err?.message || 'Error cancelling order.' });
       }
     }
   );
@@ -1802,31 +1477,34 @@ async function startServer() {
     async (req: AuthenticatedRequest, res: Response) => {
       try {
         const { id } = req.params;
-        if (supabaseAdmin) {
-          try {
-            await supabaseAdmin.rpc('release_inventory_for_order', {
-              p_order_id: id,
-              p_reason: 'Cancelled by admin',
-            });
-          } catch {
-            await releaseInMemoryReservation(id);
-          }
-          await supabaseAdmin
-            .from('orders')
-            .update({ order_status: 'cancelled', updated_at: new Date().toISOString() })
-            .eq('id', id);
-        } else {
-          await releaseInMemoryReservation(id);
+        if (!id) {
+          res.status(400).json({ success: false, error: 'Order ID is required.' });
+          return;
         }
-        res.json({ success: true, message: 'Order cancelled by admin and inventory released.' });
+        if (!db || (isProduction && !SUPABASE_SERVICE_ROLE_KEY)) {
+          res.status(503).json({ success: false, error: 'Persistent inventory storage is unavailable.' });
+          return;
+        }
+        if (!(await checkAdminRole(req.user?.id))) {
+          res.status(403).json({ success: false, error: 'Forbidden. Admin access required.' });
+          return;
+        }
+        const cancellation = await invokeCheckedRpc(db, 'cancel_order_and_reconcile_inventory', {
+          p_order_id: id,
+          p_reason: typeof req.body?.reason === 'string' ? req.body.reason.slice(0, 500) : 'Cancelled by admin',
+          p_cancelled_by: req.user?.id || null,
+        }, 'Order cancellation');
+        res.json({ success: true, status: cancellation.status || 'cancelled', refundStatus: cancellation.refund_status || 'not_applicable', message: 'Order cancelled and inventory reconciled.' });
       } catch (err: any) {
-        res.status(500).json({ success: false, error: err?.message || 'Error cancelling order.' });
+        res.status(err instanceof OrderSafetyError ? err.statusCode : 500).json({ success: false, error: err?.message || 'Error cancelling order.' });
       }
     }
   );
 
   // -------------------------------------------------------------------
   // 11. POST /api/admin/orders/:id/return (ADMIN RETURN & RESTOCK)
+  // Production returns must be authorized and committed by PostgreSQL only.
+  // Never fall back to in-memory inventory: that would split stock truth.
   // -------------------------------------------------------------------
   app.post(
     '/api/admin/orders/:id/return',
@@ -1834,29 +1512,40 @@ async function startServer() {
     async (req: AuthenticatedRequest, res: Response) => {
       try {
         const { id } = req.params;
-        const { variantId, quantity, reason } = req.body;
-        if (!variantId || !quantity || quantity <= 0) {
-          res.status(400).json({ success: false, error: 'Variant ID and valid quantity required.' });
+        const { variantId, quantity, reason } = req.body || {};
+
+        if (!(await checkAdminRole(req.user?.id))) {
+          res.status(403).json({ success: false, error: 'Administrator access required.' });
+          return;
+        }
+        if (!id || !variantId || !Number.isSafeInteger(quantity) || quantity <= 0) {
+          res.status(400).json({ success: false, error: 'Order ID, variant ID and a positive whole quantity are required.' });
+          return;
+        }
+        if (!supabaseAdmin || (isProduction && !SUPABASE_SERVICE_ROLE_KEY)) {
+          res.status(503).json({ success: false, error: 'Persistent inventory service is unavailable; no stock was changed.' });
           return;
         }
 
-        if (supabaseAdmin) {
-          try {
-            await supabaseAdmin.rpc('return_inventory_for_order_item', {
-              p_order_id: id,
-              p_product_variant_id: variantId,
-              p_quantity: quantity,
-              p_reason: reason || 'Customer return restock',
-            });
-          } catch {
-            await returnInMemoryStock(variantId, quantity);
-          }
-        } else {
-          await returnInMemoryStock(variantId, quantity);
+        const { data, error } = await supabaseAdmin.rpc('return_inventory_for_order_item', {
+          p_order_id: id,
+          p_product_variant_id: variantId,
+          p_quantity: quantity,
+          p_reason: typeof reason === 'string' ? reason.slice(0, 500) : 'Customer return restock',
+        });
+        if (error) {
+          console.error('Return inventory RPC failed:', error);
+          res.status(503).json({ success: false, error: 'The database could not complete the return. No in-memory stock fallback was used.' });
+          return;
         }
-        res.json({ success: true, message: 'Item returned and physical inventory restocked.' });
+        if (!data || data.success !== true) {
+          res.status(409).json({ success: false, error: data?.message || data?.error || 'Return was not accepted by the inventory service.' });
+          return;
+        }
+        res.json({ success: true, message: 'Return accepted and inventory updated transactionally.' });
       } catch (err: any) {
-        res.status(500).json({ success: false, error: err?.message || 'Error returning item.' });
+        console.error('Admin return failed:', err);
+        res.status(500).json({ success: false, error: 'Unable to complete return.' });
       }
     }
   );
@@ -1864,17 +1553,8 @@ async function startServer() {
   // Helper function to verify admin role across db & test simulation tokens
   async function checkAdminRole(userId: string | undefined): Promise<boolean> {
     if (!userId) return false;
-    if (
-      userId.startsWith('user_admin_') ||
-      userId.startsWith('dev_admin_') ||
-      userId.startsWith('mock_admin_') ||
-      userId.includes('admin') ||
-      userId.includes('mama@') ||
-      userId === 'guest-or-dev-user' ||
-      userId === 'dev-user'
-    ) {
-      return true;
-    }
+    // Never infer admin privileges from a username, email fragment, or test-token pattern.
+    // The sole authorization source is the persisted profiles.role value.
     if (db) {
       try {
         const { data: profile } = await db
@@ -1916,7 +1596,7 @@ async function startServer() {
     'out_for_delivery': ['delivered'],
     'delivered': ['return_requested', 'returned'],
     'return_requested': ['returned'],
-    'returned': ['refunded'],
+    'returned': [],
     'cancelled': [],
     'refunded': []
   };
@@ -2033,8 +1713,35 @@ async function startServer() {
               currency: ord.currency || 'INR',
               paymentStatus: ord.payment_status,
               orderStatus: ord.order_status,
+              refundStatus: ord.refund_status || 'not_applicable',
+              cancelledAt: ord.cancelled_at || null,
+              cancellationReason: ord.cancellation_reason || '',
               paymentMethod: paymentRecord?.provider === 'cod' ? 'cod' : 'online',
+              payment: paymentRecord ? {
+                provider: paymentRecord.provider,
+                method: paymentRecord.method,
+                providerOrderId: paymentRecord.provider_order_id,
+                providerPaymentId: paymentRecord.provider_payment_id,
+                verifiedAt: paymentRecord.verified_at,
+                status: paymentRecord.status,
+              } : undefined,
+              courierName: ord.courier_name || '',
+              trackingNumber: ord.tracking_number || '',
+              trackingUrl: ord.tracking_url || '',
+              shippedAt: ord.shipped_at || null,
+              deliveredAt: ord.delivered_at || null,
+              notes: ord.notes || '',
               createdAt: ord.created_at,
+              items: (ord.items || []).map((i: any) => ({
+                id: i.id,
+                productVariantId: i.product_variant_id,
+                productName: i.product_name_snapshot,
+                sku: i.sku_snapshot,
+                price: Number(i.price_snapshot),
+                quantity: Number(i.quantity),
+                totalAmount: Number(i.total_amount),
+                productMetadata: i.product_metadata_snapshot || {},
+              })),
               itemsCount: ord.items?.length || 0,
               adminNotes: ord.admin_notes || ''
             };
@@ -2111,7 +1818,24 @@ async function startServer() {
             paymentStatus: ord.payment_status || ord.paymentStatus || 'pending',
             orderStatus: ord.order_status || ord.orderStatus || 'pending',
             paymentMethod: ord.paymentMethod || 'online',
+            payment: ord.payment,
+            courierName: ord.courier_name || ord.courierName || '',
+            trackingNumber: ord.tracking_number || ord.trackingNumber || '',
+            trackingUrl: ord.tracking_url || ord.trackingUrl || '',
+            shippedAt: ord.shipped_at || ord.shippedAt || null,
+            deliveredAt: ord.delivered_at || ord.deliveredAt || null,
+            cancelledAt: ord.cancelled_at || ord.cancelledAt || null,
+            notes: ord.notes || '',
             createdAt: ord.created_at || ord.createdAt || new Date().toISOString(),
+            items: (ord.items || []).map((i: any) => ({
+              id: i.id,
+              productName: i.product_name_snapshot || i.productName || i.name || 'Item',
+              sku: i.sku_snapshot || i.sku || '',
+              price: Number(i.price_snapshot ?? i.price ?? 0),
+              quantity: Number(i.quantity || 1),
+              totalAmount: Number(i.total_amount ?? i.totalAmount ?? 0),
+              productMetadata: i.product_metadata_snapshot || i.productMetadata || {},
+            })),
             itemsCount: ord.items?.length || 1,
             adminNotes: ord.adminNotes || ''
           }));
@@ -2151,20 +1875,41 @@ async function startServer() {
         }
 
         if (db) {
+          // Do not embed order_history in the orders query: this deployment has
+          // no PostgREST relationship for that table, which caused PGRST200 and
+          // prevented the entire order drawer from loading.
           const { data: ord, error: ordError } = await db
             .from('orders')
             .select(`
               *,
               items:order_items(*),
-              payments:payments(*),
-              history:order_history(*)
+              payments:payments(*)
             `)
             .eq('id', id)
             .maybeSingle();
 
-          if (ordError || !ord) {
+          if (ordError) {
+            console.error('[admin/orders/:id] database query failed:', ordError);
+            res.status(500).json({ success: false, error: 'Unable to load order details. Check the server log for the database query error.' });
+            return;
+          }
+          if (!ord) {
             res.status(404).json({ success: false, error: 'Order not found.' });
             return;
+          }
+
+          // Timeline is best-effort. Some deployments don't have an order_history
+          // table yet; that must not block the order/customer/payment details.
+          let orderHistory: any[] = [];
+          const { data: historyRows, error: historyError } = await db
+            .from('order_history')
+            .select('*')
+            .eq('order_id', id)
+            .order('created_at', { ascending: true });
+          if (!historyError && Array.isArray(historyRows)) {
+            orderHistory = historyRows;
+          } else if (historyError && historyError.code !== '42P01' && historyError.code !== 'PGRST205') {
+            console.warn('[admin/orders/:id] order history unavailable; loading order without timeline:', historyError.message);
           }
 
           const paymentRecord = Array.isArray(ord.payments) ? ord.payments[0] : ord.payments;
@@ -2186,6 +1931,14 @@ async function startServer() {
             currency: ord.currency || 'INR',
             paymentStatus: ord.payment_status,
             orderStatus: ord.order_status,
+            refundStatus: ord.refund_status || 'not_applicable',
+            cancelledAt: ord.cancelled_at || null,
+            cancellationReason: ord.cancellation_reason || '',
+            courierName: ord.courier_name || '',
+            trackingNumber: ord.tracking_number || '',
+            trackingUrl: ord.tracking_url || '',
+            shippedAt: ord.shipped_at || null,
+            deliveredAt: ord.delivered_at || null,
             paymentMethod: paymentRecord?.provider === 'cod' ? 'cod' : 'online',
             payment: paymentRecord ? {
               id: paymentRecord.id,
@@ -2216,7 +1969,7 @@ async function startServer() {
               productMetadata: i.product_metadata_snapshot || {},
               primaryImage: i.product_metadata_snapshot?.primaryImage || '',
             })),
-            timeline: (ord.history || []).sort((a: any, b: any) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()).map((h: any) => ({
+            timeline: orderHistory.map((h: any) => ({
               id: h.id,
               status: h.status,
               actor: h.actor,
@@ -2286,6 +2039,96 @@ async function startServer() {
   );
 
   // -------------------------------------------------------------------
+  // PATCH /api/admin/orders/:id/shipment (MANUAL COURIER TRACKING)
+  // Requires the additive migration 202610120001_add_manual_courier_tracking.sql.
+  // -------------------------------------------------------------------
+  app.patch('/api/admin/orders/:id/shipment', authenticateUser, async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      if (!(await checkAdminRole(req.user?.id))) { res.status(403).json({ success: false, error: 'Admin access required.' }); return; }
+      if (!db) { res.status(503).json({ success: false, error: 'Database service unavailable.' }); return; }
+      const id = String(req.params.id || '');
+      const courierName = String(req.body?.courierName || '').trim().slice(0, 120);
+      const trackingNumber = String(req.body?.trackingNumber || '').trim().slice(0, 120);
+      const trackingUrl = String(req.body?.trackingUrl || '').trim().slice(0, 1000);
+      if (trackingUrl) {
+        let parsed: URL;
+        try { parsed = new URL(trackingUrl); } catch { res.status(400).json({ success: false, error: 'Tracking URL must be a valid HTTPS/HTTP URL.' }); return; }
+        if (!['https:', 'http:'].includes(parsed.protocol)) { res.status(400).json({ success: false, error: 'Tracking URL must use HTTPS or HTTP.' }); return; }
+      }
+      const { data: existing, error: readError } = await db.from('orders').select('id, order_status, shipped_at, delivered_at').eq('id', id).maybeSingle();
+      if (readError) throw readError;
+      if (!existing) { res.status(404).json({ success: false, error: 'Order not found.' }); return; }
+      const update: Record<string, any> = { courier_name: courierName || null, tracking_number: trackingNumber || null, tracking_url: trackingUrl || null };
+      // Shipment timestamps are immutable event times; editing tracking metadata must not rewrite them.
+      if ((existing.order_status === 'shipped' || existing.order_status === 'out_for_delivery') && !existing.shipped_at) update.shipped_at = new Date().toISOString();
+      if (existing.order_status === 'delivered' && !existing.delivered_at) update.delivered_at = new Date().toISOString();
+      const { error: updateError } = await db.from('orders').update(update).eq('id', id);
+      if (updateError) throw updateError;
+      res.json({ success: true, message: 'Courier tracking details saved.' });
+    } catch (err: any) {
+      console.error('[admin/orders/:id/shipment] update failed:', err);
+      res.status(500).json({ success: false, error: 'Unable to save courier tracking. Confirm the courier migration has been applied.' });
+    }
+  });
+
+  // -------------------------------------------------------------------
+  // POST /api/admin/orders/:id/payment-status (MANUAL COD COLLECTION LEDGER)
+  // -------------------------------------------------------------------
+  app.post('/api/admin/orders/:id/payment-status', authenticateUser, async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      if (!(await checkAdminRole(req.user?.id))) {
+        res.status(403).json({ success: false, error: 'Administrator access required.' });
+        return;
+      }
+      if (!db || (isProduction && !SUPABASE_SERVICE_ROLE_KEY)) {
+        res.status(503).json({ success: false, error: 'Persistent payment storage is unavailable.' });
+        return;
+      }
+      const id = String(req.params.id || '');
+      const nextStatus = String(req.body?.paymentStatus || '').trim().toLowerCase();
+      const notes = typeof req.body?.notes === 'string' ? req.body.notes.slice(0, 500) : null;
+      const result = await invokeCheckedRpc(db, 'record_cod_payment_progress', {
+        p_order_id: id,
+        p_next_status: nextStatus,
+        p_actor: req.user?.email || 'Administrator',
+        p_notes: notes,
+      }, 'COD payment update');
+      res.json({ success: true, message: `COD payment marked ${nextStatus.replace('_', ' ')}.`, paymentStatus: result.payment_status });
+    } catch (err: any) {
+      res.status(err instanceof OrderSafetyError ? err.statusCode : 409).json({ success: false, error: err?.message || 'Unable to update COD payment status.' });
+    }
+  });
+
+  // -------------------------------------------------------------------
+  // POST /api/admin/orders/:id/refund-status (MANUAL REFUND LEDGER)
+  // This records a verified refund action; it never initiates a payment-provider refund.
+  // -------------------------------------------------------------------
+  app.post('/api/admin/orders/:id/refund-status', authenticateUser, async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      if (!(await checkAdminRole(req.user?.id))) {
+        res.status(403).json({ success: false, error: 'Administrator access required.' });
+        return;
+      }
+      if (!db || (isProduction && !SUPABASE_SERVICE_ROLE_KEY)) {
+        res.status(503).json({ success: false, error: 'Persistent payment storage is unavailable.' });
+        return;
+      }
+      const id = String(req.params.id || '');
+      const refundStatus = String(req.body?.refundStatus || '').trim().toLowerCase();
+      const notes = typeof req.body?.notes === 'string' ? req.body.notes.slice(0, 500) : null;
+      const result = await invokeCheckedRpc(db, 'update_order_refund_status', {
+        p_order_id: id,
+        p_next_status: refundStatus,
+        p_actor: req.user?.email || 'Administrator',
+        p_notes: notes,
+      }, 'Refund status update');
+      res.json({ success: true, message: `Refund workflow marked ${refundStatus}.`, refundStatus: result.refund_status });
+    } catch (err: any) {
+      res.status(err instanceof OrderSafetyError ? err.statusCode : 409).json({ success: false, error: err?.message || 'Unable to update refund status.' });
+    }
+  });
+
+  // -------------------------------------------------------------------
   // 14. POST /api/admin/orders/:id/status (ADMIN UPDATE STATUS - STATE MACHINE CONTROLLED)
   // -------------------------------------------------------------------
   app.post(
@@ -2309,20 +2152,35 @@ async function startServer() {
 
         let currentOrderStatus = 'pending';
         let currentPaymentStatus = 'pending';
+        let currentCourierName = '';
+        let currentShippedAt: string | null = null;
+        let currentDeliveredAt: string | null = null;
+        let cancellationCommitted = false;
 
         if (db) {
           const { data: ord, error: ordError } = await db
             .from('orders')
-            .select('order_status, payment_status')
+            .select('order_status, payment_status, courier_name, shipped_at, delivered_at')
             .eq('id', id)
             .maybeSingle();
 
-          if (ordError || !ord) {
+          if (ordError) {
+            console.error('[admin/order-status] required order columns unavailable:', { code: ordError.code, message: ordError.message });
+            const migrationHint = ['42703', 'PGRST204', 'PGRST200'].includes(String(ordError.code || ''))
+              ? ' Apply Supabase migrations 202610120001_add_manual_courier_tracking.sql, 202610120002_order_status_enum_compat.sql, 202610120003_manual_lifecycle_cancellation.sql, and the latest VK VASTRAM migration.'
+              : '';
+            res.status(503).json({ success: false, error: `Order storage is unavailable.${migrationHint}` });
+            return;
+          }
+          if (!ord) {
             res.status(404).json({ success: false, error: 'Order not found.' });
             return;
           }
           currentOrderStatus = ord.order_status;
           currentPaymentStatus = ord.payment_status;
+          currentCourierName = String(ord.courier_name || '').trim();
+          currentShippedAt = ord.shipped_at || null;
+          currentDeliveredAt = ord.delivered_at || null;
         } else {
           const ord = inMemoryOrdersMap.get(id);
           if (!ord) {
@@ -2331,6 +2189,9 @@ async function startServer() {
           }
           currentOrderStatus = ord.order_status || ord.orderStatus || 'pending';
           currentPaymentStatus = ord.payment_status || ord.paymentStatus || 'pending';
+          currentCourierName = String(ord.courier_name || ord.courierName || '').trim();
+          currentShippedAt = ord.shipped_at || ord.shippedAt || null;
+          currentDeliveredAt = ord.delivered_at || ord.deliveredAt || null;
         }
 
         if (!isValidTransition(currentOrderStatus, orderStatus)) {
@@ -2341,30 +2202,41 @@ async function startServer() {
           return;
         }
 
+        if (orderStatus === 'shipped' && !currentCourierName) {
+          res.status(409).json({ success: false, error: 'Assign and save a courier partner before marking this order as Shipped. A tracking number or URL is optional for local delivery.' });
+          return;
+        }
+
         if (orderStatus === 'cancelled' && currentOrderStatus !== 'cancelled') {
-          if (db) {
-            try {
-              await db.rpc('release_inventory_for_order', {
-                p_order_id: id,
-                p_reason: notes || 'Cancelled by administrator',
-              });
-            } catch (err) {
-              console.warn('RPC release_inventory_for_order failed, falling back to local simulation:', err);
-              await releaseInMemoryReservation(id);
-            }
-          } else {
-            await releaseInMemoryReservation(id);
+          if (!db || (isProduction && !SUPABASE_SERVICE_ROLE_KEY)) {
+            res.status(503).json({ success: false, error: 'Persistent inventory storage is unavailable. Order was not cancelled.' });
+            return;
           }
+
+          await invokeCheckedRpc(db, 'cancel_order_and_reconcile_inventory', {
+            p_order_id: id,
+            p_reason: notes || 'Cancelled by administrator',
+            p_cancelled_by: req.user?.id || null,
+          }, 'Order cancellation');
+          cancellationCommitted = true;
         }
 
         const actorName = req.user?.email || 'Admin';
         const timelineNotes = notes || `Status updated from "${currentOrderStatus}" to "${orderStatus}" by ${actorName}`;
 
         if (db) {
+          if (cancellationCommitted) {
+            // Cancellation and inventory release were committed together by one database RPC.
+          } else {
           const updatePayload: any = {
             order_status: orderStatus,
             updated_at: new Date().toISOString()
           };
+          if (orderStatus === 'shipped' && !currentShippedAt) updatePayload.shipped_at = new Date().toISOString();
+          if (orderStatus === 'delivered' && !currentDeliveredAt) updatePayload.delivered_at = new Date().toISOString();
+          if (orderStatus === 'returned' && ['captured', 'cod_collected', 'cod_settled'].includes(String(currentPaymentStatus))) {
+            updatePayload.refund_status = 'pending';
+          }
           if (paymentStatus) {
             updatePayload.payment_status = paymentStatus;
           }
@@ -2386,9 +2258,12 @@ async function startServer() {
             previous_payment_status: currentPaymentStatus,
             new_payment_status: paymentStatus || currentPaymentStatus
           });
+          }
         } else {
           const ord = inMemoryOrdersMap.get(id);
           ord.order_status = orderStatus;
+          if (orderStatus === 'shipped' && !currentShippedAt) ord.shipped_at = new Date().toISOString();
+          if (orderStatus === 'delivered' && !currentDeliveredAt) ord.delivered_at = new Date().toISOString();
           if (paymentStatus) {
             ord.payment_status = paymentStatus;
           }
@@ -2410,7 +2285,7 @@ async function startServer() {
           paymentStatus: paymentStatus || currentPaymentStatus
         });
       } catch (err: any) {
-        res.status(500).json({ success: false, error: err?.message || 'Error updating order status.' });
+        res.status(err instanceof OrderSafetyError ? err.statusCode : 500).json({ success: false, error: err?.message || 'Error updating order status.' });
       }
     }
   );
@@ -2498,9 +2373,7 @@ async function startServer() {
             title,
             body,
             status,
-            verified_purchase,
-            created_at,
-            profile:profiles(fullName)
+            created_at
           `, { count: 'exact' })
           .eq('product_id', productId)
           .eq('status', 'approved')
@@ -2520,9 +2393,9 @@ async function startServer() {
           title: rev.title,
           body: rev.body,
           status: rev.status,
-          verifiedPurchase: rev.verified_purchase,
+          verifiedPurchase: false,
           createdAt: rev.created_at,
-          reviewerName: rev.profile?.fullName || 'Verified Patron'
+          reviewerName: 'Verified Patron'
         }));
 
         res.json({ success: true, reviews: formatted, totalCount: count || 0 });
@@ -2536,6 +2409,38 @@ async function startServer() {
       }
     } catch (err: any) {
       res.status(500).json({ success: false, error: err?.message || 'Error loading reviews.' });
+    }
+  });
+
+  // POST /api/back-in-stock/subscribe (AUTHENTICATED CUSTOMER RESTOCK REQUEST)
+  app.post('/api/back-in-stock/subscribe', authenticateUser, async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      if (!db) { res.status(503).json({ success: false, error: 'Restock notification storage is unavailable.' }); return; }
+      const userId = req.user?.id;
+      const email = String(req.user?.email || '').trim().toLowerCase();
+      const productId = String(req.body?.productId || '').trim();
+      const variantId = String(req.body?.variantId || '').trim();
+      const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+      if (!userId || !uuid.test(userId) || !email || !uuid.test(productId) || !uuid.test(variantId)) {
+        res.status(400).json({ success: false, error: 'Sign in to a verified customer account before requesting a restock alert.' }); return;
+      }
+      const { data: variant, error: variantError } = await db.from('product_variants')
+        .select('id,product_id,stock_quantity,reserved_quantity,is_active')
+        .eq('id', variantId).eq('product_id', productId).maybeSingle();
+      if (variantError) throw variantError;
+      if (!variant) { res.status(404).json({ success: false, error: 'This product variant could not be found.' }); return; }
+      if (variant.is_active && Number(variant.stock_quantity || 0) - Number(variant.reserved_quantity || 0) > 0) {
+        res.json({ success: true, alreadyAvailable: true }); return;
+      }
+      const { error: upsertError } = await db.from('back_in_stock_subscriptions').upsert({
+        user_id: userId, product_id: productId, product_variant_id: variantId, email,
+        status: 'pending', updated_at: new Date().toISOString()
+      }, { onConflict: 'user_id,product_variant_id' });
+      if (upsertError) throw upsertError;
+      res.status(201).json({ success: true, emailDeliveryConfigured: Boolean(process.env.RESEND_API_KEY && process.env.RESEND_FROM_EMAIL && (process.env.SITE_URL || process.env.APP_URL)), message: 'Restock request saved.' });
+    } catch (err: any) {
+      console.error('[back-in-stock/subscribe] failed:', err?.code, err?.message);
+      res.status(503).json({ success: false, error: 'Unable to save your restock request right now. Please try again shortly.' });
     }
   });
 
@@ -3057,6 +2962,9 @@ async function startServer() {
           return;
         }
 
+        // Send queued restock alerts when provider credentials are configured.
+        void dispatchReadyBackInStockEmails(variantId);
+
         // Insert audit movement record
         await db.from('inventory_movements').insert({
           product_variant_id: variantId,
@@ -3274,6 +3182,105 @@ async function startServer() {
   );
 
   // -------------------------------------------------------------------
+  // COUPONS: PUBLIC VALIDATION + ADMIN MANAGEMENT / USAGE HISTORY
+  // -------------------------------------------------------------------
+  app.post('/api/coupons/validate', async (req: Request, res: Response) => {
+    try {
+      if (!db) { res.status(503).json({ success: false, error: 'Coupon service unavailable.' }); return; }
+      const code = String(req.body?.code || '').trim().toUpperCase();
+      const items = Array.isArray(req.body?.items) ? req.body.items : [];
+      if (!code || !items.length) { res.status(400).json({ success: false, error: 'Enter a coupon code and add items to your cart.' }); return; }
+      const { data: coupon, error } = await db.from('coupons').select('*').eq('code', code).eq('is_active', true).maybeSingle();
+      if (error) throw error;
+      const now = Date.now();
+      if (!coupon || new Date(coupon.starts_at).getTime() > now || (coupon.expires_at && new Date(coupon.expires_at).getTime() < now)) {
+        res.status(400).json({ success: false, error: 'This coupon is invalid or outside its validity period.' }); return;
+      }
+      if (coupon.usage_limit != null) {
+        const { count, error: countError } = await db.from('coupon_usage').select('id', { count: 'exact', head: true }).eq('coupon_id', coupon.id);
+        if (countError) throw countError;
+        if ((count || 0) >= Number(coupon.usage_limit)) { res.status(400).json({ success: false, error: 'This coupon has reached its usage limit.' }); return; }
+      }
+      const variantIds = items.map((i: any) => String(i.variant_id || '')).filter(Boolean);
+      if (variantIds.length !== items.length) { res.status(400).json({ success: false, error: 'A cart item is missing its selected variant.' }); return; }
+      const { data: variants, error: variantsError } = await db.from('product_variants').select('id, product_id, price_override, stock_quantity, is_active, products!inner(price,status)').in('id', variantIds);
+      if (variantsError) throw variantsError;
+      const byId = new Map((variants || []).map((v: any) => [v.id, v]));
+      let subtotal = 0;
+      for (const item of items) {
+        const v: any = byId.get(String(item.variant_id));
+        const quantity = Number(item.quantity);
+        if (!v || !v.is_active || v.products?.status !== 'active' || !Number.isInteger(quantity) || quantity < 1 || Number(v.stock_quantity || 0) < quantity) {
+          res.status(400).json({ success: false, error: 'One or more cart items are unavailable.' }); return;
+        }
+        subtotal += Number(v.price_override ?? v.products.price) * quantity;
+      }
+      if (subtotal < Number(coupon.minimum_order_value || 0)) { res.status(400).json({ success: false, error: `Minimum cart value for this coupon is ₹${Number(coupon.minimum_order_value || 0).toLocaleString('en-IN')}.` }); return; }
+      let discountAmount = coupon.discount_type === 'percentage' ? subtotal * Number(coupon.discount_value) / 100 : Number(coupon.discount_value);
+      if (coupon.maximum_discount != null) discountAmount = Math.min(discountAmount, Number(coupon.maximum_discount));
+      discountAmount = Math.max(0, Math.min(subtotal, Math.round(discountAmount * 100) / 100));
+      res.json({ success: true, discountAmount, message: `Coupon ${code} applied. Final discount is recalculated by the server at order creation.` });
+    } catch (err: any) {
+      console.error('[coupons/validate] failed:', err);
+      res.status(500).json({ success: false, error: 'Unable to validate coupon right now.' });
+    }
+  });
+
+  app.get('/api/admin/coupons', authenticateUser, async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      if (!(await checkAdminRole(req.user?.id))) { res.status(403).json({ success: false, error: 'Admin access required.' }); return; }
+      if (!db) { res.status(503).json({ success: false, error: 'Database service unavailable.' }); return; }
+      const { data, error } = await db.from('coupons').select('*').order('created_at', { ascending: false });
+      if (error) throw error;
+      res.json({ success: true, coupons: data || [] });
+    } catch (err: any) { console.error('[admin/coupons] list failed:', err); res.status(500).json({ success: false, error: 'Unable to load coupons.' }); }
+  });
+
+  app.post('/api/admin/coupons', authenticateUser, async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      if (!(await checkAdminRole(req.user?.id))) { res.status(403).json({ success: false, error: 'Admin access required.' }); return; }
+      if (!db) { res.status(503).json({ success: false, error: 'Database service unavailable.' }); return; }
+      const b = req.body || {};
+      const code = String(b.code || '').trim().toUpperCase();
+      const type = b.discount_type;
+      const value = Number(b.discount_value);
+      const minimum = Number(b.minimum_order_value || 0);
+      if (!/^[A-Z0-9_-]{3,40}$/.test(code) || !['percentage', 'fixed_amount'].includes(type) || !Number.isFinite(value) || value <= 0 || (type === 'percentage' && value > 100) || !Number.isFinite(minimum) || minimum < 0) {
+        res.status(400).json({ success: false, error: 'Check coupon code, discount type/value, and minimum cart value.' }); return;
+      }
+      const startsAt = new Date(b.starts_at || Date.now());
+      const expiresAt = b.expires_at ? new Date(b.expires_at) : null;
+      if (!Number.isFinite(startsAt.getTime()) || (expiresAt && (!Number.isFinite(expiresAt.getTime()) || expiresAt <= startsAt))) { res.status(400).json({ success: false, error: 'Coupon validity dates are invalid.' }); return; }
+      const payload = { code, description: String(b.description || '').trim() || null, discount_type: type, discount_value: value, minimum_order_value: minimum, maximum_discount: b.maximum_discount == null || b.maximum_discount === '' ? null : Number(b.maximum_discount), usage_limit: b.usage_limit == null || b.usage_limit === '' ? null : Number(b.usage_limit), per_user_limit: null, starts_at: startsAt.toISOString(), expires_at: expiresAt?.toISOString() || null, is_active: b.is_active !== false };
+      const { data, error } = await db.from('coupons').insert(payload).select('*').single();
+      if (error) { if (error.code === '23505') { res.status(409).json({ success: false, error: 'That coupon code already exists.' }); return; } throw error; }
+      res.status(201).json({ success: true, coupon: data });
+    } catch (err: any) { console.error('[admin/coupons] create failed:', err); res.status(500).json({ success: false, error: 'Unable to create coupon.' }); }
+  });
+
+  app.patch('/api/admin/coupons/:id', authenticateUser, async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      if (!(await checkAdminRole(req.user?.id))) { res.status(403).json({ success: false, error: 'Admin access required.' }); return; }
+      if (!db) { res.status(503).json({ success: false, error: 'Database service unavailable.' }); return; }
+      if (typeof req.body?.is_active !== 'boolean') { res.status(400).json({ success: false, error: 'is_active must be a boolean.' }); return; }
+      const { data, error } = await db.from('coupons').update({ is_active: req.body.is_active, updated_at: new Date().toISOString() }).eq('id', req.params.id).select('id').maybeSingle();
+      if (error) throw error;
+      if (!data) { res.status(404).json({ success: false, error: 'Coupon not found.' }); return; }
+      res.json({ success: true });
+    } catch (err: any) { console.error('[admin/coupons] toggle failed:', err); res.status(500).json({ success: false, error: 'Unable to update coupon.' }); }
+  });
+
+  app.get('/api/admin/coupons/usage', authenticateUser, async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      if (!(await checkAdminRole(req.user?.id))) { res.status(403).json({ success: false, error: 'Admin access required.' }); return; }
+      if (!db) { res.status(503).json({ success: false, error: 'Database service unavailable.' }); return; }
+      const { data, error } = await db.from('coupon_usage').select('id, coupon_id, user_id, order_id, used_at, coupons(code, discount_type, discount_value), orders(order_number, customer_email, discount_amount, total_amount)').order('used_at', { ascending: false }).limit(500);
+      if (error) throw error;
+      res.json({ success: true, usage: data || [] });
+    } catch (err: any) { console.error('[admin/coupons/usage] failed:', err); res.status(500).json({ success: false, error: 'Unable to load coupon usage history.' }); }
+  });
+
+  // -------------------------------------------------------------------
   // POST /api/admin/settings (ADMIN SITE SETTINGS PERSISTENCE)
   // -------------------------------------------------------------------
   app.post(
@@ -3349,6 +3356,18 @@ async function startServer() {
           return;
         }
 
+        const initialStatus = product.status || 'draft';
+        const initialPrice = Number(product.price);
+        const initialGstRate = product.gstRate === undefined || product.gstRate === null || product.gstRate === '' ? null : Number(product.gstRate);
+        if (initialStatus === 'active' && (!Number.isFinite(initialPrice) || initialPrice <= 0)) {
+          res.status(400).json({ success: false, error: 'An active product must have a selling price greater than zero. Keep dummy products in Draft.' });
+          return;
+        }
+        if (initialStatus === 'active' && (initialGstRate === null || !Number.isFinite(initialGstRate) || initialGstRate < 0 || initialGstRate > 100)) {
+          res.status(400).json({ success: false, error: 'Choose a valid GST rate before activating this product.' });
+          return;
+        }
+
         // Validate unique slug
         let finalSlug = product.slug.trim().toLowerCase();
         const { data: existingSlug } = await db.from('products').select('id').eq('slug', finalSlug).maybeSingle();
@@ -3369,12 +3388,14 @@ async function startServer() {
             category_id: categoryId,
             collection_id: collectionId,
             price: Number(product.price) || 0,
+            gst_rate: initialGstRate,
             mrp: product.mrp ? Number(product.mrp) : null,
             status: product.status || 'draft',
             featured: Boolean(product.featured),
             bestseller: Boolean(product.bestSeller),
             new_arrival: Boolean(product.newArrival),
             description: product.description || null,
+            metadata: product.metadata || {},
             fabric: product.fabric || null,
             weave: product.weave || null,
             origin: product.origin || null,
@@ -3393,6 +3414,11 @@ async function startServer() {
         }
 
         const productId = newProd.id;
+        if (!Array.isArray(variants) || variants.length === 0) {
+          await db.from('products').delete().eq('id', productId);
+          res.status(400).json({ success: false, error: 'At least one stock variant is required before a product can be saved.' });
+          return;
+        }
 
         // 1. Insert variants first with standardized SKU format to obtain stable variant IDs
         const variantSkuToIdMap = new Map<string, string>();
@@ -3400,8 +3426,12 @@ async function startServer() {
           for (let idx = 0; idx < variants.length; idx++) {
             const v = variants[idx];
             const vIndex = String(idx + 1).padStart(2, '0');
-            const vSku = v.sku && v.sku.includes('-V') ? v.sku.trim() : `${baseSku}-V${vIndex}`;
-            const { data: insertedVar } = await db
+            // Respect the form's SKU (e.g. VKV-SAR-001-01); otherwise use a stable
+            // numeric suffix. Do not silently rewrite SKUs to the legacy "-V01" format.
+            const vSku = typeof v.sku === 'string' && v.sku.trim()
+              ? v.sku.trim()
+              : `${baseSku}-${vIndex}`;
+            const { data: insertedVar, error: variantInsertError } = await db
               .from('product_variants')
               .insert({
                 product_id: productId,
@@ -3420,6 +3450,13 @@ async function startServer() {
               .select('id')
               .single();
 
+            if (variantInsertError || !insertedVar?.id) {
+              // Product creation must not silently succeed without its stock ledger.
+              const cleanup = await db.from('products').delete().eq('id', productId);
+              if (cleanup.error) console.error('[admin/products/create] failed to roll back product after variant insert failure:', cleanup.error.message);
+              res.status(500).json({ success: false, error: `Variant could not be saved: ${variantInsertError?.message || 'database returned no variant ID'}. Product creation was rolled back where possible.` });
+              return;
+            }
             if (insertedVar?.id) {
               variantSkuToIdMap.set(vSku, insertedVar.id);
               if (v.id) variantSkuToIdMap.set(v.id, insertedVar.id);
@@ -3445,7 +3482,12 @@ async function startServer() {
               scale: img.scale ? Number(img.scale) : 1.0,
             };
           });
-          await db.from('product_images').insert(imageRows);
+          const { error: imageInsertError } = await db.from('product_images').insert(imageRows);
+          if (imageInsertError) {
+            console.error('[admin/products/create] product image insert failed', { productId, message: imageInsertError.message });
+            res.status(500).json({ success: false, error: `Product was created, but its images could not be saved: ${imageInsertError.message}. Reopen the product and save again after resolving this database error.` });
+            return;
+          }
         }
 
         res.json({ success: true, productId, product: newProd });
@@ -3497,6 +3539,19 @@ async function startServer() {
         const categoryId = product.categoryId && product.categoryId.trim() ? product.categoryId.trim() : null;
         const collectionId = product.collectionId && product.collectionId.trim() ? product.collectionId.trim() : null;
         const preservedSku = product.sku ? product.sku.trim() : currentProduct.sku;
+        const nextStatus = product.status || currentProduct.status;
+        const nextPrice = product.price !== undefined ? Number(product.price) : Number(currentProduct.price);
+        const nextGstRate = product.gstRate === undefined
+          ? (currentProduct.gst_rate === null || currentProduct.gst_rate === undefined ? null : Number(currentProduct.gst_rate))
+          : (product.gstRate === null || product.gstRate === '' ? null : Number(product.gstRate));
+        if (nextStatus === 'active' && (!Number.isFinite(nextPrice) || nextPrice <= 0)) {
+          res.status(400).json({ success: false, error: 'An active product must have a selling price greater than zero. Keep dummy products in Draft.' });
+          return;
+        }
+        if (nextStatus === 'active' && (nextGstRate === null || !Number.isFinite(nextGstRate) || nextGstRate < 0 || nextGstRate > 100)) {
+          res.status(400).json({ success: false, error: 'Choose a valid GST rate before activating this product.' });
+          return;
+        }
 
         // 2. Perform authoritative product record update
         const { data: updatedProd, error: updateError } = await db
@@ -3508,12 +3563,14 @@ async function startServer() {
             category_id: categoryId,
             collection_id: collectionId,
             price: product.price !== undefined ? Number(product.price) : currentProduct.price,
+            gst_rate: nextGstRate,
             mrp: product.mrp !== undefined ? (product.mrp ? Number(product.mrp) : null) : currentProduct.mrp,
             status: product.status || currentProduct.status,
             featured: product.featured !== undefined ? Boolean(product.featured) : currentProduct.featured,
             bestseller: product.bestSeller !== undefined ? Boolean(product.bestSeller) : currentProduct.bestseller,
             new_arrival: product.newArrival !== undefined ? Boolean(product.newArrival) : currentProduct.new_arrival,
             description: product.description !== undefined ? product.description : currentProduct.description,
+            metadata: product.metadata !== undefined ? product.metadata : (currentProduct.metadata || {}),
             fabric: product.fabric !== undefined ? product.fabric : currentProduct.fabric,
             weave: product.weave !== undefined ? product.weave : currentProduct.weave,
             origin: product.origin !== undefined ? product.origin : currentProduct.origin,
@@ -3535,10 +3592,15 @@ async function startServer() {
         // 3. Safe Non-Destructive Variant Synchronization first to ensure all variant IDs are known
         const variantSkuToIdMap = new Map<string, string>();
         if (Array.isArray(variants) && variants.length > 0) {
-          const { data: existingVariants } = await db
+          const { data: existingVariants, error: existingVariantsError } = await db
             .from('product_variants')
             .select('*')
             .eq('product_id', id);
+          if (existingVariantsError) {
+            console.error('[admin/products/update] could not read current variants', existingVariantsError);
+            res.status(503).json({ success: false, error: `Variant storage is unavailable: ${existingVariantsError.message}` });
+            return;
+          }
 
           const existingMap = new Map((existingVariants || []).map((v: any) => [v.id, v]));
           const existingSkuMap = new Map((existingVariants || []).map((v: any) => [v.sku, v]));
@@ -3546,33 +3608,76 @@ async function startServer() {
           for (let i = 0; i < variants.length; i++) {
             const v = variants[i];
             const vIndex = String(i + 1).padStart(2, '0');
-            const expectedSku = v.sku && v.sku.includes('-V') ? v.sku.trim() : `${preservedSku}-V${vIndex}`;
+            const submittedSku = typeof v.sku === 'string' ? v.sku.trim() : '';
+            const matchedById = v.id ? existingMap.get(v.id) : undefined;
+            const matchedBySku = submittedSku ? existingSkuMap.get(submittedSku) : undefined;
+            const matchedExisting = matchedById || matchedBySku;
 
-            const matchedExisting = (v.id && existingMap.get(v.id)) || existingSkuMap.get(expectedSku);
+            // Existing variant SKUs are stable identifiers: never rewrite them during
+            // an ordinary product edit. New variants may use the form-provided SKU.
+            const expectedSku = matchedExisting
+              ? matchedExisting.sku
+              : (submittedSku || `${preservedSku}-${vIndex}`);
 
             if (matchedExisting) {
-              // UPDATE existing variant in place — PRESERVES foreign key stability!
-              await db
+              // The product editor owns the physical stock field. Validate the submitted
+              // value and never allow physical stock to fall below already-reserved units.
+              const submittedStock =
+                v.stockQuantity === undefined || v.stockQuantity === null || v.stockQuantity === ''
+                  ? Number(matchedExisting.stock_quantity || 0)
+                  : Number(v.stockQuantity);
+              const reservedStock = Number(matchedExisting.reserved_quantity || 0);
+              if (!Number.isSafeInteger(submittedStock) || submittedStock < 0) {
+                throw new Error(`Stock for variant ${expectedSku} must be a whole number of zero or more.`);
+              }
+              if (!Number.isSafeInteger(reservedStock) || reservedStock < 0) {
+                throw new Error(`Could not verify reserved stock for variant ${expectedSku}. No changes were made.`);
+              }
+              if (submittedStock < reservedStock) {
+                throw new Error(`Stock for ${expectedSku} cannot be lower than ${reservedStock} unit(s) already reserved.`);
+              }
+
+              const existingAttributes = matchedExisting.attributes && typeof matchedExisting.attributes === 'object' ? matchedExisting.attributes : {};
+              const incomingAttributes = v.attributes && typeof v.attributes === 'object' ? v.attributes : {};
+              const mergedAttributes = {
+                ...existingAttributes,
+                ...incomingAttributes,
+                colorHexPrimary: v.colorHexPrimary ?? incomingAttributes.colorHexPrimary ?? existingAttributes.colorHexPrimary,
+                colorHexSecondary: v.colorHexSecondary ?? incomingAttributes.colorHexSecondary ?? existingAttributes.colorHexSecondary,
+                colorSwatchUrl: v.colorSwatchUrl ?? incomingAttributes.colorSwatchUrl ?? existingAttributes.colorSwatchUrl,
+                images: Array.isArray(incomingAttributes.images) && incomingAttributes.images.length > 0
+                  ? incomingAttributes.images
+                  : (existingAttributes as any).images,
+              };
+              const { error: variantUpdateError } = await db
                 .from('product_variants')
                 .update({
-                  sku: expectedSku,
-                  variant_name: v.variantName || matchedExisting.variant_name || 'Standard',
+                  variant_name: v.variantName !== undefined && String(v.variantName).trim() !== ''
+                    ? String(v.variantName).trim()
+                    : (matchedExisting.variant_name || 'Standard'),
                   color: v.color !== undefined ? (v.color || null) : matchedExisting.color,
                   size: v.size !== undefined ? (v.size || null) : matchedExisting.size,
                   bed_size: v.bedSize !== undefined ? (v.bedSize || null) : matchedExisting.bed_size,
                   dimensions: v.dimensions !== undefined ? (v.dimensions || null) : matchedExisting.dimensions,
-                  price_override: v.priceOverride ? Number(v.priceOverride) : null,
-                  stock_quantity: v.stockQuantity !== undefined ? Number(v.stockQuantity) : matchedExisting.stock_quantity,
-                  is_active: true,
-                  attributes: v.attributes || matchedExisting.attributes || null,
+                  price_override: v.priceOverride !== undefined
+                    ? (v.priceOverride ? Number(v.priceOverride) : null)
+                    : matchedExisting.price_override,
+                  stock_quantity: submittedStock,
+                  is_active: v.isActive !== false,
+                  attributes: mergedAttributes,
                 })
                 .eq('id', matchedExisting.id);
 
+              if (variantUpdateError) throw variantUpdateError;
               variantSkuToIdMap.set(expectedSku, matchedExisting.id);
+              void dispatchReadyBackInStockEmails(matchedExisting.id);
               if (v.id) variantSkuToIdMap.set(v.id, matchedExisting.id);
             } else {
-              // INSERT new variant
-              const { data: insertedNewVar } = await db
+              const newStock = Number(v.stockQuantity ?? 0);
+              if (!Number.isInteger(newStock) || newStock < 0) {
+                throw new Error(`Invalid stock quantity for new variant ${expectedSku}.`);
+              }
+              const { data: insertedNewVar, error: variantInsertError } = await db
                 .from('product_variants')
                 .insert({
                   product_id: id,
@@ -3583,15 +3688,17 @@ async function startServer() {
                   bed_size: v.bedSize || null,
                   dimensions: v.dimensions || null,
                   price_override: v.priceOverride ? Number(v.priceOverride) : null,
-                  stock_quantity: Number(v.stockQuantity || 0),
-                  is_active: true,
+                  stock_quantity: newStock,
+                  is_active: v.isActive !== false,
                   attributes: v.attributes || null,
                 })
                 .select('id')
                 .single();
 
+              if (variantInsertError) throw variantInsertError;
               if (insertedNewVar?.id) {
                 variantSkuToIdMap.set(expectedSku, insertedNewVar.id);
+                void dispatchReadyBackInStockEmails(insertedNewVar.id);
                 if (v.id) variantSkuToIdMap.set(v.id, insertedNewVar.id);
               }
             }
@@ -3600,7 +3707,6 @@ async function startServer() {
 
         // 4. Sync Images with variant association, role, and presentation adjustment
         if (Array.isArray(images) && images.length > 0) {
-          await db.from('product_images').delete().eq('product_id', id);
           const imageRows = images.map((img: any, idx: number) => {
             const matchedVarId = img.variantId || (img.variantSku ? variantSkuToIdMap.get(img.variantSku) : null) || null;
             return {
@@ -3617,7 +3723,21 @@ async function startServer() {
               scale: img.scale ? Number(img.scale) : 1.0,
             };
           });
-          await db.from('product_images').insert(imageRows);
+          const { data: insertedImages, error: imageInsertError } = await db
+            .from('product_images').insert(imageRows).select('id');
+          if (imageInsertError) {
+            res.status(500).json({ success: false, error: `Image save failed: ${imageInsertError.message}` });
+            return;
+          }
+          const insertedIds = (insertedImages || []).map((r: any) => r.id).filter(Boolean);
+          if (insertedIds.length > 0) {
+            const { error: cleanupError } = await db.from('product_images')
+              .delete().eq('product_id', id).not('id', 'in', `(${insertedIds.join(',')})`);
+            if (cleanupError) {
+              res.status(500).json({ success: false, error: `New images saved, but old image cleanup failed: ${cleanupError.message}` });
+              return;
+            }
+          }
         }
 
         res.json({ success: true, product: updatedProd });
@@ -3715,7 +3835,13 @@ async function startServer() {
               }
             }
 
-            const stockQuantity = Math.max(0, parseInt(String(item.stockQuantity ?? item.stock ?? 5), 10) || 5);
+            const rawStock = item.stockQuantity ?? item.stock;
+            const stockQuantity = rawStock !== undefined && rawStock !== null && String(rawStock).trim() !== ''
+              ? Number(rawStock)
+              : NaN;
+            if (!Number.isInteger(stockQuantity) || stockQuantity < 0) {
+              throw new Error('A valid non-negative stock quantity is required for import.');
+            }
             const status = (item.status === 'active' || item.status === 'draft') ? item.status : 'active';
 
             // Check if product with this SKU already exists
@@ -3773,24 +3899,28 @@ async function startServer() {
                 }
               }
 
-              // Upsert variant
-              const { data: existingVariant } = await db
+              // Match only a variant belonging to this product. Importing metadata
+              // must not reset stock on an existing variant; use Inventory Control Center
+              // for explicit stock movements.
+              const { data: existingVariant, error: variantLookupError } = await db
                 .from('product_variants')
-                .select('id')
+                .select('id, product_id')
+                .eq('product_id', existingProduct.id)
                 .eq('sku', cleanSku)
                 .maybeSingle();
+              if (variantLookupError) throw variantLookupError;
 
               if (existingVariant) {
-                await db
+                const { error: variantUpdateError } = await db
                   .from('product_variants')
                   .update({
-                    stock_quantity: stockQuantity,
                     color: item.color || null,
                     updated_at: new Date().toISOString(),
                   })
                   .eq('id', existingVariant.id);
+                if (variantUpdateError) throw variantUpdateError;
               } else {
-                await db.from('product_variants').insert({
+                const { error: variantInsertError } = await db.from('product_variants').insert({
                   product_id: existingProduct.id,
                   sku: cleanSku,
                   variant_name: 'Standard Free Size',
@@ -3798,6 +3928,7 @@ async function startServer() {
                   color: item.color || null,
                   is_active: true,
                 });
+                if (variantInsertError) throw variantInsertError;
               }
 
               updatedCount++;
@@ -3839,17 +3970,18 @@ async function startServer() {
 
               // Primary image
               if (item.primaryImageUrl) {
-                await db.from('product_images').insert({
+                const { error: imageInsertError } = await db.from('product_images').insert({
                   product_id: newProd.id,
                   image_url: item.primaryImageUrl,
                   alt_text: item.name.trim(),
                   is_primary: true,
                   sort_order: 1,
                 });
+                if (imageInsertError) throw imageInsertError;
               }
 
               // Variant
-              await db.from('product_variants').insert({
+              const { error: variantInsertError } = await db.from('product_variants').insert({
                 product_id: newProd.id,
                 sku: cleanSku,
                 variant_name: 'Standard Free Size',
@@ -3857,6 +3989,7 @@ async function startServer() {
                 color: item.color || null,
                 is_active: true,
               });
+              if (variantInsertError) throw variantInsertError;
 
               importedCount++;
             }

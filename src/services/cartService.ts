@@ -206,53 +206,22 @@ export const cartService = {
       const cartId = await this.getOrCreateUserCartId(userId);
       if (!cartId) return { success: false, error: 'Could not access cart' };
 
-      // Find variant if not directly provided
+      // Resolve only a real active, in-stock variant. Never fabricate stock or silently
+      // pick the first database row (which may be sold out). Product detail pages pass
+      // the selected variant ID explicitly.
       let targetVariantId = variantId;
       if (!targetVariantId) {
-        const { data: variants } = await (supabase as any)
+        const { data: variants, error: variantsError } = await (supabase as any)
           .from('product_variants')
-          .select('id, stock_quantity')
+          .select('id, stock_quantity, reserved_quantity, is_active')
           .eq('product_id', productId)
-          .limit(1);
-
-        targetVariantId = variants?.[0]?.id;
-
-        if (!targetVariantId) {
-          const { data: prod } = await (supabase as any)
-            .from('products')
-            .select('id')
-            .or(`id.eq.${productId},slug.eq.${productId}`)
-            .maybeSingle();
-
-          if (prod?.id) {
-            const { data: vList } = await (supabase as any)
-              .from('product_variants')
-              .select('id')
-              .eq('product_id', prod.id)
-              .limit(1);
-
-            targetVariantId = vList?.[0]?.id;
-          }
-        }
-      }
-
-      if (!targetVariantId) {
-        // Create fallback variant in database if product exists
-        try {
-          const { data: newV } = await (supabase as any)
-            .from('product_variants')
-            .insert({
-              product_id: productId,
-              sku: `SKU-${productId.slice(0, 8)}`,
-              variant_name: 'Standard',
-              stock_quantity: 25,
-            })
-            .select('id')
-            .single();
-          targetVariantId = newV?.id;
-        } catch {
-          // ignore
-        }
+          .eq('is_active', true)
+          .order('created_at', { ascending: true });
+        if (variantsError) return { success: false, error: 'Could not verify product variants.' };
+        const available = (variants || []).find((v: any) =>
+          Number(v.stock_quantity || 0) - Number(v.reserved_quantity || 0) >= sanitizedAddQty
+        );
+        targetVariantId = available?.id;
       }
 
       if (!targetVariantId) {
@@ -368,12 +337,25 @@ export const cartService = {
           // Find target variant ID
           let targetVariantId = guestItem.variantId;
           if (!targetVariantId) {
-            const { data: variants } = await (supabase as any)
+            const { data: variants, error: variantsError } = await (supabase as any)
               .from('product_variants')
-              .select('id')
+              .select('id, stock_quantity, reserved_quantity, is_active')
               .eq('product_id', guestItem.product.id)
-              .limit(1);
-            targetVariantId = variants?.[0]?.id;
+              .eq('is_active', true)
+              .order('created_at', { ascending: true });
+            if (variantsError) {
+              console.warn('[CART_MUTATION] Could not resolve guest cart variant:', variantsError.message);
+              continue;
+            }
+            const requiredQty = sanitizeQuantity(guestItem.quantity, MAX_CART_ITEM_QUANTITY);
+            const availableVariant = (variants || []).find((v: any) =>
+              Number(v.stock_quantity || 0) - Number(v.reserved_quantity || 0) >= requiredQty
+            );
+            targetVariantId = availableVariant?.id;
+            if (!targetVariantId) {
+              console.warn('[CART_MUTATION] Skipping guest cart item with no available variant:', guestItem.product.name);
+              continue;
+            }
           }
 
           if (targetVariantId) {

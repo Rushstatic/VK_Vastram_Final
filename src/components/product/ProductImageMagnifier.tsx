@@ -1,4 +1,4 @@
-import React, { useState, useRef, useCallback, useEffect } from 'react';
+import React, { useState, useRef, useCallback, useEffect, useLayoutEffect } from 'react';
 import { normalizeImageUrl } from '../../lib/imageHelper';
 import { Sparkles, ZoomIn } from 'lucide-react';
 
@@ -55,10 +55,18 @@ export const ProductImageMagnifier: React.FC<ProductImageMagnifierProps> = ({
   const normalizedSrc = normalizeImageUrl(src);
 
   // Immediately reset load status when image src changes — eliminates cross-variant buffer flash
-  useEffect(() => {
+  useLayoutEffect(() => {
+    // Reset before paint when the URL changes, preventing a cached onLoad event
+    // from being overwritten by a later passive effect.
     setLoadedSrc(null);
-    setHasError(false);
+    setHasError(!normalizedSrc);
   }, [normalizedSrc]);
+
+  useEffect(() => {
+    if (!normalizedSrc || loadedSrc === normalizedSrc || hasError) return;
+    const timeout = window.setTimeout(() => setHasError(true), 12000);
+    return () => window.clearTimeout(timeout);
+  }, [normalizedSrc, loadedSrc, hasError]);
 
   // Check prefers-reduced-motion
   useEffect(() => {
@@ -106,13 +114,14 @@ export const ProductImageMagnifier: React.FC<ProductImageMagnifierProps> = ({
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
       onMouseMove={handleMouseMove}
-      onClick={onOpenFullscreen}
-      className={`relative w-full ${aspectClass} overflow-hidden rounded-xs bg-[#F4EFE6] select-none cursor-crosshair group ${className}`}
+      onClick={isLoaded ? onOpenFullscreen : undefined}
+      className={`relative w-full ${aspectClass} overflow-hidden rounded-xs bg-[#F4EFE6] select-none ${isLoaded ? 'cursor-zoom-in' : 'cursor-default'} group ${className}`}
       aria-label={`${alt} — Hover to magnify weave detail, click for fullscreen`}
     >
       {/* 1. Neutral luxury skeleton while image is downloading */}
       {!isLoaded && !hasError && (
-        <div className="absolute inset-0 bg-[#EFE8DA] flex items-center justify-center animate-pulse z-0">
+        <div className="absolute inset-0 bg-[#EFE8DA] flex flex-col items-center justify-center gap-3 z-0" role="status" aria-live="polite">
+          <span className="h-10 w-10 rounded-full border-2 border-[#B88E3E]/25 border-t-[#B88E3E] animate-spin" aria-hidden="true" />
           <span className="font-serif italic text-xs text-[#78716C]">Loading artisanal drape...</span>
         </div>
       )}
@@ -135,8 +144,8 @@ export const ProductImageMagnifier: React.FC<ProductImageMagnifierProps> = ({
           onLoad={() => setLoadedSrc(normalizedSrc)}
           onError={() => setHasError(true)}
           className={`w-full h-full transition-opacity duration-300 ${
-            isLoaded ? 'opacity-100' : 'opacity-0'
-          } ${isHovering ? 'opacity-0' : 'opacity-100'}`}
+            isLoaded && !isHovering ? 'opacity-100' : 'opacity-0'
+          }`}
           style={{
             objectFit: fit,
             objectPosition: `${focalXCss} ${focalYCss}`,

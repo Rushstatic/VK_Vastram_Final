@@ -20,6 +20,7 @@ import {
   Check,
 } from 'lucide-react';
 import { adminService, CategoryAdminData, CollectionAdminData } from '../../services/adminService';
+import { supabase, isSupabaseConfigured } from '../../lib/supabase';
 import { Product, AdminSubView, ProductCategory, ProductImageRole } from '../../types';
 import { Button } from '../ui/Button';
 import { useSiteSettings } from '../../hooks/useSiteSettings';
@@ -84,6 +85,7 @@ export const AdminProductForm: React.FC<AdminProductFormProps> = ({
   const [categoryId, setCategoryId] = useState('');
   const [collectionId, setCollectionId] = useState('');
   const [price, setPrice] = useState<number>(0);
+  const [gstRate, setGstRate] = useState<number | ''>(5);
   const [mrp, setMrp] = useState<number | undefined>(undefined);
   const [status, setStatus] = useState<'draft' | 'active' | 'archived'>('active');
   const [featured, setFeatured] = useState(false);
@@ -98,6 +100,12 @@ export const AdminProductForm: React.FC<AdminProductFormProps> = ({
   const [dimensions, setDimensions] = useState('');
   const [care, setCare] = useState('');
   const [color, setColor] = useState('');
+  const [sareeType, setSareeType] = useState('');
+  const [managedSareeTypes, setManagedSareeTypes] = useState<string[]>(['Chanderi', 'Malmal Cotton', 'Tissue Silk', 'Linen Cotton', 'Banarasi', 'Kanjivaram', 'Paithani', 'Other']);
+  const [primaryColourName, setPrimaryColourName] = useState('');
+  const [primaryColourHex, setPrimaryColourHex] = useState('#78281F');
+  const [secondaryColourName, setSecondaryColourName] = useState('');
+  const [secondaryColourHex, setSecondaryColourHex] = useState('#B88E3E');
   const [pattern, setPattern] = useState('');
   const [occasion, setOccasion] = useState('');
   const [blousePiece, setBlousePiece] = useState('0.8m Running Blouse Piece Included');
@@ -112,6 +120,10 @@ export const AdminProductForm: React.FC<AdminProductFormProps> = ({
   const [images, setImages] = useState<ImageItem[]>([]);
   const [imageUrlInput, setImageUrlInput] = useState('');
   const [variants, setVariants] = useState<VariantItem[]>([]);
+  const [variantsEnabled, setVariantsEnabled] = useState(false);
+  const [singleProductStock, setSingleProductStock] = useState(0);
+  const [singleProductVariantId, setSingleProductVariantId] = useState<string | undefined>(undefined);
+  const [singleProductVariantSku, setSingleProductVariantSku] = useState<string | undefined>(undefined);
   const [activeGalleryTab, setActiveGalleryTab] = useState<string>('all');
   const [newImageTargetVariant, setNewImageTargetVariant] = useState<string>('all');
   const [newImageTargetRole, setNewImageTargetRole] = useState<ProductImageRole>('hero');
@@ -156,6 +168,14 @@ export const AdminProductForm: React.FC<AdminProductFormProps> = ({
       ]);
       setCategories(cats);
       setCollections(cols);
+      if (isSupabaseConfigured()) {
+        const { data: typeSetting } = await (supabase as any).from('site_settings').select('value').eq('key', 'saree_types').maybeSingle();
+        const savedTypes = typeSetting?.value?.types;
+        if (Array.isArray(savedTypes)) {
+          const activeNames = savedTypes.filter((t: any) => t && t.active !== false && typeof t.name === 'string' && t.name.trim()).map((t: any) => t.name.trim());
+          if (activeNames.length) setManagedSareeTypes(activeNames);
+        }
+      }
 
       if (cats.length > 0 && !categoryId) {
         setCategoryId(cats[0].id);
@@ -187,6 +207,7 @@ export const AdminProductForm: React.FC<AdminProductFormProps> = ({
         setCategoryId(p.categoryId || '');
         setCollectionId(p.collectionId || '');
         setPrice(p.price);
+        setGstRate(p.gstRate === null || p.gstRate === undefined ? '' : Number(p.gstRate));
         setMrp(p.mrp);
         setStatus(p.status || 'active');
         setFeatured(Boolean(p.featured));
@@ -198,6 +219,12 @@ export const AdminProductForm: React.FC<AdminProductFormProps> = ({
         setOrigin(p.origin || '');
         setDimensions(p.dimensions || '');
         setCare(p.care || '');
+        const productMetadata = (p as any).metadata || {};
+        setSareeType(productMetadata.sareeType || '');
+        setPrimaryColourName(productMetadata.primaryColourName || '');
+        setPrimaryColourHex(productMetadata.primaryColourHex || '#78281F');
+        setSecondaryColourName(productMetadata.secondaryColourName || '');
+        setSecondaryColourHex(productMetadata.secondaryColourHex || '#B88E3E');
         setSeoTitle(p.seoTitle || '');
         setSeoDescription(p.seoDescription || '');
 
@@ -208,8 +235,23 @@ export const AdminProductForm: React.FC<AdminProductFormProps> = ({
         }
 
         if (data.variants && data.variants.length > 0) {
+          const hasExplicitVariants = data.variants.length > 1 || data.variants.some((v: any) => {
+            const attrs = v.attributes || {};
+            return Boolean(
+              (v.variant_name && !['Standard', 'Standard Free Size'].includes(v.variant_name)) ||
+              v.color || v.size || v.bed_size || v.dimensions ||
+              attrs.colorHexPrimary || attrs.colorHexSecondary || attrs.colorSwatchUrl ||
+              (Array.isArray(attrs.images) && attrs.images.length > 0)
+            );
+          });
+          setVariantsEnabled(hasExplicitVariants);
+          if (data.variants.length === 1) {
+            setSingleProductStock(Number(data.variants[0].stock_quantity || 0));
+            setSingleProductVariantId(data.variants[0].id || undefined);
+            setSingleProductVariantSku(data.variants[0].sku || undefined);
+          }
           setVariants(
-            data.variants.map((v: any) => ({
+            hasExplicitVariants ? data.variants.map((v: any) => ({
               id: v.id,
               sku: v.sku,
               variantName: v.variant_name || 'Standard',
@@ -224,7 +266,7 @@ export const AdminProductForm: React.FC<AdminProductFormProps> = ({
               colorHexPrimary: v.attributes?.colorHexPrimary,
               colorHexSecondary: v.attributes?.colorHexSecondary,
               colorSwatchUrl: v.attributes?.colorSwatchUrl,
-            }))
+            })) : []
           );
         }
       }
@@ -404,11 +446,12 @@ export const AdminProductForm: React.FC<AdminProductFormProps> = ({
       size: category === 'bedsheets' ? bedSize : dimensions,
       bedSize: category === 'bedsheets' ? bedSize : undefined,
       dimensions: dimensions,
-      stockQuantity: 10,
+      stockQuantity: 0,
       isActive: true,
       priceOverride: undefined,
     };
     setVariants([...variants, newVariant]);
+    setVariantsEnabled(true);
     setIsDirty(true);
   };
 
@@ -435,6 +478,14 @@ export const AdminProductForm: React.FC<AdminProductFormProps> = ({
       setErrorMessage('Price cannot be negative.');
       return;
     }
+    if (status === 'active' && (!Number.isFinite(price) || price <= 0)) {
+      setErrorMessage('An active product must have a selling price greater than ₹0. Keep unfinished products in Draft.');
+      return;
+    }
+    if (status === 'active' && (gstRate === '' || !Number.isFinite(Number(gstRate)) || Number(gstRate) < 0 || Number(gstRate) > 100)) {
+      setErrorMessage('Enter the accountant-confirmed GST rate for this active product before saving. Variants cannot be saved until the product tax setting is valid.');
+      return;
+    }
     if (mrp && mrp < price) {
       setErrorMessage('MRP cannot be lower than the selling price.');
       return;
@@ -444,9 +495,40 @@ export const AdminProductForm: React.FC<AdminProductFormProps> = ({
       return;
     }
 
+    // Variant mode must never silently fall back to an auto-generated standard variant.
+    // This prevents a hidden/duplicate variant being created when the admin enabled variants.
+    const defaultVariantTitles = new Set([
+      '', 'Standard', 'Standard Free Size',
+      `${bedSize} / Standard`,
+      `${bedSize} / ${color || 'Standard'}`,
+    ]);
+    const hasConfiguredVariant = variants.some((v) => {
+      const title = (v.variantName || '').trim();
+      const hasColorName = Boolean(v.color?.trim());
+      const hasColorHex = /^#[0-9A-Fa-f]{6}$/.test(v.colorHexPrimary || '') || /^#[0-9A-Fa-f]{6}$/.test(v.colorHexSecondary || '');
+      const hasSize = Boolean(v.size?.trim() || v.bedSize?.trim() || v.dimensions?.trim());
+      const hasCustomTitle = Boolean(title && !defaultVariantTitles.has(title));
+      // Existing persisted variants may be valid because of saved artwork or other
+      // attributes that are not directly editable in this row.
+      return Boolean(v.id) || hasColorName || hasColorHex || hasSize || hasCustomTitle;
+    });
+    if (variantsEnabled && !hasConfiguredVariant) {
+      setErrorMessage('Add at least one variant title, colour name, size, or valid colour HEX before saving.');
+      return;
+    }
+    if (variantsEnabled && variants.some((v) => !Number.isSafeInteger(Number(v.stockQuantity)) || Number(v.stockQuantity) < 0)) {
+      setErrorMessage('Every variant must have a whole-number stock quantity of zero or more.');
+      return;
+    }
+    const validHex = (value?: string) => !value?.trim() || /^#[0-9A-Fa-f]{6}$/.test(value.trim());
+    if (variantsEnabled && variants.some((v) => !validHex(v.colorHexPrimary) || !validHex(v.colorHexSecondary))) {
+      setErrorMessage('Enter each primary/secondary colour as a complete HEX value such as #78281F, or clear the field.');
+      return;
+    }
+
     setLoading(true);
 
-    const productPayload: Partial<Product> = {
+    const productPayload: Partial<Product> & { metadata?: Record<string, any> } = {
       name,
       slug,
       sku: sku || `VKV-${Date.now().toString().slice(-6)}`,
@@ -454,6 +536,7 @@ export const AdminProductForm: React.FC<AdminProductFormProps> = ({
       categoryId,
       collectionId: collectionId || undefined,
       price: Number(price),
+      gstRate: gstRate === '' ? undefined : Number(gstRate),
       mrp: mrp ? Number(mrp) : undefined,
       status,
       featured,
@@ -465,24 +548,51 @@ export const AdminProductForm: React.FC<AdminProductFormProps> = ({
       origin: origin.trim() || undefined,
       dimensions: dimensions.trim() || undefined,
       care: care.trim() || undefined,
+      metadata: {
+        sareeType: category === 'sarees' ? sareeType.trim() || null : null,
+        primaryColourName: primaryColourName.trim() || null,
+        primaryColourHex: /^#[0-9A-Fa-f]{6}$/.test(primaryColourHex) ? primaryColourHex.toUpperCase() : null,
+        secondaryColourName: secondaryColourName.trim() || null,
+        secondaryColourHex: /^#[0-9A-Fa-f]{6}$/.test(secondaryColourHex) ? secondaryColourHex.toUpperCase() : null,
+      },
       seoTitle: seoTitle || `${name} | ${storeName}`,
       seoDescription: seoDescription || description.slice(0, 150),
     };
 
-    // Auto-generate default variant if none configured, and attach variant-specific images
-    const rawVariants =
-      variants.length > 0
-        ? variants
-        : [
-            {
-              sku: formatVariantSku(sku || 'VKV-SAR-001', 1),
-              variantName: 'Standard Free Size',
-              color: color.trim() || undefined,
-              size: dimensions.trim() || undefined,
-              stockQuantity: 10,
-              isActive: true,
-            },
-          ];
+    // Existing variants are always preserved. A newly-added default row is also
+    // a real variant (even before colour/title is customised); never let the
+    // filter turn an enabled variant editor into a product with zero inventory rows.
+    const meaningfulVariants = variants.filter((v) => {
+      const title = (v.variantName || '').trim();
+      const hasColor = Boolean(v.color?.trim());
+      const hasColorHex = /^#[0-9A-Fa-f]{6}$/.test(v.colorHexPrimary || '') || /^#[0-9A-Fa-f]{6}$/.test(v.colorHexSecondary || '');
+      const generatedTitles = new Set([
+        '', 'Standard Free Size', 'Standard',
+        `${bedSize} / Standard`,
+        `${bedSize} / ${color || 'Standard'}`,
+      ]);
+      const hasSize = Boolean(
+        (v.size?.trim() && v.size.trim() !== dimensions.trim() && v.size.trim() !== bedSize.trim()) ||
+        (v.bedSize?.trim() && v.bedSize.trim() !== bedSize.trim()) ||
+        (v.dimensions?.trim() && v.dimensions.trim() !== dimensions.trim())
+      );
+      const hasCustomTitle = Boolean(title && !generatedTitles.has(title));
+      const hasStoredIdentity = Boolean(v.id && !String(v.id).startsWith('new-'));
+      const hasStock = Number(v.stockQuantity || 0) > 0;
+      return hasStoredIdentity || hasColor || hasColorHex || hasSize || hasCustomTitle || hasStock;
+    });
+    const rawVariants = variantsEnabled
+      ? (meaningfulVariants.length > 0 ? meaningfulVariants : variants.slice(0, 1))
+      : [{
+          id: singleProductVariantId,
+          sku: singleProductVariantSku || formatVariantSku(sku || 'VKV-SAR-001', 1),
+          variantName: category === 'bedsheets' ? `${bedSize} / Standard` : 'Standard Free Size',
+          color: color.trim() || undefined,
+          size: category === 'bedsheets' ? bedSize : undefined,
+          bedSize: category === 'bedsheets' ? bedSize : undefined,
+          stockQuantity: Number(singleProductStock) || 0,
+          isActive: true,
+        }];
 
     const imagesPayload = images.map((img, idx) => ({
       id: img.id,
@@ -507,6 +617,9 @@ export const AdminProductForm: React.FC<AdminProductFormProps> = ({
 
       return {
         ...v,
+        // All variant pricing inherits the parent product price; never persist an override from legacy form state.
+        priceOverride: undefined,
+        mrpOverride: undefined,
         attributes: {
           images: assignedImages.map((ai, aIdx) => ({
             id: ai.id,
@@ -674,7 +787,7 @@ export const AdminProductForm: React.FC<AdminProductFormProps> = ({
             {/* Selling Price */}
             <div>
               <label className="block font-semibold text-[#1C1917] mb-1.5">
-                Selling Price (₹ INR) *
+                Selling Price (₹ INR, GST-inclusive) *
               </label>
               <input
                 type="number"
@@ -688,6 +801,34 @@ export const AdminProductForm: React.FC<AdminProductFormProps> = ({
                 }}
                 className="w-full bg-[#F4EFE6] border border-[#1C1917]/15 p-2.5 rounded-xs text-[#1C1917] font-semibold text-sm tabular-nums focus:outline-none focus:border-[#B88E3E]"
               />
+            </div>
+
+            {/* GST rate and inclusive-price preview */}
+            <div>
+              <label className="block font-semibold text-[#1C1917] mb-1.5">GST Rate *</label>
+              <select
+                value={gstRate}
+                onChange={(e) => {
+                  setGstRate(e.target.value === '' ? '' : Number(e.target.value));
+                  setIsDirty(true);
+                }}
+                required={status === 'active'}
+                className="w-full bg-[#F4EFE6] border border-[#1C1917]/15 p-2.5 rounded-xs text-[#1C1917] focus:outline-none focus:border-[#B88E3E]"
+              >
+                <option value="">Select applicable rate</option>
+                <option value="0">0%</option>
+                <option value="5">5%</option>
+                <option value="12">12%</option>
+                <option value="18">18%</option>
+                <option value="28">28%</option>
+              </select>
+              <p className="mt-1 text-[11px] text-[#78716C]">Selling price is GST-inclusive. Choose the applicable rate for this product.</p>
+              {gstRate !== '' && price > 0 && (
+                <div className="mt-2 rounded-xs bg-[#F4EFE6] p-2 text-xs text-[#57534E]">
+                  <div className="flex justify-between"><span>Taxable value (estimate)</span><span>₹{(price / (1 + Number(gstRate) / 100)).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span></div>
+                  <div className="flex justify-between mt-1"><span>GST included (estimate)</span><span>₹{(price - price / (1 + Number(gstRate) / 100)).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span></div>
+                </div>
+              )}
             </div>
 
             {/* MRP */}
@@ -884,6 +1025,26 @@ export const AdminProductForm: React.FC<AdminProductFormProps> = ({
                     onChange={(e) => { setDimensions(e.target.value); setIsDirty(true); }}
                     className="w-full bg-[#F4EFE6] border border-[#1C1917]/15 p-2.5 rounded-xs text-[#1C1917]"
                   />
+                </div>
+                {category === 'sarees' && (
+                  <div>
+                    <label className="block font-semibold text-[#1C1917] mb-1.5">Saree Type</label>
+                    <select value={sareeType} onChange={(e) => { setSareeType(e.target.value); setIsDirty(true); }} className="w-full bg-[#F4EFE6] border border-[#1C1917]/15 p-2.5 rounded-xs text-[#1C1917]">
+                      <option value="">Select saree type</option>
+                      {managedSareeTypes.map((type) => <option key={type} value={type}>{type}</option>)}
+                      {sareeType && !managedSareeTypes.includes(sareeType) && <option value={sareeType}>{sareeType} (legacy)</option>}
+                    </select>
+                  </div>
+                )}
+                <div>
+                  <label className="block font-semibold text-[#1C1917] mb-1.5">Primary Colour Name</label>
+                  <input value={primaryColourName} onChange={(e) => { setPrimaryColourName(e.target.value); setIsDirty(true); }} placeholder="e.g. Pearl Beige" className="w-full bg-[#F4EFE6] border border-[#1C1917]/15 p-2.5 rounded-xs text-[#1C1917]" />
+                  <div className="flex items-center gap-2 mt-2"><input type="color" value={/^#[0-9A-Fa-f]{6}$/.test(primaryColourHex) ? primaryColourHex : '#78281F'} onChange={(e) => { setPrimaryColourHex(e.target.value.toUpperCase()); setIsDirty(true); }} className="h-8 w-10 bg-transparent" /><input value={primaryColourHex} onChange={(e) => { setPrimaryColourHex(e.target.value); setIsDirty(true); }} pattern="^#[0-9A-Fa-f]{6}$" aria-label="Primary colour HEX" className="min-w-0 flex-1 bg-[#F4EFE6] border border-[#1C1917]/15 p-2 rounded-xs font-mono" /></div>
+                </div>
+                <div>
+                  <label className="block font-semibold text-[#1C1917] mb-1.5">Secondary Colour Name</label>
+                  <input value={secondaryColourName} onChange={(e) => { setSecondaryColourName(e.target.value); setIsDirty(true); }} placeholder="e.g. Teal Border" className="w-full bg-[#F4EFE6] border border-[#1C1917]/15 p-2.5 rounded-xs text-[#1C1917]" />
+                  <div className="flex items-center gap-2 mt-2"><input type="color" value={/^#[0-9A-Fa-f]{6}$/.test(secondaryColourHex) ? secondaryColourHex : '#B88E3E'} onChange={(e) => { setSecondaryColourHex(e.target.value.toUpperCase()); setIsDirty(true); }} className="h-8 w-10 bg-transparent" /><input value={secondaryColourHex} onChange={(e) => { setSecondaryColourHex(e.target.value); setIsDirty(true); }} pattern="^#[0-9A-Fa-f]{6}$" aria-label="Secondary colour HEX" className="min-w-0 flex-1 bg-[#F4EFE6] border border-[#1C1917]/15 p-2 rounded-xs font-mono" /></div>
                 </div>
               </div>
             </div>
@@ -1304,16 +1465,22 @@ export const AdminProductForm: React.FC<AdminProductFormProps> = ({
               className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-[#F4EFE6] hover:bg-[#EFE9DC] text-[#1C1917] text-xs font-medium rounded-xs border border-[#1C1917]/15 cursor-pointer"
             >
               <Plus className="w-3.5 h-3.5" />
-              <span>Add Variant</span>
+              <span>{variantsEnabled ? 'Add Variant' : 'Add Variants'}</span>
             </button>
           </div>
 
-          {variants.length === 0 ? (
-            <div className="p-4 bg-[#F4EFE6]/50 rounded-xs text-xs text-[#57534E]">
-              Default single standard variant will be created automatically with initial stock.
+          {!variantsEnabled ? (
+            <div className="p-4 bg-[#F4EFE6]/50 rounded-xs text-xs text-[#57534E] space-y-3">
+              <p>This is a single-item product. No colour/size variants will be shown to customers. Inventory is stored in its internal standard SKU.</p>
+              <div className="max-w-xs">
+                <label className="block text-[10px] uppercase tracking-wider font-semibold text-[#78716C] mb-1">Available stock</label>
+                <input type="number" min="0" step="1" value={singleProductStock} onChange={(e) => { setSingleProductStock(Math.max(0, Math.floor(Number(e.target.value) || 0))); setIsDirty(true); }} className="w-full bg-[#FAF8F5] p-2 border border-[#1C1917]/15 rounded-xs" />
+              </div>
+              <button type="button" onClick={() => { setVariantsEnabled(true); if (variants.length === 0) handleAddVariant(); }} className="px-3 py-2 border border-[#967029]/50 text-[#785A18] rounded-xs font-medium">Enable colour/size variants</button>
             </div>
           ) : (
             <div className="space-y-3">
+              {variants.length === 0 && <p className="text-xs text-[#78716C]">Add the first variant below. Variant prices inherit the main product price; each variant gets its own colour, generated SKU, stock and images.</p>}
               {variants.map((v, idx) => {
                 const canonicalColorsList = Object.values(CANONICAL_COLOR_DICTIONARY);
                 const isCustomColor = Boolean(v.color && !canonicalColorsList.some((c) => c.displayName.toLowerCase() === v.color?.toLowerCase()));
@@ -1325,163 +1492,108 @@ export const AdminProductForm: React.FC<AdminProductFormProps> = ({
                   >
                     <div className="grid grid-cols-1 sm:grid-cols-12 gap-3 items-center">
                       {/* Variant Title */}
-                      <div className="sm:col-span-3">
+                      <div className="sm:col-span-2">
                         <label className="block text-[10px] uppercase tracking-wider font-semibold text-[#78716C] mb-1">
                           Variant Title
                         </label>
                         <input
                           type="text"
-                          value={v.variantName}
+                          value={v.variantName || ''}
                           onChange={(e) => {
                             const copy = [...variants];
                             copy[idx].variantName = e.target.value;
                             setVariants(copy);
                             setIsDirty(true);
                           }}
-                          className="w-full bg-[#FAF8F5] p-1.5 border border-[#1C1917]/15 rounded-xs"
+                          placeholder="e.g. Antique Gold Edition"
+                          aria-label={`Variant title ${idx + 1}`}
+                          className="w-full bg-[#FAF8F5] p-1.5 border border-[#1C1917]/15 rounded-xs text-[#1C1917]"
                         />
                       </div>
 
                       {/* Variant SKU */}
-                      <div className="sm:col-span-3">
+                      <div className="sm:col-span-2">
                         <label className="block text-[10px] uppercase tracking-wider font-semibold text-[#78716C] mb-1">
                           Variant SKU
                         </label>
                         <input
                           type="text"
                           value={v.sku}
-                          onChange={(e) => {
-                            const copy = [...variants];
-                            copy[idx].sku = e.target.value;
-                            setVariants(copy);
-                            setIsDirty(true);
-                          }}
-                          className="w-full bg-[#FAF8F5] p-1.5 border border-[#1C1917]/15 rounded-xs font-mono text-[11px]"
+                          readOnly
+                          title="Generated automatically from the parent product SKU"
+                          className="w-full bg-[#EFE9DC] p-1.5 border border-[#1C1917]/15 rounded-xs font-mono text-[11px] text-[#57534E]"
                         />
                       </div>
 
-                      {/* Explicit Variant Colour Selector */}
+                      {/* Free-form colour name: no canonical attribute dependency */}
                       <div className="sm:col-span-3">
                         <label className="block text-[10px] uppercase tracking-wider font-semibold text-[#78716C] mb-1">
-                          Colour Attribute
-                        </label>
-                        <select
-                          value={isCustomColor ? '__custom__' : (v.color || '')}
-                          onChange={(e) => {
-                            const val = e.target.value;
-                            const copy = [...variants];
-                            if (val === '__custom__') {
-                              copy[idx].color = v.color || 'Indigo & Ivory';
-                            } else {
-                              copy[idx].color = val;
-                            }
-                            setVariants(copy);
-                            setIsDirty(true);
-                          }}
-                          className="w-full bg-[#FAF8F5] p-1.5 border border-[#1C1917]/15 rounded-xs text-[#1C1917] cursor-pointer"
-                        >
-                          <option value="">(Colour not configured)</option>
-                          <optgroup label="Canonical Palette">
-                            {canonicalColorsList.map((c) => (
-                              <option key={c.canonicalName} value={c.displayName}>
-                                {c.displayName} ({c.family})
-                              </option>
-                            ))}
-                          </optgroup>
-                          <option value="__custom__">Custom / Multi-Colour...</option>
-                        </select>
-                      </div>
-
-                      {/* Stock Units */}
-                      <div className="sm:col-span-1">
-                        <label className="block text-[10px] uppercase tracking-wider font-semibold text-[#78716C] mb-1">
-                          Stock
-                        </label>
-                        <input
-                          type="number"
-                          min="0"
-                          value={v.stockQuantity}
-                          onChange={(e) => {
-                            const copy = [...variants];
-                            copy[idx].stockQuantity = Number(e.target.value);
-                            setVariants(copy);
-                            setIsDirty(true);
-                          }}
-                          className="w-full bg-[#FAF8F5] p-1.5 border border-[#1C1917]/15 rounded-xs tabular-nums font-semibold"
-                        />
-                      </div>
-
-                      {/* Price Override */}
-                      <div className="sm:col-span-1">
-                        <label className="block text-[10px] uppercase tracking-wider font-semibold text-[#78716C] mb-1" title="Leave blank to inherit parent price">
-                          Price (₹)
-                        </label>
-                        <input
-                          type="number"
-                          min="0"
-                          placeholder="Inherit"
-                          value={v.priceOverride !== undefined && v.priceOverride !== null ? v.priceOverride : ''}
-                          onChange={(e) => {
-                            const copy = [...variants];
-                            const val = e.target.value;
-                            copy[idx].priceOverride = val === '' ? undefined : Number(val);
-                            setVariants(copy);
-                            setIsDirty(true);
-                          }}
-                          className="w-full bg-[#FAF8F5] p-1.5 border border-[#1C1917]/15 rounded-xs tabular-nums text-[11px]"
-                        />
-                      </div>
-
-                      {/* Active Status & Delete Actions */}
-                      <div className="sm:col-span-1 flex items-center justify-end gap-1.5 pt-4">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            const copy = [...variants];
-                            copy[idx].isActive = copy[idx].isActive === false ? true : false;
-                            setVariants(copy);
-                            setIsDirty(true);
-                          }}
-                          className={`p-1.5 rounded-xs cursor-pointer transition-colors ${
-                            v.isActive !== false
-                              ? 'text-emerald-700 bg-emerald-50 hover:bg-emerald-100'
-                              : 'text-stone-400 bg-stone-100 hover:bg-stone-200 line-through'
-                          }`}
-                          title={v.isActive !== false ? 'Variant Active' : 'Variant Inactive (Hidden)'}
-                        >
-                          {v.isActive !== false ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleRemoveVariant(idx)}
-                          className="p-1.5 text-red-600 hover:bg-red-50 rounded-xs cursor-pointer transition-colors"
-                          title="Delete variant"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
-                    </div>
-
-                    {/* Custom colour text input if selected */}
-                    {isCustomColor && (
-                      <div className="pt-1">
-                        <label className="block text-[10px] uppercase tracking-wider font-semibold text-[#78716C] mb-1">
-                          Custom Colour Specification
+                          Colour Name
                         </label>
                         <input
                           type="text"
                           value={v.color || ''}
-                          placeholder="e.g., Indigo & Ivory or Green + Pink"
                           onChange={(e) => {
                             const copy = [...variants];
                             copy[idx].color = e.target.value;
                             setVariants(copy);
                             setIsDirty(true);
                           }}
-                          className="w-full sm:w-1/2 bg-[#FAF8F5] p-1.5 border border-[#1C1917]/15 rounded-xs text-xs text-[#1C1917]"
+                          placeholder="e.g. Maroon with Antique Gold Zari"
+                          aria-label={`Colour name for variant ${idx + 1}`}
+                          className="w-full bg-[#FAF8F5] p-1.5 border border-[#1C1917]/15 rounded-xs text-[#1C1917]"
                         />
                       </div>
-                    )}
+
+                      <div className="sm:col-span-2">
+                        <label className="block text-[10px] uppercase tracking-wider font-semibold text-[#78716C] mb-1">Primary / Secondary Colour HEX</label>
+                        <div className="flex items-center gap-1.5">
+                          <span className="w-[4.25rem] shrink-0 text-[10px] text-[#57534E]">Primary</span>
+                          <input type="color" value={/^#[0-9A-Fa-f]{6}$/.test(v.colorHexPrimary || '') ? v.colorHexPrimary! : '#78281F'} onChange={(e) => { const copy = [...variants]; copy[idx].colorHexPrimary = e.target.value.toUpperCase(); setVariants(copy); setIsDirty(true); }} className="w-8 h-8 bg-transparent" aria-label="Variant primary colour" />
+                          <input value={v.colorHexPrimary || ''} onChange={(e) => { const copy = [...variants]; copy[idx].colorHexPrimary = e.target.value; setVariants(copy); setIsDirty(true); }} placeholder="#78281F" className="min-w-0 w-full bg-[#FAF8F5] p-1.5 border border-[#1C1917]/15 rounded-xs font-mono" aria-label="Primary colour HEX" />
+                        </div>
+                        <div className="flex items-center gap-1.5 mt-1">
+                          <span className="w-[4.25rem] shrink-0 text-[10px] text-[#57534E]">Secondary</span>
+                          <input type="color" value={/^#[0-9A-Fa-f]{6}$/.test(v.colorHexSecondary || '') ? v.colorHexSecondary! : '#B88E3E'} onChange={(e) => { const copy = [...variants]; copy[idx].colorHexSecondary = e.target.value.toUpperCase(); setVariants(copy); setIsDirty(true); }} className="w-8 h-8 bg-transparent" aria-label="Variant secondary colour" />
+                          <input value={v.colorHexSecondary || ''} onChange={(e) => { const copy = [...variants]; copy[idx].colorHexSecondary = e.target.value; setVariants(copy); setIsDirty(true); }} placeholder="#B88E3E" className="min-w-0 w-full bg-[#FAF8F5] p-1.5 border border-[#1C1917]/15 rounded-xs font-mono" aria-label="Secondary colour HEX" />
+                        </div>
+                      </div>
+
+                      {/* Stock Units */}
+                      <div className="sm:col-span-1">
+                        <label className="block text-[10px] uppercase tracking-wider font-semibold text-[#78716C] mb-1">
+                          Stock (units)
+                        </label>
+                        <input
+                          type="number"
+                          min="0"
+                          step="1"
+                          required
+                          inputMode="numeric"
+                          value={v.stockQuantity ?? 0}
+                          onChange={(e) => {
+                            const raw = e.target.value;
+                            const parsed = raw === '' ? 0 : Number(raw);
+                            const copy = [...variants];
+                            copy[idx].stockQuantity = Number.isFinite(parsed) ? Math.max(0, Math.floor(parsed)) : 0;
+                            setVariants(copy);
+                            setIsDirty(true);
+                          }}
+                          aria-label={`Stock units for ${v.variantName || v.sku}`}
+                          title="Physical stock units. Must not be less than reserved units."
+                          className="w-full bg-[#FAF8F5] p-1.5 border border-[#1C1917]/15 rounded-xs tabular-nums font-semibold"
+                        />
+                        <p className="mt-1 text-[10px] text-[#78716C]">Physical units</p>
+                      </div>
+
+                      {/* Variant pricing inherits the parent product price by design. */}
+                      <div className="sm:col-span-1">
+                        <label className="block text-[10px] uppercase tracking-wider font-semibold text-[#78716C] mb-1">Price</label>
+                        <div className="w-full bg-[#EFE9DC] p-1.5 border border-[#1C1917]/10 rounded-xs text-[11px] text-[#78716C]">Inherits ₹{Number(price || 0).toLocaleString('en-IN')}</div>
+                      </div>
+                    </div>
+
+
                   </div>
                 );
               })}

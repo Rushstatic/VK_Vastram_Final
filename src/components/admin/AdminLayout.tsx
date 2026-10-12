@@ -21,12 +21,14 @@ import {
   Search,
   ChevronRight,
   FileText,
+  Tags,
 } from 'lucide-react';
 import { AdminSubView, PageView } from '../../types';
 import { AdminUser } from '../../services/authService';
 import { useSiteSettings } from '../../hooks/useSiteSettings';
 import { adminService } from '../../services/adminService';
 import { formatPrice } from '../ui/PriceDisplay';
+import { AdminSareeTypes } from './AdminSareeTypes';
 
 interface AdminLayoutProps {
   currentSubView: AdminSubView;
@@ -146,17 +148,28 @@ export const AdminLayout: React.FC<AdminLayoutProps> = ({
       active: currentSubView === 'homepage',
     },
     {
+      label: 'Coupons & Offers',
+      view: 'coupons',
+      icon: <Tag className="w-4 h-4" />,
+      active: currentSubView === 'coupons',
+    },
+    {
       label: 'Store Settings',
       view: 'settings',
       icon: <Settings className="w-4 h-4" />,
       active: currentSubView === 'settings',
+    },
+    {
+      label: 'Saree Types',
+      view: 'saree-types',
+      icon: <Tags className="w-4 h-4" />,
+      active: currentSubView === 'saree-types',
     },
   ];
 
   const upcomingItems = [
     { label: 'Customers', icon: <Users className="w-4 h-4" /> },
     { label: 'Product Reviews', icon: <Star className="w-4 h-4" /> },
-    { label: 'Coupons & Offers', icon: <Tag className="w-4 h-4" /> },
     { label: 'Sales Analytics', icon: <BarChart3 className="w-4 h-4" /> },
   ];
 

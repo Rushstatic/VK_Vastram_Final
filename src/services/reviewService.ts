@@ -50,9 +50,7 @@ export const reviewService = {
             title,
             body,
             status,
-            verified_purchase,
-            created_at,
-            profile:profiles(full_name)
+            created_at
           `)
           .eq('product_id', productId)
           .eq('status', 'approved')
@@ -67,9 +65,9 @@ export const reviewService = {
             title: rev.title,
             body: rev.body,
             status: rev.status,
-            verifiedPurchase: rev.verified_purchase,
+            verifiedPurchase: false,
             createdAt: rev.created_at,
-            reviewerName: rev.profile?.full_name || 'Verified Patron',
+            reviewerName: 'Verified Patron',
           }));
         }
       } catch (clientErr) {

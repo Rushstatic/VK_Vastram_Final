@@ -70,7 +70,13 @@ export const ImageContainer: React.FC<ImageContainerProps> = ({
     >
       {/* 1. Neutral luxury placeholder background during loading or empty */}
       {(!isLoaded || !normalizedSrc) && !hasError && (
-        <div className="absolute inset-0 bg-[#EFE9DC] animate-pulse transition-opacity duration-300" />
+        <div
+          aria-hidden="true"
+          className="absolute inset-0 overflow-hidden bg-[#EFE9DC]"
+        >
+          <div className="vk-image-shimmer absolute inset-0" />
+          <div className="absolute inset-0 bg-gradient-to-b from-white/10 via-transparent to-[#B88E3E]/[0.06]" />
+        </div>
       )}
 
       {/* 2. Error fallback */}
@@ -89,8 +95,8 @@ export const ImageContainer: React.FC<ImageContainerProps> = ({
           fetchPriority={priority ? 'high' : 'auto'}
           onLoad={() => setLoadedSrc(normalizedSrc)}
           onError={() => setHasError(true)}
-          className={`w-full h-full transition-opacity duration-300 ease-out ${
-            isLoaded ? 'opacity-100' : 'opacity-0 pointer-events-none'
+          className={`w-full h-full transition-[opacity,filter,transform] duration-500 ease-out ${
+            isLoaded ? 'opacity-100 blur-0 scale-100' : 'opacity-0 blur-sm scale-[1.015] pointer-events-none'
           } ${imageClassName}`}
           style={{
             objectFit: fit,

@@ -1,8 +1,14 @@
-node_modules/
-build/
-dist/
-coverage/
-.DS_Store
-*.log
-.env*
+# Local secrets
+.env
+.env.*
 !.env.example
+
+# Dependencies and build output
+node_modules/
+dist/
+build/
+coverage/
+
+# Local runtime and temporary files
+*.log
+supabase/.temp/

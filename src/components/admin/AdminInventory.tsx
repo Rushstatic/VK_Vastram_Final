@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import * as XLSX from 'xlsx';
 import {
   Boxes,
   AlertTriangle,
@@ -85,6 +86,12 @@ export const AdminInventory: React.FC = () => {
   useEffect(() => {
     fetchLedger();
   }, []);
+
+  const exportInventoryExcel = () => {
+    const rows = items.map((i: any) => ({ 'Product ID': i.productId || '', 'Product': i.productName || i.name || '', 'Variant ID': i.variantId || '', SKU: i.sku || '', Variant: i.variantName || i.variant || '', 'Physical Stock': Number(i.stockQuantity || 0), 'Reserved': Number(i.reservedQuantity || 0), 'Sold': Number(i.soldQuantity || 0), 'Available': Number(i.availableQuantity ?? ((i.stockQuantity || 0) - (i.reservedQuantity || 0))), 'Low Stock Threshold': Number(i.lowStockThreshold || 0), Status: i.status || '' }));
+    if (!rows.length) { setFeedback('No inventory rows loaded to export.'); return; }
+    const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Inventory'); XLSX.writeFile(wb, `vk-vastram-inventory-${new Date().toISOString().slice(0,10)}.xlsx`);
+  };
 
   const openDetailModal = async (item: InventoryItem) => {
     setDetailItem(item);
@@ -180,6 +187,7 @@ export const AdminInventory: React.FC = () => {
         </div>
 
         <div className="flex items-center gap-2.5">
+          <button onClick={exportInventoryExcel} className="px-3 py-2.5 border border-[#1C1917]/15 rounded-xs text-xs hover:bg-[#F4EFE6]">Export Excel</button>
           <button
             onClick={fetchLedger}
             title="Refresh ledger"

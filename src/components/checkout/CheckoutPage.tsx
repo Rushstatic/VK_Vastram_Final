@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { supabase, isSupabaseConfigured } from '../../lib/supabase';
 import {
   ShieldCheck,
   MapPin,
@@ -114,6 +115,31 @@ export const CheckoutPage: React.FC<CheckoutPageProps> = ({
 
   // Payment Selection
   const [paymentMethod, setPaymentMethod] = useState<'online' | 'cod'>('online');
+  const [couponInput, setCouponInput] = useState('');
+  const [couponCode, setCouponCode] = useState('');
+  const [couponDiscount, setCouponDiscount] = useState(0);
+  const [couponMessage, setCouponMessage] = useState('');
+  const [couponBusy, setCouponBusy] = useState(false);
+  const [codEnabled, setCodEnabled] = useState(false);
+  useEffect(() => {
+    let active = true;
+    const loadCodSetting = async () => {
+      if (!isSupabaseConfigured()) return;
+      const { data } = await (supabase as any).from('site_settings').select('value').eq('key', 'policies').maybeSingle();
+      if (active) {
+        const enabled = data?.value?.cod_enabled === true;
+        setCodEnabled(enabled);
+        if (!enabled) setPaymentMethod('online');
+      }
+    };
+    void loadCodSetting();
+    const onSettingsUpdated = (event: Event) => {
+      const detail = (event as CustomEvent).detail;
+      if (typeof detail?.codEnabled === 'boolean') { setCodEnabled(detail.codEnabled); if (!detail.codEnabled) setPaymentMethod('online'); }
+    };
+    window.addEventListener('vk_settings_updated', onSettingsUpdated);
+    return () => { active = false; window.removeEventListener('vk_settings_updated', onSettingsUpdated); };
+  }, []);
   const [orderNotes, setOrderNotes] = useState('');
 
   // Validation & Order Lifecycle
@@ -423,7 +449,7 @@ export const CheckoutPage: React.FC<CheckoutPageProps> = ({
     setInfoMessage('');
 
     try {
-      // 1. Create order in VK VASTRAM database first (Server or Client fallback)
+      // 1. Create order in VK VASTRAM database first (Server-authoritative coupon redemption)
       const res = await orderService.createOrder({
         userId,
         customerName: userId ? profile?.fullName : guestName.trim(),
@@ -433,6 +459,7 @@ export const CheckoutPage: React.FC<CheckoutPageProps> = ({
         billingAddress: shippingAddress,
         items: validation?.validatedItems || cartItems,
         paymentMethod,
+        couponCode: couponCode || undefined,
         notes: orderNotes.trim() || undefined,
       });
 
@@ -468,6 +495,19 @@ export const CheckoutPage: React.FC<CheckoutPageProps> = ({
       setErrorMessage(err.message || 'An unexpected error occurred during checkout.');
       setSubmitting(false);
     }
+  };
+
+  const applyCoupon = async () => {
+    const code = couponInput.trim().toUpperCase();
+    if (!code) { setCouponMessage('Enter a coupon code first.'); return; }
+    setCouponBusy(true); setCouponMessage('');
+    try {
+      const response = await fetch('/api/coupons/validate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code, items: cartItems.map((i) => ({ product_id: i.product.id, variant_id: i.variantId, quantity: i.quantity })), email: userEmail || guestEmail.trim() || undefined }) });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data.success) { setCouponCode(''); setCouponDiscount(0); setCouponMessage(data.error || 'Coupon could not be applied.'); return; }
+      setCouponCode(code); setCouponDiscount(Number(data.discountAmount) || 0); setCouponMessage(data.message || 'Coupon applied successfully.');
+    } catch { setCouponMessage('Unable to validate coupon right now. Please try again.'); }
+    finally { setCouponBusy(false); }
   };
 
   // Empty Cart Guard (unless currently in-flight payment)
@@ -527,6 +567,17 @@ export const CheckoutPage: React.FC<CheckoutPageProps> = ({
             <span>Return to Shopping Bag</span>
           </button>
         </div>
+
+        {/* Free-delivery progress, driven by the admin-configured site setting. */}
+        {Number(settings?.freeShippingThreshold || 0) > 0 && (
+          <div className="mb-5 rounded-xs border border-[#B88E3E]/30 bg-[#F4EFE6] px-4 py-3 text-xs text-[#57534E]">
+            {Math.max(0, Number(settings?.freeShippingThreshold || 0) - Math.max(0, subtotal - couponDiscount)) > 0 ? (
+              <>Add <strong className="text-[#78281F]">{formatPrice(Math.max(0, Number(settings?.freeShippingThreshold || 0) - Math.max(0, subtotal - couponDiscount)))}</strong> more to unlock free delivery.</>
+            ) : (
+              <strong className="text-emerald-800">You have unlocked free delivery!</strong>
+            )}
+          </div>
+        )}
 
         {/* Global Notifications */}
         {errorMessage && (
@@ -1126,7 +1177,7 @@ export const CheckoutPage: React.FC<CheckoutPageProps> = ({
                       </div>
                     </label>
 
-                    {/* Cash on Delivery Option */}
+                    {codEnabled ? (
                     <label
                       className={`p-4 border rounded-xs cursor-pointer block transition-all ${
                         paymentMethod === 'cod'
@@ -1156,6 +1207,12 @@ export const CheckoutPage: React.FC<CheckoutPageProps> = ({
                         <Banknote className="w-4 h-4 text-[#78716C] shrink-0" />
                       </div>
                     </label>
+                    ) : (
+                      <div className="p-4 border border-[#1C1917]/10 rounded-xs bg-[#F4EFE6]/50 text-xs text-[#57534E]">
+                        <span className="font-semibold text-[#1C1917]">Cash on Delivery</span>
+                        <p className="mt-1">COD is unavailable due to high demand.</p>
+                      </div>
+                    )}
                   </div>
 
                   <div className="pt-2 flex justify-between items-center">
@@ -1188,8 +1245,8 @@ export const CheckoutPage: React.FC<CheckoutPageProps> = ({
                         : submitting
                         ? 'Processing Order...'
                         : paymentMethod === 'online'
-                        ? `Pay ${formatPrice(subtotal)} with Razorpay`
-                        : `Place COD Order (${formatPrice(subtotal)})`}
+                        ? `Pay ${formatPrice(Math.max(0, subtotal - couponDiscount))} with Razorpay`
+                        : `Place COD Order (${formatPrice(Math.max(0, subtotal - couponDiscount))})`}
                     </Button>
                   </div>
                 </div>
@@ -1204,6 +1261,11 @@ export const CheckoutPage: React.FC<CheckoutPageProps> = ({
                 Order Financial Summary
               </h2>
 
+              <div className="space-y-2">
+                <label className="block text-xs font-semibold text-[#1C1917]">Coupon code</label>
+                <div className="flex gap-2"><input value={couponInput} onChange={(e) => setCouponInput(e.target.value.toUpperCase())} disabled={Boolean(couponCode)} maxLength={40} placeholder="Enter code" className="min-w-0 flex-1 border border-[#1C1917]/15 bg-white p-2 rounded-xs text-xs"/><button type="button" onClick={() => { if (couponCode) { setCouponCode(''); setCouponDiscount(0); setCouponMessage('Coupon removed.'); } else { void applyCoupon(); } }} disabled={couponBusy} className="px-3 border border-[#967029]/40 text-[#785A18] rounded-xs text-xs font-semibold disabled:opacity-50">{couponBusy ? 'Checking…' : couponCode ? 'Remove' : 'Apply'}</button></div>
+                {couponMessage && <p className={`text-[11px] ${couponDiscount > 0 ? 'text-emerald-700' : 'text-[#800020]'}`}>{couponMessage}</p>}
+              </div>
               <div className="space-y-2 text-xs">
                 <div className="flex justify-between text-[#57534E]">
                   <span>Items Subtotal ({cartItems.reduce((s, i) => s + i.quantity, 0)} pcs)</span>
@@ -1220,10 +1282,11 @@ export const CheckoutPage: React.FC<CheckoutPageProps> = ({
                   <span className="text-[#78716C]">Included</span>
                 </div>
 
+                {couponDiscount > 0 && <div className="flex justify-between text-emerald-700"><span>Coupon discount</span><span>−{formatPrice(couponDiscount)}</span></div>}
                 <div className="border-t border-[#1C1917]/10 pt-3 flex justify-between items-baseline font-semibold text-[#1C1917] text-sm">
                   <span>Payable Total</span>
                   <span className="font-serif text-lg tabular-nums text-[#800020]">
-                    {formatPrice(subtotal)}
+                    {formatPrice(Math.max(0, subtotal - couponDiscount))}
                   </span>
                 </div>
               </div>

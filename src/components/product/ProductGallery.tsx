@@ -25,6 +25,7 @@ export const ProductGallery: React.FC<ProductGalleryProps> = ({
   const [activeIndex, setActiveIndex] = useState(0);
   const [isFullscreenOpen, setIsFullscreenOpen] = useState(false);
   const mainStageRef = useRef<HTMLDivElement>(null);
+  const thumbnailRailRef = useRef<HTMLDivElement>(null);
   const prevVariantRef = useRef<string | undefined>(variantKey);
   const [prefersReducedMotion, setPrefersReducedMotion] = useState(false);
 
@@ -42,16 +43,19 @@ export const ProductGallery: React.FC<ProductGalleryProps> = ({
   // Normalize images list
   const normalizedImages: ProductVariantImage[] = React.useMemo(() => {
     if (!images || images.length === 0) return [];
-    return images.map((item, idx) => {
-      if (typeof item === 'string') {
-        return {
-          imageUrl: item,
-          role: idx === 0 ? 'hero' : 'gallery',
-          sortOrder: idx + 1,
-        };
-      }
-      return item;
-    });
+    return images
+      .map((item, idx): ProductVariantImage => {
+        if (typeof item === 'string') {
+          return {
+            imageUrl: item,
+            role: idx === 0 ? 'hero' : 'gallery',
+            sortOrder: idx + 1,
+          };
+        }
+        return item;
+      })
+      // Empty image URLs must not create a phantom 1/1 fullscreen slide.
+      .filter((item) => typeof item.imageUrl === 'string' && item.imageUrl.trim().length > 0);
   }, [images]);
 
   // When variant changes (e.g., user selects Lavender -> Gold), smoothly reset activeIndex to 0 with GSAP crossfade
@@ -74,6 +78,33 @@ export const ProductGallery: React.FC<ProductGalleryProps> = ({
       return () => ctx.revert();
     }
   }, [variantKey, prefersReducedMotion]);
+
+  // Secondary image cards enter after 1.5 seconds with a restrained grow/turn reveal.
+  // Hide them at effect setup (not at animation start) to avoid a visible jump.
+  // Reduced-motion users see them immediately; GSAP contexts are reverted on changes/unmount.
+  useEffect(() => {
+    const rail = thumbnailRailRef.current;
+    if (!rail) return;
+    const thumbs = rail.querySelectorAll<HTMLElement>('[data-gallery-thumb]');
+    if (prefersReducedMotion || thumbs.length === 0) {
+      gsap.set(thumbs, { clearProps: 'all' });
+      return;
+    }
+    const context = gsap.context(() => {
+      gsap.set(thumbs, { autoAlpha: 0, scale: 0.88, rotationY: 10, transformPerspective: 800 });
+      gsap.to(thumbs, {
+        autoAlpha: 1,
+        scale: 1,
+        rotationY: 0,
+        delay: 1.5,
+        duration: 0.55,
+        stagger: 0.08,
+        ease: 'power2.out',
+        clearProps: 'transform',
+      });
+    }, rail);
+    return () => context.revert();
+  }, [normalizedImages, prefersReducedMotion]);
 
   // Handle thumbnail click with subtle GSAP transition
   const handleThumbnailSelect = (index: number) => {
@@ -132,7 +163,7 @@ export const ProductGallery: React.FC<ProductGalleryProps> = ({
     <div className="flex flex-col-reverse md:flex-row gap-4 w-full">
       {/* 1. Left Vertical Thumbnail Rail (Desktop) / Horizontal Rail (Mobile) */}
       {normalizedImages.length > 1 && (
-        <div className="flex md:flex-col gap-2.5 overflow-x-auto md:overflow-y-auto shrink-0 md:w-20 md:max-h-[640px] py-1 select-none">
+        <div ref={thumbnailRailRef} className="flex md:flex-col gap-2.5 overflow-x-auto md:overflow-y-auto shrink-0 md:w-20 md:max-h-[640px] py-1 select-none">
           {normalizedImages.map((img, idx) => {
             const isSelected = activeIndex === idx;
             return (
@@ -141,7 +172,7 @@ export const ProductGallery: React.FC<ProductGalleryProps> = ({
                 type="button"
                 onClick={() => handleThumbnailSelect(idx)}
                 aria-label={`View ${productName} image ${idx + 1}`}
-                className={`group relative w-16 h-20 md:w-20 md:h-26 rounded-xs overflow-hidden border-2 transition-all duration-200 cursor-pointer shrink-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#B88E3E] ${
+                data-gallery-thumb="true" className={`group relative w-16 h-20 md:w-20 md:h-26 rounded-xs overflow-hidden border-2 transition-all duration-200 cursor-pointer shrink-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#B88E3E] ${
                   isSelected
                     ? 'border-[#B88E3E] shadow-2xs opacity-100 scale-[1.02]'
                     : 'border-transparent opacity-60 hover:opacity-90'

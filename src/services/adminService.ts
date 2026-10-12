@@ -251,6 +251,7 @@ export const adminService = {
         category: (p.category?.slug as ProductCategory) || 'sarees',
         categoryLabel: p.category?.name || 'Sarees',
         price: Number(p.price),
+        gstRate: p.gst_rate === null || p.gst_rate === undefined ? null : Number(p.gst_rate),
         mrp: p.mrp ? Number(p.mrp) : undefined,
         status: p.status,
         description: p.description || '',
@@ -367,6 +368,7 @@ export const adminService = {
           collectionId: item.collection_id,
           categoryLabel: item.category?.name || 'Sarees',
           sku: item.sku || '',
+          metadata: item.metadata || {},
           price: Number(item.price),
           mrp: item.mrp ? Number(item.mrp) : undefined,
           status: item.status,
@@ -465,6 +467,7 @@ export const adminService = {
         categoryLabel: data.category?.name || 'Sarees',
         sku: data.sku || '',
         price: Number(data.price),
+        gstRate: data.gst_rate === null || data.gst_rate === undefined ? null : Number(data.gst_rate),
         mrp: data.mrp ? Number(data.mrp) : undefined,
         status: data.status,
         featured: data.featured,
@@ -483,6 +486,7 @@ export const adminService = {
         createdAt: data.created_at,
         updatedAt: data.updated_at,
       };
+      (product as any).metadata = data.metadata || {};
 
       const variants = data.variants || [];
       const variantIdToSkuMap = new Map(variants.map((v: any) => [v.id, v.sku]));
@@ -543,17 +547,23 @@ export const adminService = {
         }),
       });
 
-      if (srvRes.ok) {
-        const srvData = await srvRes.json();
-        if (srvData.success && srvData.productId) {
-          if (typeof window !== 'undefined') {
-            window.dispatchEvent(new CustomEvent('vk_products_updated'));
-          }
-          return { success: true, productId: srvData.productId };
+      const srvData = await srvRes.json().catch(() => ({}));
+      if (srvRes.ok && srvData.success && srvData.productId) {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('vk_products_updated'));
         }
+        return { success: true, productId: srvData.productId };
+      }
+      // A real backend validation/database failure must never be masked by a second client-side write.
+      if (srvRes.status !== 404 && srvRes.status !== 405) {
+        return { success: false, error: srvData.error || `Product creation failed (${srvRes.status}).` };
       }
     } catch (srvErr) {
-      console.warn('Backend /api/admin/products/create failed, falling back to direct client insertion:', srvErr);
+      console.warn('Backend /api/admin/products/create is unreachable; falling back only because no server response was received:', srvErr);
+    }
+
+    if (!Array.isArray(variants) || variants.length === 0) {
+      return { success: false, error: 'At least one stock variant is required before a product can be saved.' };
     }
 
     if (!isSupabaseConfigured()) {
@@ -564,6 +574,7 @@ export const adminService = {
         category: productData.category || 'sarees',
         categoryLabel: productData.category === 'bedsheets' ? 'Bedsheets' : 'Sarees',
         price: Number(productData.price || 0),
+        gstRate: productData.gstRate === undefined ? null : Number(productData.gstRate),
         mrp: productData.mrp ? Number(productData.mrp) : undefined,
         status: productData.status || 'active',
         description: productData.description || '',
@@ -595,12 +606,14 @@ export const adminService = {
           category_id: productData.categoryId && productData.categoryId.trim() ? productData.categoryId.trim() : null,
           collection_id: productData.collectionId && productData.collectionId.trim() ? productData.collectionId.trim() : null,
           price: Number(productData.price) || 0,
+          gst_rate: productData.gstRate === undefined ? null : Number(productData.gstRate),
           mrp: productData.mrp ? Number(productData.mrp) : null,
           status: productData.status || 'draft',
           featured: Boolean(productData.featured),
           bestseller: Boolean(productData.bestSeller),
           new_arrival: Boolean(productData.newArrival),
           description: productData.description || null,
+          metadata: (productData as any).metadata || {},
           fabric: productData.fabric || null,
           weave: productData.weave || null,
           origin: productData.origin || null,
@@ -627,7 +640,7 @@ export const adminService = {
             ? v.sku.trim()
             : formatVariantSku(baseSku, idx + 1);
 
-          const { data: insertedVar } = await (supabase as any)
+          const { data: insertedVar, error: variantInsertError } = await (supabase as any)
             .from('product_variants')
             .insert({
               product_id: productId,
@@ -646,6 +659,11 @@ export const adminService = {
             .select('id')
             .single();
 
+          if (variantInsertError || !insertedVar?.id) {
+            const cleanup = await (supabase as any).from('products').delete().eq('id', productId);
+            if (cleanup.error) console.error('[adminService.createProduct] failed to roll back product after variant insert error:', cleanup.error.message);
+            return { success: false, error: `Variant could not be saved: ${variantInsertError?.message || 'database returned no variant ID'}. Product creation was rolled back where possible.` };
+          }
           if (insertedVar?.id) {
             variantSkuToIdMap.set(vSku, insertedVar.id);
             if (v.id) variantSkuToIdMap.set(v.id, insertedVar.id);
@@ -715,14 +733,17 @@ export const adminService = {
         }),
       });
 
-      if (srvRes.ok) {
-        const srvData = await srvRes.json();
-        if (srvData.success) {
-          if (typeof window !== 'undefined') {
-            window.dispatchEvent(new CustomEvent('vk_products_updated'));
-          }
-          return { success: true };
+      const srvData = await srvRes.json().catch(() => ({}));
+      if (srvRes.ok && srvData.success) {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('vk_products_updated'));
         }
+        return { success: true };
+      }
+      // Do not silently fall back to a client write after an authoritative server
+      // validation failure (e.g. stock below reserved quantity or invalid GST).
+      if (srvRes.status !== 404 && srvRes.status !== 405) {
+        return { success: false, error: srvData.error || `Product update failed (${srvRes.status}).` };
       }
     } catch (srvErr) {
       console.warn('Backend /api/admin/products/:id failed, falling back to direct client update:', srvErr);
@@ -749,12 +770,14 @@ export const adminService = {
           category_id: categoryId,
           collection_id: collectionId,
           price: productData.price !== undefined ? Number(productData.price) : undefined,
+          gst_rate: productData.gstRate !== undefined ? (productData.gstRate === null ? null : Number(productData.gstRate)) : undefined,
           mrp: productData.mrp ? Number(productData.mrp) : null,
           status: productData.status,
           featured: Boolean(productData.featured),
           bestseller: Boolean(productData.bestSeller),
           new_arrival: Boolean(productData.newArrival),
           description: productData.description,
+          metadata: (productData as any).metadata,
           fabric: productData.fabric,
           weave: productData.weave,
           origin: productData.origin,
@@ -781,10 +804,13 @@ export const adminService = {
       // 1. Safe Variant Preservation - updates existing in-place, inserts new ones, and maps IDs
       const variantSkuToIdMap = new Map<string, string>();
       if (variants && variants.length > 0) {
-        const { data: existingVariants } = await (supabase as any)
+        const { data: existingVariants, error: existingVariantsError } = await (supabase as any)
           .from('product_variants')
           .select('*')
           .eq('product_id', id);
+        if (existingVariantsError) {
+          return { success: false, error: `Could not load existing variants safely: ${existingVariantsError.message}` };
+        }
 
         const existingMap = new Map((existingVariants || []).map((v: any) => [v.id, v]));
         const existingSkuMap = new Map((existingVariants || []).map((v: any) => [v.sku, v]));
@@ -799,26 +825,56 @@ export const adminService = {
           const matched = (v.id && existingMap.get(v.id)) || existingSkuMap.get(expectedSku);
 
           if (matched) {
-            await (supabase as any)
+            const submittedStock =
+              v.stockQuantity === undefined || v.stockQuantity === null || v.stockQuantity === ''
+                ? Number(matched.stock_quantity || 0)
+                : Number(v.stockQuantity);
+            const reservedStock = Number(matched.reserved_quantity || 0);
+            if (!Number.isSafeInteger(submittedStock) || submittedStock < 0) {
+              return { success: false, error: `Stock for ${expectedSku} must be a whole number of zero or more.` };
+            }
+            if (!Number.isSafeInteger(reservedStock) || reservedStock < 0 || submittedStock < reservedStock) {
+              return { success: false, error: `Stock for ${expectedSku} cannot be lower than ${reservedStock} unit(s) already reserved.` };
+            }
+
+            const { error: variantUpdateError } = await (supabase as any)
               .from('product_variants')
               .update({
-                sku: expectedSku,
-                variant_name: v.variantName || matched.variant_name || 'Standard',
-                color: v.color || null,
-                size: v.size || null,
-                bed_size: v.bedSize || null,
-                dimensions: v.dimensions || null,
-                price_override: v.priceOverride ? Number(v.priceOverride) : null,
-                stock_quantity: Number(v.stockQuantity || 0),
+                variant_name: v.variantName !== undefined && String(v.variantName).trim() !== ''
+                  ? String(v.variantName).trim()
+                  : (matched.variant_name || 'Standard'),
+                color: v.color !== undefined ? (v.color || null) : matched.color,
+                size: v.size !== undefined ? (v.size || null) : matched.size,
+                bed_size: v.bedSize !== undefined ? (v.bedSize || null) : matched.bed_size,
+                dimensions: v.dimensions !== undefined ? (v.dimensions || null) : matched.dimensions,
+                price_override: v.priceOverride !== undefined
+                  ? (v.priceOverride ? Number(v.priceOverride) : null)
+                  : matched.price_override,
+                stock_quantity: submittedStock,
                 is_active: v.isActive !== false,
-                attributes: v.attributes || matched.attributes || null,
+                attributes: {
+                  ...(matched.attributes && typeof matched.attributes === 'object' ? matched.attributes : {}),
+                  ...(v.attributes && typeof v.attributes === 'object' ? v.attributes : {}),
+                  // Empty forms must not erase previously saved variant artwork or swatches.
+                  images: Array.isArray(v.attributes?.images) && v.attributes.images.length > 0
+                    ? v.attributes.images
+                    : (matched.attributes as any)?.images || [],
+                  colorHexPrimary: v.attributes?.colorHexPrimary ?? (matched.attributes as any)?.colorHexPrimary ?? null,
+                  colorHexSecondary: v.attributes?.colorHexSecondary ?? (matched.attributes as any)?.colorHexSecondary ?? null,
+                  colorSwatchUrl: v.attributes?.colorSwatchUrl ?? (matched.attributes as any)?.colorSwatchUrl ?? null,
+                },
               })
               .eq('id', matched.id);
+            if (variantUpdateError) return { success: false, error: variantUpdateError.message };
 
             variantSkuToIdMap.set(expectedSku, matched.id);
             if (v.id) variantSkuToIdMap.set(v.id, matched.id);
           } else {
-            const { data: insertedNew } = await (supabase as any).from('product_variants').insert({
+            const newStock = Number(v.stockQuantity ?? 0);
+            if (!Number.isSafeInteger(newStock) || newStock < 0) {
+              return { success: false, error: `Stock for ${expectedSku} must be a whole number of zero or more.` };
+            }
+            const { data: insertedNew, error: insertVariantError } = await (supabase as any).from('product_variants').insert({
               product_id: id,
               sku: expectedSku,
               variant_name: v.variantName || 'Standard',
@@ -827,10 +883,11 @@ export const adminService = {
               bed_size: v.bedSize || null,
               dimensions: v.dimensions || null,
               price_override: v.priceOverride ? Number(v.priceOverride) : null,
-              stock_quantity: Number(v.stockQuantity || 0),
+              stock_quantity: newStock,
               is_active: v.isActive !== false,
               attributes: v.attributes || null,
             }).select('id').single();
+            if (insertVariantError) return { success: false, error: insertVariantError.message };
 
             if (insertedNew?.id) {
               variantSkuToIdMap.set(expectedSku, insertedNew.id);
@@ -840,10 +897,8 @@ export const adminService = {
         }
       }
 
-      // 2. Sync Images if provided with variant association and presentation settings
+      // 2. Safer image sync: stage new rows first and check errors before removing old rows.
       if (images && images.length > 0) {
-        await (supabase as any).from('product_images').delete().eq('product_id', id);
-
         const imageRows = images.map((img: any, i) => {
           const matchedVarId = img.variantId || (img.variantSku ? variantSkuToIdMap.get(img.variantSku) : null) || null;
           return {
@@ -860,7 +915,19 @@ export const adminService = {
             scale: img.scale ? Number(img.scale) : 1.0,
           };
         });
-        await (supabase as any).from('product_images').insert(imageRows);
+        const { data: insertedImages, error: imageInsertError } = await (supabase as any)
+          .from('product_images').insert(imageRows).select('id');
+        if (imageInsertError) {
+          return { success: false, error: `Image save failed: ${imageInsertError.message}` };
+        }
+        const { error: imageDeleteError } = await (supabase as any)
+          .from('product_images').delete().eq('product_id', id).not('id', 'in', `(${(insertedImages || []).map((r: any) => r.id).join(',')})`);
+        if (imageDeleteError) {
+          // Keep both old and staged images rather than risk losing the previous gallery.
+          return { success: false, error: `New images were saved, but old image cleanup failed: ${imageDeleteError.message}` };
+        }
+      } else if (images && images.length === 0) {
+        // An explicitly empty gallery is not treated as an instruction to erase existing images.
       }
 
       if (typeof window !== 'undefined') {
@@ -1439,10 +1506,33 @@ export const adminService = {
         },
       });
 
-      const data = await res.json();
+      const data = await res.json().catch(() => null);
+      if (!res.ok) return { success: false, error: data?.error || `Order details request failed (HTTP ${res.status}).` };
+      if (!data || typeof data !== 'object') return { success: false, error: 'Order details endpoint returned an invalid response.' };
       return data;
     } catch (err: any) {
       return { success: false, error: err?.message || 'Failed to fetch order details.' };
+    }
+  },
+
+  /** Persist manual courier tracking details for an order. */
+  async updateOrderShipment(orderId: string, shipment: { courierName: string; trackingNumber: string; trackingUrl: string }): Promise<{ success: boolean; message?: string; error?: string }> {
+    try {
+      let token = '';
+      if (isSupabaseConfigured()) {
+        const { data } = await supabase.auth.getSession();
+        token = data.session?.access_token || '';
+      }
+      const res = await fetch(`/api/admin/orders/${orderId}/shipment`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        body: JSON.stringify(shipment),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) return { success: false, error: data?.error || `Shipment update failed (HTTP ${res.status}).` };
+      return data || { success: false, error: 'Invalid shipment response.' };
+    } catch (err: any) {
+      return { success: false, error: err?.message || 'Unable to save courier tracking.' };
     }
   },
 
@@ -1475,6 +1565,48 @@ export const adminService = {
       return data;
     } catch (err: any) {
       return { success: false, error: err?.message || 'Error updating order status.' };
+    }
+  },
+
+  /** Atomically record manual COD cash collection or settlement on the server. */
+  async updateCodPaymentStatus(orderId: string, paymentStatus: 'cod_collected' | 'cod_settled', notes?: string): Promise<{ success: boolean; message?: string; paymentStatus?: string; error?: string }> {
+    try {
+      let token = '';
+      if (isSupabaseConfigured()) {
+        const { data } = await supabase.auth.getSession();
+        token = data.session?.access_token || '';
+      }
+      const res = await fetch(`/api/admin/orders/${orderId}/payment-status`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        body: JSON.stringify({ paymentStatus, notes }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) return { success: false, error: data?.error || `COD payment update failed (HTTP ${res.status}).` };
+      return data || { success: false, error: 'Invalid COD payment update response.' };
+    } catch (err: any) {
+      return { success: false, error: err?.message || 'Unable to update COD payment status.' };
+    }
+  },
+
+  /** Record a verified refund workflow action (does not initiate a provider refund). */
+  async updateOrderRefundStatus(orderId: string, refundStatus: 'processing' | 'completed' | 'failed', notes?: string): Promise<{ success: boolean; message?: string; refundStatus?: string; error?: string }> {
+    try {
+      let token = '';
+      if (isSupabaseConfigured()) {
+        const { data } = await supabase.auth.getSession();
+        token = data.session?.access_token || '';
+      }
+      const res = await fetch(`/api/admin/orders/${orderId}/refund-status`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        body: JSON.stringify({ refundStatus, notes }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) return { success: false, error: data?.error || `Refund status update failed (HTTP ${res.status}).` };
+      return data || { success: false, error: 'Invalid refund status response.' };
+    } catch (err: any) {
+      return { success: false, error: err?.message || 'Unable to update refund status.' };
     }
   },
 

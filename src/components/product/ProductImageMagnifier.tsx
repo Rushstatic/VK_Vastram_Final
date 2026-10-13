@@ -157,7 +157,7 @@ export const ProductImageMagnifier: React.FC<ProductImageMagnifierProps> = ({
         <button
           type="button"
           onClick={(event) => { event.stopPropagation(); onOpenFullscreen(); }}
-          className="absolute inset-0 z-[5] cursor-zoom-in bg-transparent focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#B88E3E]"
+          className="absolute inset-0 cursor-zoom-in bg-transparent focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#B88E3E]"
           aria-label={`Open ${alt} in fullscreen gallery`}
           title="Open fullscreen gallery"
         />

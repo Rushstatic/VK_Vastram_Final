@@ -23,6 +23,7 @@ import { recentlyViewedService } from '../../services/recentlyViewedService';
 import { getComplementaryProducts } from '../../lib/recommendations';
 import { HorizontalProductRail } from '../catalog/HorizontalProductRail';
 import { ProductReviewsSection } from '../catalog/ProductReviewsSection';
+import { ProductRatingBadge } from '../catalog/ProductRatingBadge';
 import { ColorSwatch } from '../ui/ColorSwatch';
 import { ProductGallery } from '../product/ProductGallery';
 import { formatVariantSku } from '../../lib/skuHelper';
@@ -357,12 +358,10 @@ export const ProductDetailPage: React.FC<ProductDetailPageProps> = ({
               <h1 className="font-serif text-2xl sm:text-3xl lg:text-4xl text-[#1C1917] font-normal leading-tight">
                 {product.name}
               </h1>
-              <div className="flex items-center gap-3 mt-1.5 text-xs text-[#78716C]">
+              <div className="flex flex-wrap items-center gap-3 mt-1.5 text-xs text-[#78716C]">
                 <span className="font-mono text-[11px] text-[#A8A29E]">SKU: {displaySku}</span>
                 <span>·</span>
-                <span className="text-[#967029] font-medium flex items-center gap-1">
-                  ★★★★★ <span className="text-[#78716C] text-[11px]">(Authentic Handloom)</span>
-                </span>
+                <ProductRatingBadge productId={product.id} showEmpty />
               </div>
             </div>
 

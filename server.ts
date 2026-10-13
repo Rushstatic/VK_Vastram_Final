@@ -2606,37 +2606,53 @@ const orderPayload = {
           .eq('product_id', productId)
           .maybeSingle();
 
+        if (dupError) {
+          res.status(500).json({ success: false, error: 'Could not check your existing review. Please try again.' });
+          return;
+        }
+
+        // If an earlier version saved the review as pending, publish that same
+        // review after re-verifying the delivered purchase instead of telling the
+        // customer it exists while hiding it from the public product page.
+        const reviewPayload = {
+          order_id: matchingOrder.id,
+          rating: Number(rating),
+          title: String(title || '').trim(),
+          body: String(body || '').trim(),
+          review_images: reviewImages,
+          status: 'approved',
+          verified_purchase: true,
+          moderation_metadata: {
+            submit_ip: req.ip,
+            user_agent: req.headers['user-agent'],
+            order_number: matchingOrder.order_number,
+            published_after_delivery_verification: true
+          },
+          updated_at: new Date().toISOString()
+        };
+
         if (existing) {
-          res.status(400).json({ success: false, error: 'You have already submitted a review for this textile masterpiece.' });
-          return;
+          const { error: updateError } = await db
+            .from('reviews')
+            .update(reviewPayload)
+            .eq('id', existing.id)
+            .eq('user_id', userId)
+            .eq('product_id', productId);
+          if (updateError) {
+            res.status(500).json({ success: false, error: 'Your existing review was found but could not be published. Please contact support.' });
+            return;
+          }
+        } else {
+          const { error: insertError } = await db
+            .from('reviews')
+            .insert({ product_id: productId, user_id: userId, ...reviewPayload, created_at: new Date().toISOString() });
+          if (insertError) {
+            res.status(500).json({ success: false, error: insertError.message });
+            return;
+          }
         }
 
-        // 4. Insert review securely as pending
-        const { error: insertError } = await db
-          .from('reviews')
-          .insert({
-            product_id: productId,
-            user_id: userId,
-            order_id: matchingOrder.id,
-            rating,
-            title: title || '',
-            body: body || '',
-            review_images: reviewImages,
-            status: 'pending',
-            verified_purchase: true,
-            moderation_metadata: {
-              submit_ip: req.ip,
-              user_agent: req.headers['user-agent'],
-              order_number: matchingOrder.order_number
-            }
-          });
-
-        if (insertError) {
-          res.status(500).json({ success: false, error: insertError.message });
-          return;
-        }
-
-        res.json({ success: true, message: 'Review successfully submitted for administrative moderation.' });
+        res.json({ success: true, message: 'Thank you! Your verified review is now published on the product page.' });
       } else {
         // Local simulation fallback
         // Find delivered order in inMemoryOrdersMap
@@ -2668,13 +2684,13 @@ const orderPayload = {
           rating,
           title: title || '',
           body: body || '',
-          status: 'pending',
+          status: 'approved',
           verifiedPurchase: true,
           createdAt: new Date().toISOString(),
           reviewerName: req.user?.email ? req.user.email.split('@')[0] : 'Verified Patron'
         });
 
-        res.json({ success: true, message: 'Review successfully submitted for administrative moderation.' });
+        res.json({ success: true, message: 'Thank you! Your verified review is now published on the product page.' });
       }
     } catch (err: any) {
       res.status(500).json({ success: false, error: err?.message || 'Error submitting review.' });

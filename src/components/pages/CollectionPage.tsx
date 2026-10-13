@@ -435,15 +435,30 @@ export const CollectionPage: React.FC<CollectionPageProps> = ({
 
           {/* Product Grid Area (Col 9 or 12) */}
           <div className="lg:col-span-9">
-            <ProductGrid
-              products={filteredProducts}
-              wishlistIds={wishlistIds}
-              columns={4}
-              onToggleWishlist={onToggleWishlist}
-              onSelectProduct={(slug) => onNavigate({ type: 'product', slug })}
-              onQuickView={onQuickView}
-              onAddToCart={onAddToCart}
-            />
+            {categoryPool.length === 0 ? (
+              <div className="min-h-[340px] sm:min-h-[420px] flex flex-col items-center justify-center text-center px-5 py-12 border border-[#1C1917]/10 bg-[#F4EFE6]/50">
+                <span className="text-[10px] uppercase tracking-[0.24em] text-[#967029] font-semibold mb-3">A new collection is being prepared</span>
+                <h2 className="font-serif text-3xl sm:text-4xl text-[#1C1917] font-normal">Coming Soon</h2>
+                <p className="mt-3 max-w-md text-sm leading-relaxed text-[#57534E]">We're carefully curating this collection for VK VASTRAM. Please visit again soon for the first arrivals.</p>
+                <button type="button" onClick={() => onNavigate({ type: 'home' })} className="mt-6 px-5 py-3 bg-[#1C1917] text-[#FAF8F5] text-xs tracking-[0.12em] uppercase hover:bg-[#78281F] transition-colors">Explore the Store</button>
+              </div>
+            ) : filteredProducts.length === 0 ? (
+              <div className="min-h-[260px] flex flex-col items-center justify-center text-center px-5 py-10 border border-[#1C1917]/10">
+                <h2 className="font-serif text-2xl text-[#1C1917]">No matching creations</h2>
+                <p className="mt-2 text-sm text-[#57534E]">Try changing your filters or resetting them to see more products.</p>
+                <button type="button" onClick={handleClearAllFilters} className="mt-4 underline text-xs text-[#967029]">Reset filters</button>
+              </div>
+            ) : (
+              <ProductGrid
+                products={filteredProducts}
+                wishlistIds={wishlistIds}
+                columns={4}
+                onToggleWishlist={onToggleWishlist}
+                onSelectProduct={(slug) => onNavigate({ type: 'product', slug })}
+                onQuickView={onQuickView}
+                onAddToCart={onAddToCart}
+              />
+            )}
           </div>
         </div>
 

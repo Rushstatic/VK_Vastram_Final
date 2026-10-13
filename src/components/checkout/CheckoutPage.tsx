@@ -1074,6 +1074,12 @@ export const CheckoutPage: React.FC<CheckoutPageProps> = ({
                               Qty: {item.quantity}{' '}
                               {item.selectedColor && `· ${item.selectedColor}`}
                             </p>
+                            {item.includeFallPico && (
+                              <div className="mt-1.5 flex items-center gap-2 text-[11px] text-[#78281F]">
+                                <span className="pl-2 border-l-2 border-[#B88E3E]">Fall &amp; Pico × {item.quantity}</span>
+                                <span className="font-medium tabular-nums">{formatPrice(Math.max(0, Number(settings?.fallPicoPrice) || 0) * item.quantity)}</span>
+                              </div>
+                            )}
                           </div>
                         </div>
                         <span className="font-medium text-[#1C1917] tabular-nums">
@@ -1250,8 +1256,8 @@ export const CheckoutPage: React.FC<CheckoutPageProps> = ({
                         : submitting
                         ? 'Processing Order...'
                         : paymentMethod === 'online'
-                        ? `Pay ${formatPrice(Math.max(0, subtotal - couponDiscount) + shippingAmount)} with Razorpay`
-                        : `Place COD Order (${formatPrice(Math.max(0, subtotal - couponDiscount) + shippingAmount)})`}
+                        ? `Pay ${formatPrice(Math.max(0, subtotal - couponDiscount))} with Razorpay`
+                        : `Place COD Order (${formatPrice(Math.max(0, subtotal - couponDiscount))})`}
                     </Button>
                   </div>
                 </div>

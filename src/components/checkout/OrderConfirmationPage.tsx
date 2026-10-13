@@ -26,6 +26,7 @@ import { Button } from '../ui/Button';
 import { Container } from '../ui/Container';
 import { useSiteSettings } from '../../hooks/useSiteSettings';
 import { buildInvoiceTaxRows } from '../../lib/invoiceTax';
+import { OrderTrackingTimeline } from './OrderTrackingTimeline';
 
 interface OrderConfirmationPageProps {
   orderId: string;
@@ -110,6 +111,7 @@ export const OrderConfirmationPage: React.FC<OrderConfirmationPageProps> = ({
         <td style="padding: 12px 0; text-align: right; font-size: 13px; font-family: monospace;">₹${item.price.toLocaleString('en-IN')}</td>
         <td style="padding: 12px 0; text-align: right; font-size: 13px; font-family: monospace; font-weight: 600;">₹${(item.price * item.quantity).toLocaleString('en-IN')}</td>
       </tr>
+      ${item.productMetadata?.includeFallPico === true ? `<tr style="border-bottom: 1px solid #E5E7EB;"><td style="padding: 8px 0 8px 18px; font-size: 12px; color: #78281F;">Fall &amp; Pico finishing</td><td style="padding: 8px 0; text-align: center; font-size: 12px;">${item.quantity}</td><td style="padding: 8px 0; text-align: right; font-size: 12px;">₹${Math.max(0, Number(settings?.fallPicoPrice) || 0).toLocaleString('en-IN')}</td><td style="padding: 8px 0; text-align: right; font-size: 12px; font-weight: 600;">₹${(Math.max(0, Number(settings?.fallPicoPrice) || 0) * item.quantity).toLocaleString('en-IN')}</td></tr>` : ''}
     `).join('');
 
     const taglineHtml = `
@@ -222,7 +224,10 @@ export const OrderConfirmationPage: React.FC<OrderConfirmationPageProps> = ({
   };
 
   useEffect(() => {
-    fetchOrder();
+    void fetchOrder();
+    // Guest customers can keep this confirmation/tracking page open and see status changes.
+    const trackingRefresh = window.setInterval(() => { void fetchOrder(); }, 30000);
+    return () => window.clearInterval(trackingRefresh);
   }, [orderId]);
 
   const effectivePaymentMethod = order?.paymentMethod || initialPaymentMethod || 'online';
@@ -480,7 +485,9 @@ export const OrderConfirmationPage: React.FC<OrderConfirmationPageProps> = ({
                 <p className="font-semibold text-[#1C1917] capitalize">
                   {String(order?.orderStatus || (isPaid ? 'Confirmed' : 'Pending')).replaceAll('_', ' ')}
                 </p>
+                <button type="button" onClick={() => { setLoading(true); void fetchOrder(); }} className="mt-2 text-[11px] text-[#78281F] underline font-semibold">Refresh tracking status</button>
               </div>
+              <OrderTrackingTimeline status={order?.orderStatus} createdAt={order?.createdAt} shippedAt={order?.shippedAt} deliveredAt={order?.deliveredAt} courierName={order?.courierName} trackingNumber={order?.trackingNumber} trackingUrl={order?.trackingUrl} compact />
             </div>
 
             {(order?.orderStatus === 'cancelled' || order?.trackingUrl || order?.trackingNumber || order?.courierName) && (
@@ -546,6 +553,9 @@ export const OrderConfirmationPage: React.FC<OrderConfirmationPageProps> = ({
                           <p className="text-[10px] text-[#78716C] font-mono">
                             SKU: {item.sku} · Qty: {item.quantity}
                           </p>
+                          {item.productMetadata?.includeFallPico === true && (
+                            <p className="mt-1 pl-2 border-l-2 border-[#B88E3E] text-[10px] text-[#78281F]">Fall &amp; Pico × {item.quantity} · {formatPrice(Math.max(0, Number(settings?.fallPicoPrice) || 0) * item.quantity)}</p>
+                          )}
                         </div>
                       </div>
                       <span className="font-medium tabular-nums text-[#1C1917]">

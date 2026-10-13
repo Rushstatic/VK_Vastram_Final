@@ -4,6 +4,7 @@ import { Product } from '../../types';
 import { PriceDisplay } from '../ui/PriceDisplay';
 import { ImageContainer } from '../ui/ImageContainer';
 import { ColorSwatch } from '../ui/ColorSwatch';
+import { ProductRatingBadge } from './ProductRatingBadge';
 
 interface ProductCardProps {
   product: Product;
@@ -214,6 +215,7 @@ export const ProductCard: React.FC<ProductCardProps> = ({
         <h3 className="font-serif text-sm sm:text-base font-normal text-[#1C1917] group-hover:text-[#967029] transition-colors leading-snug line-clamp-1 mb-1.5">
           {product.name}
         </h3>
+        <ProductRatingBadge productId={product.id} className="mb-1.5" />
 
         {/* Color Swatch Preview (if available) */}
         {product.colors && product.colors.length > 0 && (

@@ -53,9 +53,8 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
 
   if (!isOpen && !isClosing) return null;
 
-  const fallPicoPrice = Math.max(0, Number(settings?.fallPicoPrice) || 0);
   const subtotal = items.reduce(
-    (sum, item) => sum + (item.product.price + (item.includeFallPico ? fallPicoPrice : 0)) * item.quantity,
+    (sum, item) => sum + item.product.price * item.quantity,
     0
   );
 

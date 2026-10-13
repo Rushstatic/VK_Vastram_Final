@@ -762,7 +762,7 @@ export default function App() {
             <CategoryShowcase categories={categories} onNavigate={handleNavigate} />
 
             {/* Featured Sarees */}
-            <section className="py-8 sm:py-20 bg-[#FAF8F5]">
+            <section className="py-16 sm:py-20 bg-[#FAF8F5]">
               <Container>
                 <ScrollReveal distance={16} duration={550}>
                   <SectionHeading
@@ -797,7 +797,7 @@ export default function App() {
             <CraftsmanshipStory onNavigate={handleNavigate} />
 
             {/* Curated Bedsheets */}
-            <section className="py-8 sm:py-20 bg-[#FAF8F5]">
+            <section className="py-16 sm:py-20 bg-[#FAF8F5]">
               <Container>
                 <ScrollReveal distance={16} duration={550}>
                   <SectionHeading

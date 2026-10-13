@@ -28,6 +28,7 @@ import { Button } from '../ui/Button';
 import { Container } from '../ui/Container';
 import { useSiteSettings } from '../../hooks/useSiteSettings';
 import { buildInvoiceTaxRows } from '../../lib/invoiceTax';
+import { OrderTrackingTimeline } from '../checkout/OrderTrackingTimeline';
 
 interface AccountPageProps {
   userId: string;
@@ -104,6 +105,11 @@ export const AccountPage: React.FC<AccountPageProps> = ({
 
   useEffect(() => {
     loadAccountData();
+    // Keep the customer-facing tracking timeline in sync with admin status updates.
+    const trackingRefresh = window.setInterval(() => {
+      void orderService.getCustomerOrders(userId).then(setOrders).catch(() => undefined);
+    }, 30000);
+    return () => window.clearInterval(trackingRefresh);
   }, [userId]);
 
   // Profile Save Handler
@@ -750,6 +756,9 @@ export const AccountPage: React.FC<AccountPageProps> = ({
                                   <p className="text-[10px] text-[#78716C] font-mono">
                                     SKU: {item.sku} · Qty: {item.quantity}
                                   </p>
+                                  {item.productMetadata?.includeFallPico === true && (
+                                    <p className="mt-1 pl-2 border-l-2 border-[#B88E3E] text-[10px] text-[#78281F]">Fall &amp; Pico × {item.quantity} · {formatPrice(Math.max(0, Number(settings?.fallPicoPrice) || 0) * item.quantity)}</p>
+                                  )}
                                 </div>
                               </div>
                               <span className="font-medium tabular-nums text-[#1C1917]">
@@ -758,6 +767,8 @@ export const AccountPage: React.FC<AccountPageProps> = ({
                             </div>
                           ))}
                         </div>
+
+                        <OrderTrackingTimeline status={ord.orderStatus} createdAt={ord.createdAt} shippedAt={ord.shippedAt} deliveredAt={ord.deliveredAt} courierName={ord.courierName} trackingNumber={ord.trackingNumber} trackingUrl={ord.trackingUrl} />
 
                         {(ord.courierName || ord.trackingNumber || ord.trackingUrl || ord.orderStatus === 'cancelled') && (
                           <div className={`rounded-xs border p-3 text-xs space-y-1 ${ord.orderStatus === 'cancelled' ? 'border-rose-200 bg-rose-50/70' : 'border-[#B88E3E]/25 bg-[#F4EFE6]/60'}`}>

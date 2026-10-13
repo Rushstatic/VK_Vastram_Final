@@ -15,14 +15,7 @@ interface ProductDetailModalProps {
   onClose: () => void;
   isWishlisted?: boolean;
   onToggleWishlist?: (product: Product) => void;
-  onAddToCart?: (
-  product: Product,
-  quantity: number,
-  color?: string,
-  size?: string,
-  variantId?: string,
-  includeFallPico?: boolean
-) => void;
+  onAddToCart?: (product: Product, quantity: number, color?: string, size?: string, variantId?: string, includeFallPico?: boolean) => void;
 }
 
 export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
@@ -105,7 +98,8 @@ export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
         quantity,
         selectedColor,
         selectedSize,
-        activeVariant?.id
+        activeVariant?.id,
+        false
       );
       setAddedAnimation(true);
       setTimeout(() => setAddedAnimation(false), 2000);

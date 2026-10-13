@@ -66,6 +66,7 @@ export const ProductReviewsSection: React.FC<ProductReviewsSectionProps> = ({
         setReviewFiles([]);
         setRating(5);
         setShowForm(false);
+        window.dispatchEvent(new CustomEvent('vk-reviews-updated', { detail: { productId } }));
         loadReviews();
       } else {
         setFeedback({
@@ -199,7 +200,7 @@ export const ProductReviewsSection: React.FC<ProductReviewsSectionProps> = ({
               <input type="file" accept="image/jpeg,image/png,image/webp" multiple className="sr-only" onChange={(e) => { const picked = Array.from(e.target.files || []); setReviewFiles((prev) => [...prev, ...picked].slice(0, 5)); e.currentTarget.value = ''; }} />
             </label>
             {reviewFiles.length > 0 && <div className="mt-2 flex flex-wrap gap-2">{reviewFiles.map((file, idx) => <span key={`${file.name}-${idx}`} className="inline-flex items-center gap-1 rounded border px-2 py-1 text-[11px]">{file.name.slice(0, 24)} <button type="button" aria-label="Remove photo" onClick={() => setReviewFiles((prev) => prev.filter((_, i) => i !== idx))}><X className="w-3 h-3" /></button></span>)}</div>}
-            <p className="text-[10px] text-[#78716C] mt-1">JPG, PNG or WebP; maximum 5 MB each. Photos are reviewed before publication.</p>
+            <p className="text-[10px] text-[#78716C] mt-1">JPG, PNG or WebP; maximum 5 MB each. Reviews are accepted only after a delivered purchase is verified.</p>
           </div>
           <Button
             type="submit"

@@ -12,6 +12,8 @@ interface ProductGridProps {
   onQuickView?: (product: Product) => void;
   onAddToCart?: (product: Product) => void;
   loading?: boolean;
+  /** Use a swipeable horizontal rail on mobile while retaining the desktop grid. */
+  mobileCarousel?: boolean;
 }
 
 export const ProductGrid: React.FC<ProductGridProps> = ({
@@ -23,6 +25,7 @@ export const ProductGrid: React.FC<ProductGridProps> = ({
   onQuickView,
   onAddToCart,
   loading = false,
+  mobileCarousel = false,
 }) => {
   if (loading) {
     return (
@@ -53,10 +56,13 @@ export const ProductGrid: React.FC<ProductGridProps> = ({
   }
 
   return (
-    <div className={`grid grid-cols-2 ${columns === 4 ? 'lg:grid-cols-4 md:grid-cols-3' : 'md:grid-cols-3'} gap-x-4 gap-y-8 sm:gap-x-6 sm:gap-y-10 lg:gap-x-8`}>
+    <div className={mobileCarousel
+      ? `-mx-4 px-4 sm:mx-0 sm:px-0 flex gap-4 overflow-x-auto snap-x snap-mandatory pb-4 overscroll-x-contain md:grid ${columns === 4 ? 'md:grid-cols-3 lg:grid-cols-4' : 'md:grid-cols-3'} md:gap-x-6 md:gap-y-10 md:overflow-visible md:pb-0 lg:gap-x-8 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden`
+      : `grid grid-cols-2 ${columns === 4 ? 'lg:grid-cols-4 md:grid-cols-3' : 'md:grid-cols-3'} gap-x-4 gap-y-8 sm:gap-x-6 sm:gap-y-10 lg:gap-x-8`}
+    >
       {products.map((product, idx) => (
+        <div key={product.id} className={mobileCarousel ? 'snap-start shrink-0 w-[72%] sm:w-[42%] md:w-auto' : undefined}>
         <ScrollReveal
-          key={product.id}
           delay={(idx % (columns || 3)) * 80}
           duration={550}
           distance={16}
@@ -70,6 +76,7 @@ export const ProductGrid: React.FC<ProductGridProps> = ({
             onAddToCart={onAddToCart}
           />
         </ScrollReveal>
+        </div>
       ))}
     </div>
   );

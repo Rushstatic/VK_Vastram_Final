@@ -37,12 +37,16 @@ export const CategoryShowcase: React.FC<CategoryShowcaseProps> = ({
           />
         </ScrollReveal>
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 sm:gap-8">
+        <div
+          className="-mx-4 px-4 sm:mx-0 sm:px-0 flex gap-4 overflow-x-auto snap-x snap-mandatory pb-4 overscroll-x-contain md:grid md:grid-cols-3 md:gap-6 md:overflow-visible md:pb-0 lg:gap-8 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+          aria-label="Browse textile categories"
+        >
           {displayCategories.map((cat, index) => (
-            <ScrollReveal key={cat.id} delay={index * 100} duration={650} distance={20}>
+            <div key={cat.id} className="snap-start shrink-0 w-[82%] sm:w-[58%] md:w-auto">
+            <ScrollReveal delay={index * 100} duration={650} distance={20}>
               <div
                 onClick={() => onNavigate({ type: 'collection', category: cat.category })}
-                className="group relative flex flex-col bg-[#F4EFE6] rounded-xs overflow-hidden cursor-pointer border border-[#1C1917]/10 transition-all duration-300 hover:border-[#1C1917]/30"
+                className="group relative flex h-full flex-col bg-[#F4EFE6] rounded-xs overflow-hidden cursor-pointer border border-[#1C1917]/10 transition-all duration-300 hover:border-[#1C1917]/30"
               >
                 {/* Image Box */}
                 <div className="relative aspect-[4/3] sm:aspect-[3/4] overflow-hidden bg-[#EFE9DC]">
@@ -74,6 +78,7 @@ export const CategoryShowcase: React.FC<CategoryShowcaseProps> = ({
                 </div>
               </div>
             </ScrollReveal>
+            </div>
           ))}
         </div>
       </Container>

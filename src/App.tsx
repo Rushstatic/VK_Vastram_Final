@@ -786,6 +786,7 @@ export default function App() {
                   products={featuredSarees}
                   wishlistIds={wishlistIds}
                   columns={4}
+                  mobileCarousel
                   onToggleWishlist={handleToggleWishlist}
                   onSelectProduct={(slug) => handleNavigate({ type: 'product', slug })}
                   onQuickView={(p) => setQuickViewProduct(p)}

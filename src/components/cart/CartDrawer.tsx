@@ -53,8 +53,9 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
 
   if (!isOpen && !isClosing) return null;
 
+  const fallPicoPrice = Math.max(0, Number(settings?.fallPicoPrice) || 0);
   const subtotal = items.reduce(
-    (sum, item) => sum + item.product.price * item.quantity,
+    (sum, item) => sum + (item.product.price + (item.includeFallPico ? fallPicoPrice : 0)) * item.quantity,
     0
   );
 
@@ -161,6 +162,7 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
                       <div className="text-[11px] text-[#78716C] mt-1 space-y-0.5">
                         {item.selectedColor && <div>Color: {item.selectedColor}</div>}
                         {item.selectedSize && <div>Size: {item.selectedSize}</div>}
+                        {item.includeFallPico && <div className="text-[#78281F]">Fall & Pico finishing</div>}
                       </div>
                     </div>
 
@@ -194,7 +196,7 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
                       </div>
 
                       <span className="font-semibold text-sm tabular-nums text-[#1C1917]">
-                        {formatPrice(item.product.price * item.quantity)}
+                        {formatPrice((item.product.price + (item.includeFallPico ? Math.max(0, Number(settings?.fallPicoPrice) || 0) : 0)) * item.quantity)}
                       </span>
                     </div>
                   </div>

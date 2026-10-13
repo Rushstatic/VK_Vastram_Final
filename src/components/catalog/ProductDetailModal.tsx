@@ -15,7 +15,14 @@ interface ProductDetailModalProps {
   onClose: () => void;
   isWishlisted?: boolean;
   onToggleWishlist?: (product: Product) => void;
-  onAddToCart?: (product: Product, quantity: number, color?: string, size?: string, variantId?: string) => void;
+  onAddToCart?: (
+  product: Product,
+  quantity: number,
+  color?: string,
+  size?: string,
+  variantId?: string,
+  includeFallPico?: boolean
+) => void;
 }
 
 export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
@@ -84,6 +91,7 @@ export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
   // gallery so the main stage never stays blank while valid secondary images exist.
   const images = variantImages.length > 0 ? variantImages : productImages;
   const currentImage = (selectedImage && images.includes(selectedImage) ? selectedImage : '') || images[0] || '';
+  const currentImageFallback = product.imagesWithRoles?.find((image) => normalizeImageUrl(image.imageUrl) === normalizeImageUrl(currentImage))?.fallbackImageUrl || activeVariant?.images?.find((image) => normalizeImageUrl(image.imageUrl) === normalizeImageUrl(currentImage))?.fallbackImageUrl;
 
   const handleAddToCart = () => {
     if (isSoldOut) return;
@@ -137,6 +145,7 @@ export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
             >
               <ImageContainer
                 src={currentImage}
+                fallbackSrc={currentImageFallback}
                 alt={product.name}
                 aspectRatio="3/4"
                 priority
@@ -152,12 +161,12 @@ export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
 
           {/* Thumbnail Strip */}
           {images.length > 1 && (
-            <div className="flex gap-2.5 mt-4">
+            <div className="flex max-w-full gap-2.5 mt-4 overflow-x-auto pb-1">
               {images.map((img, idx) => (
                 <button
                   key={idx}
                   onClick={() => setSelectedImage(img)}
-                  className={`w-16 h-20 rounded-xs overflow-hidden border-2 cursor-pointer transition-all ${
+                  className={`w-16 h-20 shrink-0 rounded-xs overflow-hidden border-2 cursor-pointer transition-all ${
                     currentImage === img
                       ? 'border-[#B88E3E] opacity-100'
                       : 'border-transparent opacity-60 hover:opacity-100'
@@ -175,7 +184,7 @@ export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
         </div>
 
         {/* Right Column: Information & Purchase Module */}
-        <div className="w-full md:w-1/2 p-6 sm:p-8 flex flex-col overflow-y-auto max-h-[85vh] md:max-h-[90vh]">
+        <div className="w-full md:w-1/2 p-4 sm:p-8 flex flex-col overflow-y-auto max-h-[85vh] md:max-h-[90vh]">
           {/* Category & Origin */}
           <div className="flex items-center justify-between text-xs text-[#78716C] mb-2">
             <span className="uppercase tracking-widest text-[#967029] font-medium">

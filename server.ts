@@ -6,6 +6,7 @@ import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import { createServer as createViteServer } from 'vite';
 import { createClient } from '@supabase/supabase-js';
+import webpush from 'web-push';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { invokeCheckedRpc, OrderSafetyError, validateOrderLines } from './server/orderSafety.ts';
 
@@ -46,6 +47,46 @@ const supabaseAdmin: SupabaseClient | null =
 
 const db = useSupabase ? supabaseAdmin : null;
 
+/** Admin-only best-effort push + email. Delivery failures never roll back an order commit. */
+async function dispatchAdminOrderAlert(orderId: string, eventType: 'new_order' | 'status_update', status?: string): Promise<void> {
+  if (!db) return;
+  try {
+    const { data: order, error } = await db.from('orders').select('id,order_number,total_amount,currency,payment_status,order_status,customer_name,customer_email').eq('id', orderId).maybeSingle();
+    if (error || !order) return;
+    const orderNumber = String(order.order_number || order.id);
+    const isNew = eventType === 'new_order';
+    let paymentMethod = 'ORDER';
+    if (isNew) {
+      const { data: payment } = await db.from('payments').select('provider,method').eq('order_id', orderId).order('created_at', { ascending: false }).limit(1).maybeSingle();
+      paymentMethod = String(payment?.method || payment?.provider || 'ORDER').toUpperCase();
+    }
+    const title = isNew ? 'New VK VASTRAM order' : 'VK VASTRAM order updated';
+    const body = isNew ? `${orderNumber} Â· â‚¹${Number(order.total_amount || 0).toLocaleString('en-IN')} Â· ${paymentMethod}` : `${orderNumber} Â· ${String(status || order.order_status || 'status updated').replace(/_/g, ' ')}`;
+    const payload = JSON.stringify({ title, body, url: '/admin', tag: `vkv-${order.id}-${eventType}-${status || ''}` });
+    if (process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY) {
+      try {
+        webpush.setVapidDetails(process.env.VAPID_SUBJECT || 'mailto:support@vkvastram.in', process.env.VAPID_PUBLIC_KEY, process.env.VAPID_PRIVATE_KEY);
+        const { data: subs } = await db.from('admin_push_subscriptions').select('id,endpoint,p256dh,auth').eq('enabled', true).limit(100);
+        for (const sub of subs || []) {
+          try { await webpush.sendNotification({ endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } }, payload); }
+          catch (e: any) { if (e?.statusCode === 404 || e?.statusCode === 410) await db.from('admin_push_subscriptions').update({ enabled: false, updated_at: new Date().toISOString() }).eq('id', sub.id); }
+        }
+      } catch { console.warn('[admin-notifications] push delivery attempt failed'); }
+    }
+    const to = String(process.env.ADMIN_NOTIFICATION_EMAIL || '').trim();
+    if (to && process.env.RESEND_API_KEY && process.env.RESEND_FROM_EMAIL) {
+      const safe = (v: unknown) => String(v ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c] || c));
+      try {
+        const response = await fetch('https://api.resend.com/emails', { method: 'POST', headers: { Authorization: `Bearer ${process.env.RESEND_API_KEY}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ from: process.env.RESEND_FROM_EMAIL, to: [to], subject: `${title}: ${orderNumber}`, html: `<div style="font-family:Arial,sans-serif"><h2>${safe(title)}</h2><p>${safe(body)}</p><p>Customer: ${safe(order.customer_name || 'Customer')}</p><p>Payment status: ${safe(order.payment_status)}</p><p><a href="${String(process.env.SITE_URL || process.env.APP_URL || 'http://localhost:3000').replace(/\/$/, '')}/admin">Open VK VASTRAM Admin</a></p></div>` }) });
+        if (!response.ok) { const detail = await response.text().catch(() => ''); console.error(`[admin-notifications] Resend rejected email (${response.status}): ${detail.slice(0, 500)}`); }
+        else { console.info(`[admin-notifications] email accepted by Resend for order ${orderNumber}`); }
+      } catch (error) { console.error('[admin-notifications] email delivery request failed', error instanceof Error ? error.message : 'unknown error'); }
+    }
+  } catch { console.warn('[admin-notifications] alert dispatch failed; order state remains committed'); }
+}
+
+
+
 /** Sends queued restock notices when Resend is configured; never fails inventory commits. */
 async function dispatchReadyBackInStockEmails(variantId: string): Promise<void> {
   if (!db || !process.env.RESEND_API_KEY || !process.env.RESEND_FROM_EMAIL || !(process.env.SITE_URL || process.env.APP_URL)) return;
@@ -70,7 +111,7 @@ async function dispatchReadyBackInStockEmails(variantId: string): Promise<void> 
             from: process.env.RESEND_FROM_EMAIL,
             to: [subscription.email],
             subject: `${productName} is back in stock | VK VASTRAM`,
-            html: `<div style="font-family:Georgia,serif;color:#1c1917;max-width:600px;margin:24px auto;line-height:1.6"><h1 style="color:#78281f;font-weight:normal">A drape you loved is available again.</h1><p><strong>${productName.replace(/[&<>"']/g, (c: string) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c] || c))}</strong>${variant.variant_name ? ` â€” ${String(variant.variant_name).replace(/[&<>"']/g, '')}` : ''} is back in stock.</p>${productUrl ? `<p><a href="${productUrl}" style="display:inline-block;background:#1c1917;color:#fff;padding:12px 18px;text-decoration:none">View product</a></p>` : ''}<p style="font-size:12px;color:#78716c">You received this because you requested a restock notification from VK VASTRAM.</p></div>`
+            html: `<div style="font-family:Georgia,serif;color:#1c1917;max-width:600px;margin:24px auto;line-height:1.6"><h1 style="color:#78281f;font-weight:normal">A drape you loved is available again.</h1><p><strong>${productName.replace(/[&<>"']/g, (c: string) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c] || c))}</strong>${variant.variant_name ? ` Ã¢â‚¬â€ ${String(variant.variant_name).replace(/[&<>"']/g, '')}` : ''} is back in stock.</p>${productUrl ? `<p><a href="${productUrl}" style="display:inline-block;background:#1c1917;color:#fff;padding:12px 18px;text-decoration:none">View product</a></p>` : ''}<p style="font-size:12px;color:#78716c">You received this because you requested a restock notification from VK VASTRAM.</p></div>`
           })
         });
         if (!response.ok) continue;
@@ -963,6 +1004,7 @@ const orderPayload = {
         if (typeof created.order_id !== 'string' || !created.order_id || typeof created.order_number !== 'string' || !created.order_number) {
           throw new OrderSafetyError('Order service returned an incomplete result.', 503, 'INVALID_RPC_RESULT');
         }
+        void dispatchAdminOrderAlert(created.order_id, 'new_order');
 
         res.json({
           success: true,
@@ -1612,6 +1654,32 @@ const orderPayload = {
   // -------------------------------------------------------------------
   // 12. GET /api/admin/orders (ADMIN LIST ORDERS - PAGINATED & FILTERED)
   // -------------------------------------------------------------------
+  app.get('/api/admin/notifications/push-config', authenticateUser, async (req: AuthenticatedRequest, res: Response) => {
+    if (!(await checkAdminRole(req.user?.id))) { res.status(403).json({ success: false, error: 'Administrator access required.' }); return; }
+    res.json({ enabled: Boolean(process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY), publicKey: process.env.VAPID_PUBLIC_KEY || null });
+  });
+  app.post('/api/admin/notifications/push-subscription', authenticateUser, async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      if (!(await checkAdminRole(req.user?.id))) { res.status(403).json({ success: false, error: 'Administrator access required.' }); return; }
+      if (!db || !SUPABASE_SERVICE_ROLE_KEY || !req.user?.id) { res.status(503).json({ success: false, error: 'Admin notification storage is unavailable.' }); return; }
+      const sub = req.body?.subscription;
+      if (typeof sub?.endpoint !== 'string' || !sub.endpoint.startsWith('https://') || typeof sub?.keys?.p256dh !== 'string' || typeof sub?.keys?.auth !== 'string') { res.status(400).json({ success: false, error: 'A valid browser push subscription is required.' }); return; }
+      const { error } = await db.from('admin_push_subscriptions').upsert({ admin_user_id: req.user.id, endpoint: sub.endpoint, p256dh: sub.keys.p256dh, auth: sub.keys.auth, enabled: true, updated_at: new Date().toISOString() }, { onConflict: 'endpoint' });
+      if (error) throw error;
+      res.json({ success: true });
+    } catch (e: any) { console.error('[admin-push-subscription] save failed:', e?.code || 'error'); res.status(503).json({ success: false, error: 'Could not save admin push subscription.' }); }
+  });
+  app.delete('/api/admin/notifications/push-subscription', authenticateUser, async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      if (!(await checkAdminRole(req.user?.id))) { res.status(403).json({ success: false, error: 'Administrator access required.' }); return; }
+      const endpoint = String(req.body?.endpoint || '');
+      if (!db || !req.user?.id || !endpoint) { res.status(400).json({ success: false, error: 'Subscription endpoint is required.' }); return; }
+      const { error } = await db.from('admin_push_subscriptions').update({ enabled: false, updated_at: new Date().toISOString() }).eq('admin_user_id', req.user.id).eq('endpoint', endpoint);
+      if (error) throw error;
+      res.json({ success: true });
+    } catch { res.status(503).json({ success: false, error: 'Could not disable admin push subscription.' }); }
+  });
+
   app.get(
     '/api/admin/orders',
     authenticateUser,
@@ -1730,7 +1798,6 @@ const orderPayload = {
               trackingUrl: ord.tracking_url || '',
               shippedAt: ord.shipped_at || null,
               deliveredAt: ord.delivered_at || null,
-              cancelledAt: ord.cancelled_at || null,
               notes: ord.notes || '',
               createdAt: ord.created_at,
               items: (ord.items || []).map((i: any) => ({
@@ -2279,6 +2346,7 @@ const orderPayload = {
           inMemoryOrdersMap.set(id, ord);
         }
 
+        void dispatchAdminOrderAlert(id, 'status_update', String(orderStatus));
         res.json({
           success: true,
           message: `Order status successfully transitioned to "${orderStatus}".`,
@@ -2373,6 +2441,7 @@ const orderPayload = {
             rating,
             title,
             body,
+            review_images,
             status,
             created_at
           `, { count: 'exact' })
@@ -2393,8 +2462,9 @@ const orderPayload = {
           rating: rev.rating,
           title: rev.title,
           body: rev.body,
+          reviewImages: Array.isArray(rev.review_images) ? rev.review_images : [],
           status: rev.status,
-          verifiedPurchase: false,
+          verifiedPurchase: true,
           createdAt: rev.created_at,
           reviewerName: 'Verified Patron'
         }));
@@ -2445,10 +2515,39 @@ const orderPayload = {
     }
   });
 
+  // POST /api/reviews/upload-image — authenticated review photo upload, only for delivered purchases.
+  app.post('/api/reviews/upload-image', authenticateUser, async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const userId = req.user?.id;
+      const dataUrl = String(req.body?.dataUrl || '');
+      const productId = String(req.body?.productId || '');
+      const contentType = String(req.body?.contentType || '');
+      if (!userId || !db) { res.status(503).json({ success: false, error: 'Review photo storage is unavailable.' }); return; }
+      if (!productId) { res.status(400).json({ success: false, error: 'Product is required for review photo upload.' }); return; }
+      const { data: productVariants } = await db.from('product_variants').select('id').eq('product_id', productId);
+      const purchasedVariantIds = (productVariants || []).map((v: any) => v.id);
+      const { data: deliveredOrders } = await db.from('orders').select('id,items:order_items(product_variant_id)').eq('user_id', userId).eq('order_status', 'delivered');
+      const eligible = (deliveredOrders || []).some((order: any) => (order.items || []).some((item: any) => purchasedVariantIds.includes(item.product_variant_id)));
+      if (!eligible) { res.status(403).json({ success: false, error: 'Review photos are available only for products from delivered orders.' }); return; }
+      const match = dataUrl.match(/^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/);
+      if (!match || match[1] !== contentType) { res.status(400).json({ success: false, error: 'Unsupported review image format.' }); return; }
+      const buffer = Buffer.from(match[2], 'base64');
+      if (!buffer.length || buffer.length > 5 * 1024 * 1024) { res.status(413).json({ success: false, error: 'Review photos must be 5 MB or smaller.' }); return; }
+      // Eligibility is checked again when the review is submitted. Uploads are private-by-convention paths in the existing public assets bucket.
+      const extension = contentType === 'image/jpeg' ? 'jpg' : contentType === 'image/png' ? 'png' : 'webp';
+      const objectPath = `reviews/${userId}/${crypto.randomUUID()}.${extension}`;
+      const { error: uploadError } = await db.storage.from('store-assets').upload(objectPath, buffer, { contentType, upsert: false });
+      if (uploadError) { res.status(500).json({ success: false, error: 'Could not store review photo. Check store-assets storage configuration.' }); return; }
+      const { data: publicData } = db.storage.from('store-assets').getPublicUrl(objectPath);
+      res.json({ success: true, url: publicData.publicUrl });
+    } catch (error) { console.error('[reviews] photo upload failed'); res.status(500).json({ success: false, error: 'Review photo upload failed.' }); }
+  });
+
   // POST /api/reviews/submit (CUSTOMER SUBMIT ELIGIBLE REVIEW)
   app.post('/api/reviews/submit', authenticateUser, async (req: AuthenticatedRequest, res: Response) => {
     try {
       const { productId, rating, title, body } = req.body;
+      const reviewImages = Array.isArray(req.body?.reviewImages) ? req.body.reviewImages.filter((url: unknown) => typeof url === 'string' && /^https:\/\/[^ ]+\/storage\/v1\/object\/public\/store-assets\/reviews\//.test(url)).slice(0, 5) : [];
       const userId = req.user?.id;
 
       if (!productId || !rating || rating < 1 || rating > 5) {
@@ -2522,6 +2621,7 @@ const orderPayload = {
             rating,
             title: title || '',
             body: body || '',
+            review_images: reviewImages,
             status: 'pending',
             verified_purchase: true,
             moderation_metadata: {
@@ -3216,7 +3316,7 @@ const orderPayload = {
         }
         subtotal += Number(v.price_override ?? v.products.price) * quantity;
       }
-      if (subtotal < Number(coupon.minimum_order_value || 0)) { res.status(400).json({ success: false, error: `Minimum cart value for this coupon is â‚¹${Number(coupon.minimum_order_value || 0).toLocaleString('en-IN')}.` }); return; }
+      if (subtotal < Number(coupon.minimum_order_value || 0)) { res.status(400).json({ success: false, error: `Minimum cart value for this coupon is Ã¢â€šÂ¹${Number(coupon.minimum_order_value || 0).toLocaleString('en-IN')}.` }); return; }
       let discountAmount = coupon.discount_type === 'percentage' ? subtotal * Number(coupon.discount_value) / 100 : Number(coupon.discount_value);
       if (coupon.maximum_discount != null) discountAmount = Math.min(discountAmount, Number(coupon.maximum_discount));
       discountAmount = Math.max(0, Math.min(subtotal, Math.round(discountAmount * 100) / 100));
@@ -3859,6 +3959,7 @@ const orderPayload = {
                 .update({
                   name: item.name.trim(),
                   price,
+                  gst_rate: item.gstRate === undefined || item.gstRate === '' ? null : Number(item.gstRate),
                   mrp: mrp && !isNaN(mrp) ? mrp : null,
                   category_id: categoryId,
                   collection_id: collectionId,
@@ -3953,6 +4054,7 @@ const orderPayload = {
                   name: item.name.trim(),
                   slug: finalSlug,
                   price,
+                  gst_rate: item.gstRate === undefined || item.gstRate === '' ? null : Number(item.gstRate),
                   mrp: mrp && !isNaN(mrp) ? mrp : null,
                   category_id: categoryId,
                   collection_id: collectionId,

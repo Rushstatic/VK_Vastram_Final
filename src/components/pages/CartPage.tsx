@@ -5,6 +5,8 @@ import { formatPrice } from '../ui/PriceDisplay';
 import { Button } from '../ui/Button';
 import { Container } from '../ui/Container';
 import { useSiteSettings } from '../../hooks/useSiteSettings';
+import { calculateShippingAmount } from '../../lib/shipping';
+import { INDIAN_STATES } from '../../lib/indianStates';
 
 interface CartPageProps {
   items: CartItem[];
@@ -21,14 +23,15 @@ export const CartPage: React.FC<CartPageProps> = ({
   onNavigate,
   onCheckout,
 }) => {
-  const subtotal = items.reduce(
-    (sum, item) => sum + item.product.price * item.quantity,
-    0
-  );
-
   const { settings } = useSiteSettings();
+  const [deliveryState, setDeliveryState] = React.useState(() => { try { return localStorage.getItem('vk_delivery_state') || 'Maharashtra'; } catch { return 'Maharashtra'; } });
+  const fallPicoTotal = items.reduce((sum, item) => sum + (item.includeFallPico ? Math.max(0, Number(settings?.fallPicoPrice) || 0) * item.quantity : 0), 0);
+  const subtotal = items.reduce((sum, item) => sum + item.product.price * item.quantity, 0) + fallPicoTotal;
+
   const announcementText = settings?.announcementBarText || 'Shipping charges calculated at checkout.';
   const exchangeWindow = settings?.exchangeWindowDays || 7;
+  const shippingEstimate = settings ? calculateShippingAmount(subtotal, deliveryState, settings) : 0;
+  const freeShippingGap = Math.max(0, Number(settings?.freeShippingThreshold || 0) - subtotal);
 
   if (items.length === 0) {
     return (
@@ -106,6 +109,7 @@ export const CartPage: React.FC<CartPageProps> = ({
                       {item.product.name}
                     </h3>
 
+                    {item.includeFallPico && <p className="text-[11px] text-[#78281F]">Fall & Pico finishing included</p>}
                     {(item.selectedColor || item.selectedSize) && (
                       <p className="text-[11px] text-[#78716C]">
                         {item.selectedColor && <span>Color: {item.selectedColor}</span>}
@@ -115,7 +119,7 @@ export const CartPage: React.FC<CartPageProps> = ({
                     )}
 
                     <p className="font-semibold text-xs text-[#1C1917] tabular-nums pt-1">
-                      {formatPrice(item.product.price)} each
+                      {formatPrice(item.product.price + (item.includeFallPico ? Math.max(0, Number(settings?.fallPicoPrice) || 0) : 0))} each
                     </p>
                   </div>
                 </div>
@@ -151,7 +155,7 @@ export const CartPage: React.FC<CartPageProps> = ({
 
                   <div className="flex items-center gap-3">
                     <p className="font-serif font-medium text-sm text-[#1C1917] tabular-nums">
-                      {formatPrice(item.product.price * item.quantity)}
+                      {formatPrice((item.product.price + (item.includeFallPico ? Math.max(0, Number(settings?.fallPicoPrice) || 0) : 0)) * item.quantity)}
                     </p>
                     <button
                       onClick={() => onRemoveItem(item.product.id, item.id)}
@@ -180,13 +184,17 @@ export const CartPage: React.FC<CartPageProps> = ({
                 </span>
               </div>
 
-              <div className="flex justify-between items-start text-[11px] text-[#78716C] pt-1">
-                <span>Estimated Shipping</span>
-                <span className="text-right">{announcementText}</span>
+              <div className="space-y-2 text-[11px] text-[#78716C] pt-1">
+                <label className="flex items-center justify-between gap-3"><span>Delivery state</span><select value={deliveryState} onChange={(event) => { const next = event.target.value; setDeliveryState(next); try { localStorage.setItem('vk_delivery_state', next); } catch { /* ignore */ } }} className="max-w-[190px] border border-[#1C1917]/15 bg-white p-2 rounded-xs text-[#1C1917]">{INDIAN_STATES.map((state) => <option key={state} value={state}>{state}</option>)}</select></label>
+                <div className="flex justify-between"><span>Estimated Shipping</span><span className="text-right font-medium text-[#1C1917]">{shippingEstimate === 0 && Number(settings?.freeShippingThreshold || 0) > 0 && subtotal >= Number(settings?.freeShippingThreshold || 0) ? 'FREE' : formatPrice(shippingEstimate)}</span></div>
               </div>
 
               <div className="border-t border-[#1C1917]/10 pt-3 flex justify-between items-baseline text-sm font-semibold text-[#1C1917]">
-                <span>Bag Subtotal</span>
+                <span>Estimated Total</span>
+                <span className="font-serif text-lg text-[#78281F] tabular-nums">{formatPrice(subtotal + shippingEstimate)}</span>
+              </div>
+              <div className="flex justify-between items-baseline text-[11px] text-[#78716C]">
+                <span>Bag Subtotal (before shipping)</span>
                 <span className="font-serif text-lg text-[#1C1917] tabular-nums">
                   {formatPrice(subtotal)}
                 </span>

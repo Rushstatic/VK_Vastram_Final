@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Star, CheckCircle2, AlertCircle, MessageSquare } from 'lucide-react';
+import { Star, CheckCircle2, AlertCircle, MessageSquare, ImagePlus, X } from 'lucide-react';
 import { reviewService, ProductReview } from '../../services/reviewService';
 import { Button } from '../ui/Button';
 
@@ -20,6 +20,7 @@ export const ProductReviewsSection: React.FC<ProductReviewsSectionProps> = ({
   const [rating, setRating] = useState(5);
   const [title, setTitle] = useState('');
   const [body, setBody] = useState('');
+  const [reviewFiles, setReviewFiles] = useState<File[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
@@ -46,12 +47,14 @@ export const ProductReviewsSection: React.FC<ProductReviewsSectionProps> = ({
     setFeedback(null);
 
     try {
-      const res = await reviewService.submitReview({
-        productId,
-        rating,
-        title: title.trim(),
-        body: body.trim(),
-      });
+      if (reviewFiles.length > 5) throw new Error('Upload up to 5 review photos.');
+      const reviewImages: string[] = [];
+      for (const file of reviewFiles) {
+        const uploaded = await reviewService.uploadReviewImage(file, productId);
+        if (!uploaded.success || !uploaded.url) throw new Error(uploaded.error || 'Could not upload review photo.');
+        reviewImages.push(uploaded.url);
+      }
+      const res = await reviewService.submitReview({ productId, rating, title: title.trim(), body: body.trim(), reviewImages });
 
       if (res.success) {
         setFeedback({
@@ -60,6 +63,7 @@ export const ProductReviewsSection: React.FC<ProductReviewsSectionProps> = ({
         });
         setTitle('');
         setBody('');
+        setReviewFiles([]);
         setRating(5);
         setShowForm(false);
         loadReviews();
@@ -188,6 +192,15 @@ export const ProductReviewsSection: React.FC<ProductReviewsSectionProps> = ({
             />
           </div>
 
+          <div>
+            <label className="block text-xs uppercase tracking-wider font-semibold text-[#1C1917] mb-1.5">Photos (optional, up to 5)</label>
+            <label className="flex items-center gap-2 w-fit px-3 py-2 border border-[#1C1917]/20 bg-[#FAF8F5] rounded-xs text-xs cursor-pointer hover:bg-white">
+              <ImagePlus className="w-4 h-4" /> Add review photos
+              <input type="file" accept="image/jpeg,image/png,image/webp" multiple className="sr-only" onChange={(e) => { const picked = Array.from(e.target.files || []); setReviewFiles((prev) => [...prev, ...picked].slice(0, 5)); e.currentTarget.value = ''; }} />
+            </label>
+            {reviewFiles.length > 0 && <div className="mt-2 flex flex-wrap gap-2">{reviewFiles.map((file, idx) => <span key={`${file.name}-${idx}`} className="inline-flex items-center gap-1 rounded border px-2 py-1 text-[11px]">{file.name.slice(0, 24)} <button type="button" aria-label="Remove photo" onClick={() => setReviewFiles((prev) => prev.filter((_, i) => i !== idx))}><X className="w-3 h-3" /></button></span>)}</div>}
+            <p className="text-[10px] text-[#78716C] mt-1">JPG, PNG or WebP; maximum 5 MB each. Photos are reviewed before publication.</p>
+          </div>
           <Button
             type="submit"
             variant="primary"
@@ -264,6 +277,7 @@ export const ProductReviewsSection: React.FC<ProductReviewsSectionProps> = ({
                   </div>
                 </div>
 
+                {Array.isArray(rev.reviewImages) && rev.reviewImages.length > 0 && <div className="flex flex-wrap gap-2">{rev.reviewImages.slice(0, 5).map((url, index) => <a key={`${rev.id}-photo-${index}`} href={url} target="_blank" rel="noreferrer"><img src={url} alt={`Customer review photo ${index + 1}`} loading="lazy" className="w-20 h-20 object-cover rounded border border-[#1C1917]/10" /></a>)}</div>}
                 {rev.title && (
                   <h5 className="font-serif text-sm font-semibold text-[#1C1917]">
                     {rev.title}

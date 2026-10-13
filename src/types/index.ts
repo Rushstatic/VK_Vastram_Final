@@ -17,6 +17,8 @@ export type ProductImageRole =
 export interface ProductVariantImage {
   id?: string;
   imageUrl: string;
+  /** Alternate URL/path from storage_path used if legacy image_url is stale. */
+  fallbackImageUrl?: string;
   role?: ProductImageRole;
   isPrimary?: boolean;
   sortOrder?: number;
@@ -104,6 +106,7 @@ export interface CartItem {
   quantity: number;
   selectedColor?: string;
   selectedSize?: string;
+  includeFallPico?: boolean;
   stockAvailable?: number;
 }
 

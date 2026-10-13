@@ -232,8 +232,8 @@ export const HeroSection: React.FC<HeroSectionProps> = ({ onNavigate }) => {
     return (
       <section className="relative bg-[#FAF8F5] pt-6 pb-16 sm:pb-24 border-b border-[#1C1917]/10">
         <Container>
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 lg:gap-12 items-center">
-            <div className="lg:col-span-5 flex flex-col justify-center order-2 lg:order-1 pt-4 lg:pt-0 space-y-4">
+          <div className="grid grid-cols-1 gap-6 sm:gap-8 items-start">
+            <div className="w-full flex flex-col justify-center order-2 pt-4 sm:pt-6 space-y-4">
               <div className="w-28 h-3 bg-[#EFE9DC] rounded-xs animate-pulse" />
               <div className="w-full h-10 bg-[#EFE9DC] rounded-xs animate-pulse" />
               <div className="w-3/4 h-10 bg-[#EFE9DC] rounded-xs animate-pulse" />
@@ -243,8 +243,8 @@ export const HeroSection: React.FC<HeroSectionProps> = ({ onNavigate }) => {
                 <div className="w-36 h-10 bg-[#EFE9DC] rounded-xs animate-pulse" />
               </div>
             </div>
-            <div className="lg:col-span-7 order-1 lg:order-2">
-              <div className="relative rounded-xs overflow-hidden bg-[#F4EFE6] border border-[#1C1917]/10 aspect-[4/3] sm:aspect-[16/10] flex items-center justify-center">
+            <div className="order-1 w-full">
+              <div className="relative rounded-xs overflow-hidden bg-[#F4EFE6] border border-[#1C1917]/10 aspect-[4/3] sm:aspect-[16/7] flex items-center justify-center">
                 <div className="w-8 h-8 rounded-full border-2 border-[#B88E3E]/30 border-t-[#B88E3E] animate-spin" />
               </div>
             </div>
@@ -345,9 +345,9 @@ export const HeroSection: React.FC<HeroSectionProps> = ({ onNavigate }) => {
       onTouchEnd={handleTouchEnd}
     >
       <Container>
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 lg:gap-12 items-center">
+        <div className="grid grid-cols-1 gap-6 sm:gap-8 items-start">
           {/* Left Editorial Narrative */}
-          <div className="lg:col-span-5 flex flex-col justify-center order-2 lg:order-1 pt-4 lg:pt-0">
+          <div className="w-full flex flex-col justify-center order-2 pt-4 sm:pt-6">
             <div
               key={currentSlide.id || currentSlideIndex}
               ref={narrativeRef}
@@ -410,8 +410,8 @@ export const HeroSection: React.FC<HeroSectionProps> = ({ onNavigate }) => {
           </div>
 
           {/* Right Hero Visual Stage with Multi-Slide Crossfade */}
-          <div className="lg:col-span-7 order-1 lg:order-2">
-            <div className="relative rounded-xs overflow-hidden bg-[#F4EFE6] border border-[#1C1917]/10 shadow-xs group">
+          <div className="order-1 w-full">
+            <div className="relative w-[calc(100%+2rem)] -mx-4 sm:w-full sm:mx-0 rounded-xs overflow-hidden bg-[#F4EFE6] border border-[#1C1917]/10 shadow-xs group">
               {/* Editorial SALE Tag */}
               {saleBadgeEnabled && (
                 <div
@@ -426,7 +426,7 @@ export const HeroSection: React.FC<HeroSectionProps> = ({ onNavigate }) => {
               )}
 
               {/* Aspect Ratio Container */}
-              <div className="relative w-full aspect-[4/3] sm:aspect-[16/10]">
+              <div className="relative w-full aspect-[4/3] sm:aspect-[16/7]">
                 {slides.map((slide, index) => {
                   const isActive = index === currentSlideIndex;
                   const desktopSrc = normalizeImageUrl(slide.desktopImage || HERO_IMAGE);
@@ -462,16 +462,6 @@ export const HeroSection: React.FC<HeroSectionProps> = ({ onNavigate }) => {
                     </div>
                   );
                 })}
-
-                {/* Signature Weave / Badge Overlay */}
-                <div className="absolute bottom-4 left-4 right-16 sm:bottom-6 sm:left-6 z-20 text-[#FAF8F5]">
-                  <p className="text-[10px] uppercase tracking-[0.2em] text-[#E5D7B7] font-medium">
-                    Signature Weave
-                  </p>
-                  <p className="font-serif text-base sm:text-lg text-white font-normal mt-0.5 drop-shadow-xs">
-                    {currentSlide.badge || 'Artisanal Handloom Masterpiece'}
-                  </p>
-                </div>
 
                 {/* Minimal Manual Navigation Arrows (Only when 2+ slides exist) */}
                 {slides.length > 1 && (

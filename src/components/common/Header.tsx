@@ -213,19 +213,29 @@ export const Header: React.FC<HeaderProps> = ({
                 className="flex items-center gap-2 sm:gap-3.5 text-center group cursor-pointer focus-visible:outline-none"
               >
                 {/* Logo Area */}
-                <div className={`relative flex items-center justify-center shrink-0 transition-all duration-300 ${scrolled ? 'w-6.5 h-6.5 sm:w-8 sm:h-8' : 'w-7 h-7 sm:w-10 sm:h-10'}`}>
-                  <div className="absolute inset-0 border border-[#78281F]/30 rounded-full animate-spin-slow pointer-events-none" />
-                  <img
-                    src={settings?.logoUrl || DefaultLogo}
-                    alt="Store Logo"
-                    onError={(e) => {
-                      (e.currentTarget as HTMLImageElement).src = DefaultLogo;
-                    }}
-                    className={`rounded-full object-cover transition-all duration-300 ${scrolled ? 'w-5 h-5 sm:w-6.5 sm:h-6.5' : 'w-5.5 h-5.5 sm:w-8 sm:h-8'}`}
-                  />
-                </div>
+                {/* Logo Area */}
+<div
+  className={`relative flex items-center justify-center shrink-0 transition-all duration-300 ${
+    scrolled
+      ? 'w-7 h-7 sm:w-9 sm:h-9'
+      : 'w-10 h-10 sm:w-14 sm:h-14 lg:w-16 lg:h-16'
+  }`}
+>
+  {/* Spinning Ring */}
+  <div className="absolute inset-0 border border-[#78281F]/30 rounded-full animate-spin-slow pointer-events-none" />
 
-                <span className={`font-serif font-semibold text-[#78281F] uppercase transition-all duration-300 group-hover:text-[#967029] whitespace-nowrap ${scrolled ? 'text-sm sm:text-xl lg:text-2xl tracking-[0.12em] sm:tracking-[0.28em]' : 'text-base sm:text-2xl lg:text-3xl tracking-[0.16em] sm:tracking-[0.35em]'}`}>
+  {/* Actual Logo Image - fills the circle (with small 2-3px inset so it sits cleanly inside the ring) */}
+  <img
+    src={settings?.logoUrl || DefaultLogo}
+    alt="Store Logo"
+    onError={(e) => {
+      (e.currentTarget as HTMLImageElement).src = DefaultLogo;
+    }}
+    className="w-full h-full p-0.5 rounded-full object-contain transition-all duration-300"
+  />
+</div>
+
+                <span className={`font-serif font-semibold text-[#78281F] uppercase transition-all duration-300 group-hover:text-[#967029] whitespace-nowrap ${scrolled ? 'text-sm sm:text-xl lg:text-2xl tracking-[0.12em] sm:tracking-[0.28em]' : 'text-base sm:text-3xl lg:text-5xl tracking-[0.16em] sm:tracking-[0.35em]'}`}>
                   {storeName}
                 </span>
               </button>
@@ -334,7 +344,7 @@ export const Header: React.FC<HeaderProps> = ({
                     className="w-5.5 h-5.5 rounded-full object-cover"
                   />
                 </div>
-                <span className="font-serif text-lg font-medium tracking-[0.2em] text-[#78281F] uppercase">
+                <span className="font-serif text-xl sm:text-2xl lg:text-3xl font-medium tracking-[0.16em] text-[#78281F] uppercase">
                   {storeName}
                 </span>
               </div>

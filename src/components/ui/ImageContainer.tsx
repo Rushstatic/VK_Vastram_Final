@@ -10,6 +10,7 @@ export interface ImagePresentationProps {
 
 interface ImageContainerProps extends Omit<React.ImgHTMLAttributes<HTMLImageElement>, 'src'>, ImagePresentationProps {
   src?: string | null;
+  fallbackSrc?: string | null;
   alt: string;
   aspectRatio?: '3/4' | '4/3' | '16/9' | '1/1';
   className?: string;
@@ -33,6 +34,7 @@ function parseFocalPercent(val?: string | number): string {
 
 export const ImageContainer: React.FC<ImageContainerProps> = ({
   src,
+  fallbackSrc,
   alt,
   aspectRatio = '3/4',
   className = '',
@@ -46,14 +48,17 @@ export const ImageContainer: React.FC<ImageContainerProps> = ({
   ...props
 }) => {
   const normalizedSrc = normalizeImageUrl(src);
+  const normalizedFallbackSrc = normalizeImageUrl(fallbackSrc);
   const [loadedSrc, setLoadedSrc] = useState<string | null>(null);
+  const [activeSrc, setActiveSrc] = useState<string>('');
   const [hasError, setHasError] = useState(false);
 
   // When source URL changes, immediately invalidate loaded state to eliminate stale image flash
   useEffect(() => {
     setLoadedSrc(null);
+    setActiveSrc(normalizedSrc || normalizedFallbackSrc);
     setHasError(false);
-  }, [normalizedSrc]);
+  }, [normalizedSrc, normalizedFallbackSrc]);
 
   const aspectClasses = {
     '3/4': 'aspect-[3/4]',
@@ -62,7 +67,7 @@ export const ImageContainer: React.FC<ImageContainerProps> = ({
     '1/1': 'aspect-square',
   }[aspectRatio];
 
-  const isLoaded = Boolean(normalizedSrc && loadedSrc === normalizedSrc && !hasError);
+  const isLoaded = Boolean(activeSrc && loadedSrc === activeSrc && !hasError);
 
   return (
     <div
@@ -80,21 +85,29 @@ export const ImageContainer: React.FC<ImageContainerProps> = ({
       )}
 
       {/* 2. Error fallback */}
-      {hasError || !normalizedSrc ? (
+      {hasError || (!normalizedSrc && !normalizedFallbackSrc) ? (
         <div className="absolute inset-0 flex flex-col items-center justify-center p-4 text-center bg-[#F3EFE6] text-[#78716C]">
           <span className="text-xs font-serif italic">{alt || 'Artisanal Textile'}</span>
         </div>
       ) : (
         /* 3. Keyed image ensures clean unmount and eliminates cross-variant buffer flash */
         <img
-          key={normalizedSrc}
-          src={normalizedSrc}
+          key={activeSrc}
+          src={activeSrc || normalizedSrc || normalizedFallbackSrc}
           alt={alt}
           referrerPolicy="no-referrer"
           loading={priority ? 'eager' : 'lazy'}
           fetchPriority={priority ? 'high' : 'auto'}
-          onLoad={() => setLoadedSrc(normalizedSrc)}
-          onError={() => setHasError(true)}
+          onLoad={() => setLoadedSrc(activeSrc || normalizedSrc)}
+          onError={() => {
+            if (normalizedFallbackSrc && normalizedFallbackSrc !== activeSrc) {
+              setLoadedSrc(null);
+              setActiveSrc(normalizedFallbackSrc);
+              setHasError(false);
+            } else {
+              setHasError(true);
+            }
+          }}
           className={`w-full h-full transition-[opacity,filter,transform] duration-500 ease-out ${
             isLoaded ? 'opacity-100 blur-0 scale-100' : 'opacity-0 blur-sm scale-[1.015] pointer-events-none'
           } ${imageClassName}`}

@@ -52,22 +52,38 @@ export function buildInvoiceTaxRows(
 
   if (snapshotCount > 0) {
     const taxableTotal = Array.from(groups.values()).reduce((sum, g) => sum + g.taxable, 0);
-    const sellerCode = /^\d{2}/.test(String(sellerGstin || '')) ? String(sellerGstin).slice(0, 2) : '';
-    const normalizedState = String(customerState || '').trim().toLowerCase();
-    const customerCode = /^\d{2}$/.test(normalizedState) ? normalizedState : (STATE_CODES[normalizedState] || '');
+    const sellerCode = /^\d{2}/.test(String(sellerGstin || '')) ? String(sellerGstin).slice(0, 2) : '27'; // VK VASTRAM is configured as Maharashtra-based; add GSTIN in Admin Settings to validate this code.
+    const normalizedStateRaw = String(customerState || '').trim().toLowerCase();
+    const normalizedState = normalizedStateRaw.replace(/^in[- ]/, '').replace(/,.*$/, '').trim();
+    const stateAliases: Record<string, string> = { mh: '27', 'maharashtra state': '27', 'state of maharashtra': '27' };
+    const customerCode = /^\d{2}$/.test(normalizedState) ? normalizedState : (stateAliases[normalizedState] || STATE_CODES[normalizedState] || '');
     const interstateKnown = Boolean(sellerCode && customerCode);
     const intraState = interstateKnown && sellerCode === customerCode;
+    const snapshotTaxTotal = Array.from(groups.values()).reduce((sum, g) => sum + g.tax, 0);
+    const residualTax = missingSnapshotCount > 0
+      ? Math.round((Number(recordedTaxAmount || 0) - snapshotTaxTotal) * 100) / 100
+      : 0;
+    const residualRows = residualTax > 0.009 ? (intraState
+      ? [`<p><span>CGST (rate unavailable; remaining saved tax)</span><strong>${money(Math.round(residualTax / 2 * 100) / 100)}</strong></p>`, `<p><span>SGST (rate unavailable; remaining saved tax)</span><strong>${money(Math.round((residualTax - Math.round(residualTax / 2 * 100) / 100) * 100) / 100)}</strong></p>`]
+      : interstateKnown
+        ? [`<p><span>IGST (rate unavailable; remaining saved tax)</span><strong>${money(residualTax)}</strong></p>`]
+        : [`<p><span>GST (rate unavailable; remaining saved tax)</span><strong>${money(residualTax)}</strong></p>`]) : [];
     const html = [
       `<p><span>Taxable value (included in item subtotal)</span><strong>${money(taxableTotal)}</strong></p>`,
       ...Array.from(groups.entries()).sort(([a], [b]) => a - b).flatMap(([rate, values]) => {
         if (rate === 0 || values.tax <= 0) return [];
-        if (intraState) return [
-          `<p><span>CGST (${escapeHtml((rate / 2).toFixed(2))}%) included</span><strong>${money(values.tax / 2)}</strong></p>`,
-          `<p><span>SGST (${escapeHtml((rate / 2).toFixed(2))}%) included</span><strong>${money(values.tax / 2)}</strong></p>`
-        ];
+        if (intraState) {
+          const cgst = Math.round((values.tax / 2) * 100) / 100;
+          const sgst = Math.round((values.tax - cgst) * 100) / 100;
+          return [
+            `<p><span>CGST (${escapeHtml((rate / 2).toFixed(2))}%) included</span><strong>${money(cgst)}</strong></p>`,
+            `<p><span>SGST (${escapeHtml((rate / 2).toFixed(2))}%) included</span><strong>${money(sgst)}</strong></p>`
+          ];
+        }
         if (interstateKnown) return [`<p><span>IGST (${escapeHtml(rate.toFixed(2))}%) included</span><strong>${money(values.tax)}</strong></p>`];
         return [`<p><span>GST (${escapeHtml(rate.toFixed(2))}%) included</span><strong>${money(values.tax)}</strong></p>`];
-      })
+      }),
+      ...residualRows
     ].join('');
     const incompleteNote = missingSnapshotCount > 0
       ? `<p class="tax-note">GST rate snapshots are missing for ${missingSnapshotCount} line item(s). Those items are excluded from the rate-wise breakdown; configure the product GST rate before future checkout.</p>`
@@ -77,7 +93,19 @@ export function buildInvoiceTaxRows(
 
   const tax = Number(recordedTaxAmount || 0);
   if (Number.isFinite(tax) && tax > 0) {
-    return `<p><span>GST recorded on this order</span><strong>${money(tax)}</strong></p><p class="tax-note">Rate-wise tax snapshots are unavailable for this order, so the invoice shows only the recorded tax total.</p>`;
+    const sellerCode = /^\d{2}/.test(String(sellerGstin || '')) ? String(sellerGstin).slice(0, 2) : '27'; // VK VASTRAM is configured as Maharashtra-based; add GSTIN in Admin Settings to validate this code.
+    const stateRaw = String(customerState || '').trim().toLowerCase().replace(/^in[- ]/, '').replace(/,.*$/, '').trim();
+    const aliases: Record<string, string> = { mh: '27', 'maharashtra state': '27', 'state of maharashtra': '27' };
+    const customerCode = /^\d{2}$/.test(stateRaw) ? stateRaw : (aliases[stateRaw] || STATE_CODES[stateRaw] || '');
+    if (sellerCode && customerCode && sellerCode === customerCode) {
+      const cgst = Math.round((tax / 2) * 100) / 100;
+      const sgst = Math.round((tax - cgst) * 100) / 100;
+      return `<p><span>CGST (rate unavailable)</span><strong>${money(cgst)}</strong></p><p><span>SGST (rate unavailable)</span><strong>${money(sgst)}</strong></p><p class="tax-note">GST components are split from the recorded order tax total. Historical line-item GST rates were not saved for this order.</p>`;
+    }
+    if (sellerCode && customerCode && sellerCode !== customerCode) {
+      return `<p><span>IGST (rate unavailable)</span><strong>${money(tax)}</strong></p><p class="tax-note">IGST is shown from the recorded order tax total. Historical line-item GST rates were not saved for this order.</p>`;
+    }
+    return `<p><span>GST recorded on this order</span><strong>${money(tax)}</strong></p><p class="tax-note">Seller GSTIN state code or customer destination state is unavailable, so the intra/inter-state split cannot be verified.</p>`;
   }
-  return '<p class="tax-note">Rate-wise GST details are unavailable for this order. Configure the GST rate for each applicable product before checkout to include an item-wise breakdown.</p>';
+  return '<p class="tax-note">GST details are unavailable for this order. Configure the product GST rate before future checkout.</p>';
 }

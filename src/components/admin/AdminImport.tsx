@@ -23,6 +23,7 @@ interface ParsedRow {
   category: string;
   collection: string;
   price: number;
+  gstRate?: number | null;
   mrp?: number;
   stockQuantity: number;
   fabric: string;
@@ -124,6 +125,10 @@ export const AdminImport: React.FC = () => {
           errors.push('Valid positive price is required');
         }
 
+        const rawGstRate = getField(raw, ['GST Rate (%)', 'GST Rate', 'Tax Rate', 'gst_rate']);
+        const gstRate = rawGstRate === undefined || String(rawGstRate).trim() === '' ? null : Number(rawGstRate);
+        if (gstRate !== null && (!Number.isFinite(gstRate) || gstRate < 0 || gstRate > 100)) errors.push('GST Rate must be between 0 and 100, or blank if not yet configured.');
+
         const rawMrp = getField(raw, ['MRP', 'Maximum Retail Price', 'Original Price', 'List Price']);
         const mrp = rawMrp !== undefined && !isNaN(Number(rawMrp)) ? Number(rawMrp) : undefined;
         if (mrp !== undefined && mrp < price) {
@@ -162,6 +167,7 @@ export const AdminImport: React.FC = () => {
           category,
           collection,
           price: isNaN(price) ? 0 : price,
+          gstRate,
           mrp,
           stockQuantity,
           fabric,
@@ -205,6 +211,7 @@ export const AdminImport: React.FC = () => {
       category: r.category,
       collection: r.collection,
       price: r.price,
+      gstRate: r.gstRate,
       mrp: r.mrp,
       stockQuantity: r.stockQuantity,
       fabric: r.fabric,
@@ -464,6 +471,15 @@ export const AdminImport: React.FC = () => {
         'Primary Image': 'https://jyiegidgzrvszqjhyfus.supabase.co/storage/v1/object/public/store-assets/products/product_banarasi_saree_1791192143761.jpg',
         Status: 'active',
         Color: 'Royal Magenta',
+        'GST Rate (%)': 5,
+        'Additional Image URLs (comma-separated)': '',
+        'Image Alt Text': 'Royal Magenta Paithani saree',
+        'SEO Title': 'Heritage Peacock Border Paithani Silk Saree | VK VASTRAM',
+        'SEO Description': 'Handwoven Paithani silk saree from VK VASTRAM.',
+        'Featured (TRUE/FALSE)': true,
+        'Best Seller (TRUE/FALSE)': false,
+        'New Arrival (TRUE/FALSE)': true,
+        'Tags (comma-separated)': 'Paithani, Silk, Heritage',
       },
     ];
 

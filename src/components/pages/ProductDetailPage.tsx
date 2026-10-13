@@ -34,8 +34,8 @@ interface ProductDetailPageProps {
   onNavigate: (page: PageView) => void;
   isWishlisted: boolean;
   onToggleWishlist: (product: Product) => void;
-  onAddToCart: (product: Product, quantity: number, color?: string, size?: string, variantId?: string) => void;
-  onBuyNow: (product: Product, quantity: number, color?: string, size?: string, variantId?: string) => void;
+  onAddToCart: (product: Product, quantity: number, color?: string, size?: string, variantId?: string, includeFallPico?: boolean) => void;
+  onBuyNow: (product: Product, quantity: number, color?: string, size?: string, variantId?: string, includeFallPico?: boolean) => void;
 }
 
 export const ProductDetailPage: React.FC<ProductDetailPageProps> = ({
@@ -261,7 +261,8 @@ export const ProductDetailPage: React.FC<ProductDetailPageProps> = ({
       quantity,
       currentVariant.color,
       selectedSize,
-      currentVariant.id
+      currentVariant.id,
+      includeFallPico
     );
     setAddedAnimation(true);
     setTimeout(() => setAddedAnimation(false), 2000);
@@ -278,7 +279,8 @@ export const ProductDetailPage: React.FC<ProductDetailPageProps> = ({
       quantity,
       currentVariant.color,
       selectedSize,
-      currentVariant.id
+      currentVariant.id,
+      includeFallPico
     );
   };
 

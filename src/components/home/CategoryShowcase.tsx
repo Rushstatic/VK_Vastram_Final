@@ -27,7 +27,7 @@ export const CategoryShowcase: React.FC<CategoryShowcaseProps> = ({
       }));
 
   return (
-    <section className="py-16 sm:py-24 bg-[#FAF8F5]">
+    <section className="py-8 sm:py-24 bg-[#FAF8F5]">
       <Container>
         <ScrollReveal distance={16} duration={550}>
           <SectionHeading
@@ -37,15 +37,15 @@ export const CategoryShowcase: React.FC<CategoryShowcaseProps> = ({
           />
         </ScrollReveal>
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 sm:gap-8">
+        <div className="-mx-4 px-4 flex gap-4 overflow-x-auto snap-x snap-mandatory pb-3 md:mx-0 md:px-0 md:grid md:grid-cols-3 md:gap-8 md:overflow-visible md:pb-0 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           {displayCategories.map((cat, index) => (
-            <ScrollReveal key={cat.id} delay={index * 100} duration={650} distance={20}>
+            <ScrollReveal key={cat.id} delay={index * 100} duration={650} distance={20} className="min-w-[78vw] max-w-[360px] snap-start md:min-w-0 md:max-w-none md:w-full">
               <div
                 onClick={() => onNavigate({ type: 'collection', category: cat.category })}
-                className="group relative flex flex-col bg-[#F4EFE6] rounded-xs overflow-hidden cursor-pointer border border-[#1C1917]/10 transition-all duration-300 hover:border-[#1C1917]/30"
+                className="group relative flex flex-col w-full bg-[#F4EFE6] rounded-xs overflow-hidden cursor-pointer border border-[#1C1917]/10 transition-all duration-300 hover:border-[#1C1917]/30"
               >
                 {/* Image Box */}
-                <div className="relative aspect-[4/3] sm:aspect-[3/4] overflow-hidden bg-[#EFE9DC]">
+                <div className="relative aspect-[4/5] sm:aspect-[3/4] overflow-hidden bg-[#EFE9DC]">
                   <img
                     src={cat.image}
                     alt={cat.title}

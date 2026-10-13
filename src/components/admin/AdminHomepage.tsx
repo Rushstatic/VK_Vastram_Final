@@ -507,27 +507,6 @@ export const AdminHomepage: React.FC = () => {
                                     />
                                   </div>
 
-                                  {/* Signature Weave Badge */}
-                                  <div>
-                                    <label className="block font-semibold text-[#1C1917] mb-1">
-                                      Signature Weave / Image Label
-                                    </label>
-                                    <input
-                                      type="text"
-                                      value={slide.badge || ''}
-                                      onChange={(e) =>
-                                        handleUpdateSlideField(
-                                          sec,
-                                          slideIdx,
-                                          'badge',
-                                          e.target.value
-                                        )
-                                      }
-                                      placeholder="e.g., Crimson & Temple Zari Bridal Kanjivaram"
-                                      className="w-full bg-[#F4EFE6] border border-[#1C1917]/15 p-2 rounded-xs"
-                                    />
-                                  </div>
-
                                   {/* Headline */}
                                   <div className="md:col-span-2">
                                     <label className="block font-semibold text-[#1C1917] mb-1">

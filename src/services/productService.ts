@@ -151,6 +151,7 @@ export const productService = {
           return {
             id: img.id,
             imageUrl: normalizeImageUrl(img.image_url || img.storage_path),
+            fallbackImageUrl: img.storage_path && img.image_url && img.storage_path !== img.image_url ? normalizeImageUrl(img.storage_path) : undefined,
             role,
             isPrimary: Boolean(img.is_primary),
             sortOrder: img.sort_order || idx + 1,
@@ -177,6 +178,7 @@ export const productService = {
             attrVariantImages = vAttrs.images.map((vi: any, viIdx: number) => ({
               id: vi.id,
               imageUrl: normalizeImageUrl(typeof vi === 'string' ? vi : (vi.imageUrl || vi.image_url || vi.storage_path)),
+              fallbackImageUrl: typeof vi === 'object' && vi.storage_path && (vi.imageUrl || vi.image_url) && vi.storage_path !== (vi.imageUrl || vi.image_url) ? normalizeImageUrl(vi.storage_path) : undefined,
               role: (typeof vi === 'object' && vi.role ? vi.role : viIdx === 0 ? 'hero' : 'gallery') as ProductImageRole,
               isPrimary: Boolean(vi.isPrimary),
               sortOrder: vi.sortOrder || viIdx + 1,
@@ -273,7 +275,7 @@ export const productService = {
           sizes,
           primaryImage: normalizeImageUrl(primaryImg),
           secondaryImage: normalizeImageUrl(secondaryImg),
-          additionalImages: item.images?.map((img: any) => normalizeImageUrl(img.image_url)) || [],
+          additionalImages: item.images?.map((img: any) => normalizeImageUrl(img.image_url || img.storage_path)).filter(Boolean) || [],
           imagesWithRoles,
           variants: mappedVariants,
           highlights: authenticHighlights,

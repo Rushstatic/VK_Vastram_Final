@@ -161,14 +161,14 @@ export const AdminSettings: React.FC = () => {
     // leave checkout showing stale COD availability.
     if (savedSuccessfully && isSupabaseConfigured()) {
       try {
-        const { data: persistedRow, error: verifyError } = await (supabase as any)
-          .from('site_settings')
-          .select('value')
-          .eq('key', 'policies')
-          .maybeSingle();
-        if (verifyError || !persistedRow?.value || persistedRow.value.cod_enabled !== (policies.cod_enabled === true)) {
+        const [{ data: persistedPolicy, error: policyVerifyError }, { data: persistedGeneral, error: generalVerifyError }] = await Promise.all([
+          (supabase as any).from('site_settings').select('value').eq('key', 'policies').maybeSingle(),
+          (supabase as any).from('site_settings').select('value').eq('key', 'general').maybeSingle(),
+        ]);
+        const savedGstin = String(persistedGeneral?.value?.gstin || '').trim().toUpperCase();
+        if (policyVerifyError || !persistedPolicy?.value || persistedPolicy.value.cod_enabled !== (policies.cod_enabled === true) || generalVerifyError || !persistedGeneral?.value || savedGstin !== normalizedGstin) {
           savedSuccessfully = false;
-          setFeedback('Settings were not confirmed in the database. Please retry and check admin permissions.');
+          setFeedback('Settings were not confirmed in the database (including GSTIN). Check admin permissions and try again.');
         }
       } catch {
         savedSuccessfully = false;

@@ -7,6 +7,7 @@ export interface ProductReview {
   rating: number;
   title: string;
   body: string;
+  reviewImages?: string[];
   status: 'pending' | 'approved' | 'rejected';
   verifiedPurchase: boolean;
   createdAt: string;
@@ -18,6 +19,7 @@ export interface SubmitReviewPayload {
   rating: number;
   title: string;
   body: string;
+  reviewImages?: string[];
 }
 
 export const reviewService = {
@@ -49,6 +51,7 @@ export const reviewService = {
             rating,
             title,
             body,
+            review_images,
             status,
             created_at
           `)
@@ -64,8 +67,9 @@ export const reviewService = {
             rating: rev.rating,
             title: rev.title,
             body: rev.body,
+            reviewImages: Array.isArray(rev.review_images) ? rev.review_images : [],
             status: rev.status,
-            verifiedPurchase: false,
+            verifiedPurchase: true,
             createdAt: rev.created_at,
             reviewerName: 'Verified Patron',
           }));
@@ -76,6 +80,22 @@ export const reviewService = {
     }
 
     return [];
+  },
+
+  /** Upload a review photo through the authenticated server route (max 5 images per review). */
+  async uploadReviewImage(file: File, productId: string): Promise<{ success: boolean; url?: string; error?: string }> {
+    try {
+      if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) return { success: false, error: 'Use a JPG, PNG, or WebP image.' };
+      if (file.size > 5 * 1024 * 1024) return { success: false, error: 'Each review image must be 5 MB or smaller.' };
+      const session = await supabase.auth.getSession();
+      const token = session.data?.session?.access_token;
+      if (!token) return { success: false, error: 'Sign in to upload review photos.' };
+      const dataUrl = await new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result || '')); reader.onerror = () => reject(new Error('Could not read image.')); reader.readAsDataURL(file); });
+      const response = await fetch('/api/reviews/upload-image', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ dataUrl, contentType: file.type, productId }) });
+      const result = await response.json();
+      if (!response.ok || !result.success || !result.url) return { success: false, error: result.error || 'Review image upload failed.' };
+      return { success: true, url: result.url };
+    } catch (error: any) { return { success: false, error: error?.message || 'Review image upload failed.' }; }
   },
 
   /**

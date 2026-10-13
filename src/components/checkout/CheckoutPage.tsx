@@ -18,6 +18,7 @@ import {
   Phone,
 } from 'lucide-react';
 import { CartItem, CustomerAddress, CustomerProfile, PageView } from '../../types';
+import { calculateShippingAmount } from '../../lib/shipping';
 import { customerService } from '../../services/customerService';
 import { orderService, CheckoutValidationResult } from '../../services/orderService';
 import { paymentService } from '../../services/paymentService';
@@ -110,7 +111,7 @@ export const CheckoutPage: React.FC<CheckoutPageProps> = ({
   const [guestAddressLine2, setGuestAddressLine2] = useState('');
   const [guestLandmark, setGuestLandmark] = useState('');
   const [guestCity, setGuestCity] = useState('');
-  const [guestState, setGuestState] = useState('Maharashtra');
+  const [guestState, setGuestState] = useState(() => { try { return localStorage.getItem('vk_delivery_state') || 'Maharashtra'; } catch { return 'Maharashtra'; } });
   const [guestPincode, setGuestPincode] = useState('');
 
   // Payment Selection
@@ -541,10 +542,14 @@ export const CheckoutPage: React.FC<CheckoutPageProps> = ({
     );
   }
 
-  const subtotal =
+  const baseSubtotal =
     validation?.authoritativeSubtotal ||
     cartItems.reduce((sum, i) => sum + i.product.price * i.quantity, 0);
+  const fallPicoTotal = cartItems.reduce((sum, item) => sum + (item.includeFallPico ? Math.max(0, Number(settings?.fallPicoPrice) || 0) * item.quantity : 0), 0);
+  const subtotal = baseSubtotal + fallPicoTotal;
   const selectedAddress = addresses.find((a) => a.id === selectedAddressId);
+  const destinationState = selectedAddress?.state || guestState;
+  const shippingAmount = settings ? calculateShippingAmount(subtotal, destinationState, settings) : 0;
 
   return (
     <div className="py-12 bg-[#FAF8F5] min-h-[85vh]">
@@ -571,8 +576,8 @@ export const CheckoutPage: React.FC<CheckoutPageProps> = ({
         {/* Free-delivery progress, driven by the admin-configured site setting. */}
         {Number(settings?.freeShippingThreshold || 0) > 0 && (
           <div className="mb-5 rounded-xs border border-[#B88E3E]/30 bg-[#F4EFE6] px-4 py-3 text-xs text-[#57534E]">
-            {Math.max(0, Number(settings?.freeShippingThreshold || 0) - Math.max(0, subtotal - couponDiscount)) > 0 ? (
-              <>Add <strong className="text-[#78281F]">{formatPrice(Math.max(0, Number(settings?.freeShippingThreshold || 0) - Math.max(0, subtotal - couponDiscount)))}</strong> more to unlock free delivery.</>
+            {Math.max(0, Number(settings?.freeShippingThreshold || 0) - Math.max(0, subtotal)) > 0 ? (
+              <>Add <strong className="text-[#78281F]">{formatPrice(Math.max(0, Number(settings?.freeShippingThreshold || 0) - Math.max(0, subtotal)))}</strong> more to unlock free delivery.</>
             ) : (
               <strong className="text-emerald-800">You have unlocked free delivery!</strong>
             )}
@@ -1245,8 +1250,8 @@ export const CheckoutPage: React.FC<CheckoutPageProps> = ({
                         : submitting
                         ? 'Processing Order...'
                         : paymentMethod === 'online'
-                        ? `Pay ${formatPrice(Math.max(0, subtotal - couponDiscount))} with Razorpay`
-                        : `Place COD Order (${formatPrice(Math.max(0, subtotal - couponDiscount))})`}
+                        ? `Pay ${formatPrice(Math.max(0, subtotal - couponDiscount) + shippingAmount)} with Razorpay`
+                        : `Place COD Order (${formatPrice(Math.max(0, subtotal - couponDiscount) + shippingAmount)})`}
                     </Button>
                   </div>
                 </div>
@@ -1269,12 +1274,14 @@ export const CheckoutPage: React.FC<CheckoutPageProps> = ({
               <div className="space-y-2 text-xs">
                 <div className="flex justify-between text-[#57534E]">
                   <span>Items Subtotal ({cartItems.reduce((s, i) => s + i.quantity, 0)} pcs)</span>
-                  <span className="tabular-nums">{formatPrice(subtotal)}</span>
+                  <span className="tabular-nums">{formatPrice(baseSubtotal)}</span>
                 </div>
 
+                {fallPicoTotal > 0 && <div className="flex justify-between text-[#57534E]"><span>Fall & Pico finishing</span><span>{formatPrice(fallPicoTotal)}</span></div>}
+
                 <div className="flex justify-between text-[#57534E]">
-                  <span>Shipping</span>
-                  <span className="text-[#1C1917] font-medium">Calculated at checkout</span>
+                  <span>Shipping ({destinationState || 'delivery state'})</span>
+                  <span className="text-[#1C1917] font-medium">{shippingAmount === 0 ? 'FREE' : formatPrice(shippingAmount)}</span>
                 </div>
 
                 <div className="flex justify-between text-[#57534E]">
@@ -1286,7 +1293,7 @@ export const CheckoutPage: React.FC<CheckoutPageProps> = ({
                 <div className="border-t border-[#1C1917]/10 pt-3 flex justify-between items-baseline font-semibold text-[#1C1917] text-sm">
                   <span>Payable Total</span>
                   <span className="font-serif text-lg tabular-nums text-[#800020]">
-                    {formatPrice(Math.max(0, subtotal - couponDiscount))}
+                    {formatPrice(Math.max(0, subtotal - couponDiscount) + shippingAmount)}
                   </span>
                 </div>
               </div>

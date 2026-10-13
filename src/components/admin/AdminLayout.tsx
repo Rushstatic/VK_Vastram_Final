@@ -22,6 +22,7 @@ import {
   ChevronRight,
   FileText,
   Tags,
+  BellRing,
 } from 'lucide-react';
 import { AdminSubView, PageView } from '../../types';
 import { AdminUser } from '../../services/authService';
@@ -29,6 +30,7 @@ import { useSiteSettings } from '../../hooks/useSiteSettings';
 import { adminService } from '../../services/adminService';
 import { formatPrice } from '../ui/PriceDisplay';
 import { AdminSareeTypes } from './AdminSareeTypes';
+import { AdminOrderNotifications } from './AdminOrderNotifications';
 
 interface AdminLayoutProps {
   currentSubView: AdminSubView;
@@ -48,6 +50,7 @@ export const AdminLayout: React.FC<AdminLayoutProps> = ({
   children,
 }) => {
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const [adminNotificationsOpen, setAdminNotificationsOpen] = useState(false);
   const { settings } = useSiteSettings();
   const storeName = settings?.storeName || 'VK VASTRAM';
 
@@ -306,6 +309,10 @@ export const AdminLayout: React.FC<AdminLayoutProps> = ({
         </div>
       )}
 
+      {adminNotificationsOpen && <div className="absolute right-3 top-16 z-[100] w-[calc(100vw-1.5rem)] sm:w-auto max-w-lg shadow-xl">
+        <div className="flex justify-end bg-[#FAF8F5] border-x border-t border-[#B88E3E]/30 px-3 pt-2"><button type="button" onClick={() => setAdminNotificationsOpen(false)} className="p-2 text-sm" aria-label="Close notification settings">Close ×</button></div>
+        <AdminOrderNotifications />
+      </div>}
       {/* Main Content Viewport */}
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
         {/* Top Header Bar */}
@@ -328,6 +335,9 @@ export const AdminLayout: React.FC<AdminLayoutProps> = ({
           </div>
 
           <div className="flex items-center gap-3">
+            <button type="button" aria-label="Admin order notification settings" title="Admin order alerts" onClick={() => setAdminNotificationsOpen(v => !v)} className="relative min-h-10 min-w-10 inline-flex items-center justify-center border border-[#1C1917]/15 text-[#1C1917] hover:bg-[#F4EFE6]">
+              <BellRing className="h-5 w-5" aria-hidden="true"/><span className="sr-only">Admin order alerts</span>
+            </button>
             {/* Admin Global Search Bar */}
             <div ref={searchContainerRef} className="relative hidden md:block w-72 lg:w-96">
               <div className="relative">

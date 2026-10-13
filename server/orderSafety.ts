@@ -49,6 +49,7 @@ export function validateOrderLines(items: unknown): ValidatedOrderLine[] {
     if (typeof rawItem.selectedSize === 'string') metadata.size = rawItem.selectedSize.slice(0, 80);
     if (typeof rawItem.product?.categoryLabel === 'string') metadata.category = rawItem.product.categoryLabel.slice(0, 120);
     if (typeof rawItem.product?.primaryImage === 'string') metadata.primaryImage = rawItem.product.primaryImage.slice(0, 2048);
+    if (rawItem.includeFallPico === true) metadata.includeFallPico = true;
 
     return { product_id: productId, variant_id: variantId, quantity, metadata };
   });

@@ -113,6 +113,7 @@ export const cartService = {
         .select(`
           id,
           quantity,
+          metadata,
           variant:product_variants(
             id,
             sku,
@@ -175,6 +176,7 @@ export const cartService = {
             quantity: sanitizeQuantity(item.quantity, v?.stock_quantity ?? MAX_CART_ITEM_QUANTITY),
             selectedColor: v?.color || undefined,
             selectedSize: v?.size || v?.bed_size || v?.dimensions || undefined,
+            includeFallPico: item.metadata?.includeFallPico === true,
             stockAvailable: v?.stock_quantity ?? MAX_CART_ITEM_QUANTITY,
           };
         });
@@ -194,7 +196,8 @@ export const cartService = {
     variantId: string | undefined,
     quantity: number,
     color?: string,
-    size?: string
+    size?: string,
+    includeFallPico = false
   ): Promise<{ success: boolean; error?: string }> {
     if (!isSupabaseConfigured() || !userId) {
       return { success: true };
@@ -229,28 +232,35 @@ export const cartService = {
       }
 
       // Check if already in cart
-      const { data: existingItem } = await (supabase as any)
+      const { data: variantItems, error: lookupError } = await (supabase as any)
         .from('cart_items')
-        .select('id, quantity')
+        .select('id, quantity, metadata')
         .eq('cart_id', cartId)
-        .eq('product_variant_id', targetVariantId)
-        .maybeSingle();
+        .eq('product_variant_id', targetVariantId);
+      if (lookupError) return { success: false, error: 'Could not read the existing cart item.' };
+      // Older cart rows may have no metadata; treat that as the plain (no Fall & Pico) option.
+      const existingItem = (variantItems || []).find((item: any) =>
+        Boolean(item.metadata?.includeFallPico) === Boolean(includeFallPico)
+      );
 
       if (existingItem) {
         const currentQty = Number(existingItem.quantity) || 1;
         const newQty = sanitizeQuantity(currentQty + sanitizedAddQty);
         console.log(`[CART_MUTATION] source=ADD_TO_CART (increment) userId=${userId} productId=${productId} prevQty=${currentQty} addQty=${sanitizedAddQty} newQty=${newQty}`);
-        await (supabase as any)
+        const { error: updateError } = await (supabase as any)
           .from('cart_items')
-          .update({ quantity: newQty })
+          .update({ quantity: newQty, metadata: { ...(existingItem.metadata || {}), includeFallPico } })
           .eq('id', existingItem.id);
+        if (updateError) return { success: false, error: updateError.message || 'Could not update cart item.' };
       } else {
-        console.log(`[CART_MUTATION] source=ADD_TO_CART (new) userId=${userId} productId=${productId} qty=${sanitizedAddQty}`);
-        await (supabase as any).from('cart_items').insert({
+        console.log(`[CART_MUTATION] source=ADD_TO_CART (new) userId=${userId} productId=${productId} qty=${sanitizedAddQty} fallPico=${includeFallPico}`);
+        const { error: insertError } = await (supabase as any).from('cart_items').insert({
           cart_id: cartId,
           product_variant_id: targetVariantId,
           quantity: sanitizedAddQty,
+          metadata: { includeFallPico },
         });
+        if (insertError) return { success: false, error: insertError.message || 'Could not add item to cart.' };
       }
 
       return { success: true };
@@ -371,7 +381,7 @@ export const cartService = {
               );
               await (supabase as any)
                 .from('cart_items')
-                .update({ quantity: targetQty })
+                .update({ quantity: targetQty, metadata: { includeFallPico: Boolean(guestItem.includeFallPico) } })
                 .eq('id', existing.id);
             } else {
               // Insert new line
@@ -379,6 +389,7 @@ export const cartService = {
                 cart_id: cartId,
                 product_variant_id: targetVariantId,
                 quantity: sanitizeQuantity(guestItem.quantity, guestItem.stockAvailable),
+                metadata: { includeFallPico: Boolean(guestItem.includeFallPico) },
               });
             }
           }

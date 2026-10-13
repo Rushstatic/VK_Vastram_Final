@@ -101,6 +101,7 @@ const getPageFromPath = (path: string): PageView => {
   if (cleanPath === '/forgot-password') return { type: 'forgot-password' };
   if (cleanPath === '/reset-password') return { type: 'reset-password' };
   if (cleanPath === '/account') return { type: 'account' };
+  if (cleanPath === '/admin') return { type: 'admin-login' };
   if (cleanPath === '/admin/login' || cleanPath === '/admin-login') return { type: 'admin-login' };
   
   if (cleanPath.startsWith('/admin')) {
@@ -367,7 +368,8 @@ export default function App() {
     quantity = 1,
     selectedColor?: string,
     selectedSize?: string,
-    variantId?: string
+    variantId?: string,
+    includeFallPico = false
   ) => {
     const validAddQty = sanitizeQuantity(quantity, product.stockQuantity || MAX_CART_ITEM_QUANTITY);
 
@@ -380,7 +382,8 @@ export default function App() {
           variantId || (product.variants?.length === 1 ? product.variants[0].id : undefined),
           validAddQty,
           selectedColor,
-          selectedSize
+          selectedSize,
+          includeFallPico
         );
         const updated = await cartService.getUserCart(customerUser.id);
         setCart(updated);
@@ -391,14 +394,15 @@ export default function App() {
       console.log(`[CART_MUTATION] source=handleAddToCart (guest) product=${product.id} qty=${validAddQty}`);
       setCart((prev) => {
         const resolvedVariantId = variantId || product.variants?.find((v) => v.isActive !== false && Number(v.availableQuantity ?? v.stockQuantity ?? 0) > 0)?.id || (product.variants?.length === 1 ? product.variants[0].id : undefined);
-        const itemKey = `guest-${product.id}-${resolvedVariantId || selectedColor || 'default'}-${selectedSize || 'default'}`;
+        const itemKey = `guest-${product.id}-${resolvedVariantId || selectedColor || 'default'}-${selectedSize || 'default'}-${includeFallPico ? 'fallpico' : 'plain'}`;
         const existing = prev.find(
           (item) =>
             item.id === itemKey ||
             ((item.product.id === product.id || item.product.slug === product.slug) &&
               (item.variantId || '') === (resolvedVariantId || '') &&
               (item.selectedColor || '') === (selectedColor || '') &&
-              (item.selectedSize || '') === (selectedSize || ''))
+              (item.selectedSize || '') === (selectedSize || '') &&
+              Boolean(item.includeFallPico) === Boolean(includeFallPico))
         );
         let updated: CartItem[];
         if (existing) {
@@ -419,6 +423,7 @@ export default function App() {
               quantity: validAddQty,
               selectedColor: selectedColor || (product.colors ? product.colors[0] : undefined),
               selectedSize: selectedSize || (product.sizes ? product.sizes[0] : undefined),
+              includeFallPico,
               stockAvailable: product.stockQuantity ?? MAX_CART_ITEM_QUANTITY,
             },
           ];
@@ -434,9 +439,10 @@ export default function App() {
     quantity = 1,
     selectedColor?: string,
     selectedSize?: string,
-    variantId?: string
+    variantId?: string,
+    includeFallPico = false
   ) => {
-    await handleAddToCart(product, quantity, selectedColor, selectedSize, variantId);
+    await handleAddToCart(product, quantity, selectedColor, selectedSize, variantId, includeFallPico);
     setIsCartOpen(false);
     handleNavigate({ type: 'checkout' });
   };
@@ -756,7 +762,7 @@ export default function App() {
             <CategoryShowcase categories={categories} onNavigate={handleNavigate} />
 
             {/* Featured Sarees */}
-            <section className="py-16 sm:py-20 bg-[#FAF8F5]">
+            <section className="py-8 sm:py-20 bg-[#FAF8F5]">
               <Container>
                 <ScrollReveal distance={16} duration={550}>
                   <SectionHeading
@@ -791,7 +797,7 @@ export default function App() {
             <CraftsmanshipStory onNavigate={handleNavigate} />
 
             {/* Curated Bedsheets */}
-            <section className="py-16 sm:py-20 bg-[#FAF8F5]">
+            <section className="py-8 sm:py-20 bg-[#FAF8F5]">
               <Container>
                 <ScrollReveal distance={16} duration={550}>
                   <SectionHeading
@@ -908,17 +914,6 @@ export default function App() {
       {/* 4. Editorial Footer */}
       <Footer categories={categories} onNavigate={handleNavigate} />
 
-      {/* Admin Access Anchor Button */}
-      <div className="bg-[#171412] py-2 px-4 text-center border-t border-[#2E2926] text-[11px] text-[#78716C] flex items-center justify-center gap-4">
-        <span>{storeName} Storefront Portal</span>
-        <span>·</span>
-        <button
-          onClick={() => handleNavigate({ type: 'admin-login' })}
-          className="text-[#967029] hover:text-[#FAF8F5] transition-colors cursor-pointer font-medium"
-        >
-          Merchant Administration CMS →
-        </button>
-      </div>
 
       {/* Quick View Modal */}
       <ProductDetailModal
@@ -927,8 +922,8 @@ export default function App() {
         onClose={() => setQuickViewProduct(null)}
         isWishlisted={quickViewProduct ? wishlistIds.includes(quickViewProduct.id) : false}
         onToggleWishlist={handleToggleWishlist}
-        onAddToCart={(product, qty, color, size, variantId) => {
-          handleAddToCart(product, qty, color, size, variantId);
+        onAddToCart={(product, qty, color, size, variantId, includeFallPico) => {
+          handleAddToCart(product, qty, color, size, variantId, includeFallPico);
           setIsCartOpen(true);
         }}
       />

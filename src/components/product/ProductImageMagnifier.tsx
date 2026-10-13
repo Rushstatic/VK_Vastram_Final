@@ -114,9 +114,8 @@ export const ProductImageMagnifier: React.FC<ProductImageMagnifierProps> = ({
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
       onMouseMove={handleMouseMove}
-      onClick={isLoaded ? onOpenFullscreen : undefined}
       className={`relative w-full ${aspectClass} overflow-hidden rounded-xs bg-[#F4EFE6] select-none ${isLoaded ? 'cursor-zoom-in' : 'cursor-default'} group ${className}`}
-      aria-label={`${alt} — Hover to magnify weave detail, click for fullscreen`}
+      aria-label={`${alt} — Hover to magnify weave detail`}
     >
       {/* 1. Neutral luxury skeleton while image is downloading */}
       {!isLoaded && !hasError && (
@@ -151,6 +150,16 @@ export const ProductImageMagnifier: React.FC<ProductImageMagnifierProps> = ({
             objectPosition: `${focalXCss} ${focalYCss}`,
             transform: scale && scale !== 1.0 ? `scale(${scale})` : undefined,
           }}
+        />
+      )}
+
+      {isLoaded && onOpenFullscreen && (
+        <button
+          type="button"
+          onClick={(event) => { event.stopPropagation(); onOpenFullscreen(); }}
+          className="absolute inset-0 z-[5] cursor-zoom-in bg-transparent focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#B88E3E]"
+          aria-label={`Open ${alt} in fullscreen gallery`}
+          title="Open fullscreen gallery"
         />
       )}
 

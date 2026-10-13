@@ -392,6 +392,14 @@ export const AdminProductForm: React.FC<AdminProductFormProps> = ({
     setIsDirty(true);
   };
 
+  const [draggedImageIndex, setDraggedImageIndex] = useState<number | null>(null);
+
+  const handleImageDrop = (targetIndex: number) => {
+    if (draggedImageIndex === null || draggedImageIndex === targetIndex) { setDraggedImageIndex(null); return; }
+    handleMoveImage(draggedImageIndex, targetIndex);
+    setDraggedImageIndex(null);
+  };
+
   const handleMoveImage = (fromIndex: number, toIndex: number) => {
     if (toIndex < 0 || toIndex >= images.length) return;
     const copy = [...images];
@@ -1236,7 +1244,13 @@ export const AdminProductForm: React.FC<AdminProductFormProps> = ({
                   return (
                     <div
                       key={idx}
-                      className={`relative bg-[#F4EFE6] rounded-xs border overflow-hidden flex flex-col justify-between transition-shadow ${
+                      draggable
+                      onDragStart={(event) => { setDraggedImageIndex(idx); event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', String(idx)); }}
+                      onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; }}
+                      onDrop={(event) => { event.preventDefault(); handleImageDrop(idx); }}
+                      onDragEnd={() => setDraggedImageIndex(null)}
+                      title="Drag this image to reorder the product gallery"
+                      className={`relative bg-[#F4EFE6] rounded-xs border overflow-hidden flex flex-col justify-between transition-shadow cursor-grab active:cursor-grabbing ${draggedImageIndex === idx ? 'opacity-60 ring-2 ring-[#B88E3E]' : ''} ${
                         img.isPrimary ? 'border-[#B88E3E] ring-2 ring-[#B88E3E]/60 shadow-xs' : 'border-[#1C1917]/15'
                       }`}
                     >

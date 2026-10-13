@@ -128,7 +128,7 @@ export const AdminOrders: React.FC = () => {
       // The orders endpoint returns item/payment snapshots; avoid fragile N+1 detail calls.
       const detailed: any[] = orderSummaries;
       const headers = [
-        'Name','Email','Financial Status','Paid at','Fulfillment Status','Fulfilled at','Accepts Marketing','Currency','Subtotal','Shipping','Taxes','Total','Discount Code','Discount Amount','Shipping Method','Created at','Lineitem quantity','Lineitem name','Lineitem price','Lineitem compare at price','Lineitem sku','Lineitem requires shipping','Lineitem taxable','Lineitem fulfillment status','Billing Name','Billing Street','Billing Address1','Billing Address2','Billing Company','Billing City','Billing Zip','Billing Province','Billing Country','Billing Phone','Shipping Name','Shipping Street','Shipping Address1','Shipping Address2','Shipping Company','Shipping City','Shipping Zip','Shipping Province','Shipping Country','Shipping Phone','Notes','Note Attributes','Cancelled at','Payment Method','Payment Reference','Refunded Amount','Vendor','Outstanding Balance','Employee','Location','Device ID','Id','Tags','Risk Level','Source','Lineitem discount','Tax 1 Name','Tax 1 Value','Tax 2 Name','Tax 2 Value','Tax 3 Name','Tax 3 Value','Tax 4 Name','Tax 4 Value','Tax 5 Name','Tax 5 Value','Phone','Receipt Number','Duties','Billing Province Name','Shipping Province Name','Payment ID','Payment Terms Name','Next Payment Due At','Payment References','Status '
+        'Name','Email','Financial Status','Paid at','Fulfillment Status','Fulfilled at','Accepts Marketing','Currency','Subtotal','Shipping','Taxes','Total','Discount Code','Discount Amount','Shipping Method','Created at','Lineitem quantity','Lineitem name','Lineitem price','Lineitem compare at price','Lineitem sku','Lineitem requires shipping','Lineitem taxable','Lineitem fulfillment status','Billing Name','Billing Street','Billing Address1','Billing Address2','Billing Company','Billing City','Billing Zip','Billing Province','Billing Country','Billing Phone','Shipping Name','Shipping Street','Shipping Address1','Shipping Address2','Shipping Company','Shipping City','Shipping Zip','Shipping Province','Shipping Country','Shipping Phone','Notes','Note Attributes','Cancelled at','Payment Method','Payment Reference','Refunded Amount','Vendor','Outstanding Balance','Employee','Location','Device ID','Id','Tags','Risk Level','Source','Lineitem discount','Tax Type','CGST Rate','CGST Amount','SGST Rate','SGST Amount','IGST Rate','IGST Amount','Seller GSTIN','Phone','Receipt Number','Duties','Billing Province Name','Shipping Province Name','Payment ID','Payment Terms Name','Next Payment Due At','Payment References','Status '
       ];
       const valueOf = (obj: any, ...keys: string[]) => {
         for (const key of keys) if (obj?.[key] !== undefined && obj?.[key] !== null && obj?.[key] !== '') return obj[key];
@@ -139,6 +139,12 @@ export const AdminOrders: React.FC = () => {
         const shipping = o.shippingAddressSnapshot || o.shipping_address_snapshot || {};
         const billing = o.billingAddressSnapshot || o.billing_address_snapshot || shipping;
         const items = Array.isArray(o.items) && o.items.length ? o.items : [{}];
+        const orderTaxTotal = Number(valueOf(o, 'taxAmount', 'tax_amount', 'gst_amount') || 0);
+        const orderLineBaseTotal = items.reduce((sum: number, item: any) => {
+          const qty = Number(valueOf(item, 'quantity') || 0);
+          const price = Number(valueOf(item, 'price', 'unitPrice', 'unit_price') || 0);
+          return sum + Math.max(0, qty * price);
+        }, 0);
         const paymentStatus = String(valueOf(o, 'paymentStatus', 'payment_status') || 'pending').toLowerCase();
         const orderStatus = String(valueOf(o, 'orderStatus', 'order_status', 'status') || 'pending').toLowerCase();
         const paymentMethod = String(valueOf(o, 'paymentMethod', 'payment_method') || '').toLowerCase();
@@ -152,6 +158,29 @@ export const AdminOrders: React.FC = () => {
           const lineQty = Number(valueOf(item, 'quantity') || 0);
           const linePrice = Number(valueOf(item, 'price', 'unitPrice', 'unit_price') || 0);
           const lineSku = valueOf(item, 'sku', 'sku_snapshot');
+          const metadata = valueOf(item, 'productMetadata', 'product_metadata_snapshot') || {};
+          const gstRateRaw = metadata.gstRateSnapshot ?? metadata.gst_rate_snapshot ?? metadata.gstRate ?? metadata.gst_rate;
+          const gstAmountRaw = metadata.gstAmountSnapshot ?? metadata.gst_amount_snapshot ?? metadata.gstAmount ?? metadata.gst_amount;
+          const gstRate = gstRateRaw !== '' && gstRateRaw !== undefined && gstRateRaw !== null && Number.isFinite(Number(gstRateRaw)) ? Number(gstRateRaw) : null;
+          const snapshotTaxAmount = gstAmountRaw !== '' && gstAmountRaw !== undefined && gstAmountRaw !== null && Number.isFinite(Number(gstAmountRaw)) ? Number(gstAmountRaw) : null;
+          const lineBase = Math.max(0, lineQty * linePrice);
+          const gstAmount = snapshotTaxAmount !== null ? snapshotTaxAmount : (orderLineBaseTotal > 0 && orderTaxTotal > 0 ? Math.round((orderTaxTotal * lineBase / orderLineBaseTotal) * 100) / 100 : null);
+          const sellerGstin = String(storeSettings?.gstin || '');
+          const sellerStateCode = /^\d{2}/.test(sellerGstin) ? sellerGstin.slice(0, 2) : '27'; // VK VASTRAM seller location: Maharashtra; configure GSTIN in Admin Settings for statutory validation.
+          const destinationStateRaw = String(valueOf(shipping, 'state', 'province') || '').trim().toLowerCase().replace(/^in[- ]/, '').replace(/,.*$/, '').trim();
+          const stateCodes: Record<string, string> = { 'jammu and kashmir': '01', 'himachal pradesh': '02', punjab: '03', chandigarh: '04', uttarakhand: '05', haryana: '06', delhi: '07', rajasthan: '08', 'uttar pradesh': '09', bihar: '10', sikkim: '11', 'arunachal pradesh': '12', nagaland: '13', manipur: '14', mizoram: '15', tripura: '16', meghalaya: '17', assam: '18', 'west bengal': '19', jharkhand: '20', odisha: '21', chhattisgarh: '22', 'madhya pradesh': '23', gujarat: '24', 'dadra and nagar haveli and daman and diu': '26', maharashtra: '27', mh: '27', andhra: '37', 'andhra pradesh': '37', karnataka: '29', goa: '30', lakshadweep: '31', kerala: '32', 'tamil nadu': '33', puducherry: '34', 'andaman and nicobar islands': '35', telangana: '36', ladakh: '38' };
+          const destinationCode = /^\d{2}$/.test(destinationStateRaw) ? destinationStateRaw : stateCodes[destinationStateRaw] || '';
+          const interstateKnown = Boolean(sellerStateCode && destinationCode);
+          const taxType = interstateKnown ? (sellerStateCode === destinationCode ? 'CGST/SGST' : 'IGST') : 'UNKNOWN — CHECK GSTIN/STATE';
+          const savedCgst = metadata.cgstAmountSnapshot ?? metadata.cgst_amount_snapshot;
+          const savedSgst = metadata.sgstAmountSnapshot ?? metadata.sgst_amount_snapshot;
+          const savedIgst = metadata.igstAmountSnapshot ?? metadata.igst_amount_snapshot;
+          const cgstAmount = taxType === 'CGST/SGST' && savedCgst != null ? Number(savedCgst) : (gstAmount !== null && taxType === 'CGST/SGST' ? Math.round((gstAmount / 2) * 100) / 100 : '');
+          const sgstAmount = taxType === 'CGST/SGST' && savedSgst != null ? Number(savedSgst) : (gstAmount !== null && taxType === 'CGST/SGST' ? Math.round((gstAmount - Number(cgstAmount)) * 100) / 100 : '');
+          const igstAmount = taxType === 'IGST' && savedIgst != null ? Number(savedIgst) : (gstAmount !== null && taxType === 'IGST' ? gstAmount : '');
+          const cgstRate = gstRate !== null && taxType === 'CGST/SGST' ? gstRate / 2 : '';
+          const sgstRate = gstRate !== null && taxType === 'CGST/SGST' ? gstRate / 2 : '';
+          const igstRate = gstRate !== null && taxType === 'IGST' ? gstRate : '';
           const row: Record<string, any> = {
             'Name': valueOf(o, 'orderNumber', 'order_number') || valueOf(o, 'id'),
             'Email': valueOf(o, 'customerEmail', 'customer_email') || valueOf(shipping, 'email'),
@@ -163,7 +192,7 @@ export const AdminOrders: React.FC = () => {
             'Currency': valueOf(o, 'currency') || 'INR',
             'Subtotal': Number(valueOf(o, 'subtotal') || 0),
             'Shipping': Number(valueOf(o, 'shippingAmount', 'shipping_amount', 'shipping_cost') || 0),
-            'Taxes': Number(valueOf(o, 'taxAmount', 'tax_amount', 'gst_amount') || 0),
+            'Taxes': gstAmount ?? '',
             'Total': Number(valueOf(o, 'totalAmount', 'total_amount', 'total') || 0),
             'Discount Code': valueOf(o, 'couponCode', 'coupon_code'),
             'Discount Amount': Number(valueOf(o, 'discountAmount', 'discount_amount') || 0),
@@ -209,8 +238,11 @@ export const AdminOrders: React.FC = () => {
             'Id': valueOf(o, 'id'),
             'Tags': valueOf(o, 'courierName','courier_name') ? 'manual-courier' : '',
             'Risk Level': '', 'Source': 'online-store', 'Lineitem discount': '',
-            'Tax 1 Name': '', 'Tax 1 Value': '', 'Tax 2 Name': '', 'Tax 2 Value': '',
-            'Tax 3 Name': '', 'Tax 3 Value': '', 'Tax 4 Name': '', 'Tax 4 Value': '', 'Tax 5 Name': '', 'Tax 5 Value': '',
+            'Tax Type': taxType,
+            'CGST Rate': cgstRate, 'CGST Amount': cgstAmount,
+            'SGST Rate': sgstRate, 'SGST Amount': sgstAmount,
+            'IGST Rate': igstRate, 'IGST Amount': igstAmount,
+            'Seller GSTIN': sellerGstin,
             'Phone': valueOf(o, 'customerPhone','customer_phone') || valueOf(shipping, 'phone'),
             'Receipt Number': '', 'Duties': '',
             'Billing Province Name': valueOf(billing, 'state','province'),
@@ -274,7 +306,8 @@ export const AdminOrders: React.FC = () => {
     const sellerName = escapeHtml(storeSettings?.storeName || 'VK VASTRAM');
     const sellerAddress = escapeHtml(storeSettings?.studioAddress || '');
     const sellerGstin = escapeHtml(storeSettings?.gstin || '');
-    const html = `<!doctype html><html><head><meta charset="utf-8"><title>Invoice ${escapeHtml(o.orderNumber || o.order_number || o.id)}</title><style>body{font:14px Arial,sans-serif;color:#222;margin:32px}header{display:flex;justify-content:space-between;border-bottom:2px solid #78281f;padding-bottom:16px}h1{font:28px Georgia,serif;color:#78281f;margin:0}table{width:100%;border-collapse:collapse;margin-top:28px}th,td{border:1px solid #ddd;padding:9px;text-align:left}th{background:#f4efe6}.totals{margin:24px 0 0 auto;width:320px}.totals p{display:flex;justify-content:space-between}.grand{font-weight:bold;border-top:2px solid #333;padding-top:10px}.tax-note{font-size:10px;color:#666;line-height:1.5}@media print{button{display:none}}</style></head><body><header><div><h1>${sellerName}</h1><p>Order Invoice (recorded order amounts)</p><p>${sellerAddress}${sellerGstin ? `<br><strong>GSTIN:</strong> ${sellerGstin}` : ''}</p></div><div><strong>Order:</strong> ${escapeHtml(o.orderNumber || o.order_number || o.id)}<br><strong>Date:</strong> ${escapeHtml(o.createdAt || o.created_at || new Date().toISOString())}<br><strong>Payment:</strong> ${escapeHtml(o.paymentMethod || o.payment_method || '')} / ${escapeHtml(o.paymentStatus || o.payment_status || '')}</div></header><h3>Bill / Ship To</h3><p>${escapeHtml(address.recipientName || address.full_name || o.customerName || o.customer_name)}<br>${escapeHtml(address.addressLine1 || address.address_line1 || '')} ${escapeHtml(address.addressLine2 || address.address_line2 || '')}<br>${escapeHtml(address.city || '')}, ${escapeHtml(address.state || '')} ${escapeHtml(address.pincode || address.postal_code || '')}<br>${escapeHtml(o.customerEmail || o.customer_email || '')} · ${escapeHtml(address.phone || o.customerPhone || o.customer_phone || '')}</p><table><thead><tr><th>Item</th><th>SKU</th><th>Qty</th><th>Unit Price</th><th>Line Total</th></tr></thead><tbody>${itemRows || '<tr><td colspan="5">Order item details unavailable</td></tr>'}</tbody></table><div class="totals"><p><span>Item subtotal (GST-inclusive)</span><strong>${money(o.subtotal ?? o.subtotalAmount)}</strong></p>${gstRowsHtml}<p><span>Discount ${escapeHtml(o.couponCode || o.coupon_code || '')}</span><strong>−${money(o.discountAmount ?? o.discount_amount)}</strong></p><p><span>Shipping</span><strong>${money(o.shippingAmount ?? o.shipping_amount ?? o.shipping_cost)}</strong></p><p class="grand"><span>Grand Total</span><strong>${money(o.totalAmount ?? o.total_amount ?? o.total)}</strong></p></div><p style="margin-top:32px;color:#666;font-size:11px">Rate-wise GST values use the immutable line-item snapshot captured at checkout. IGST versus CGST/SGST is only split when the seller GSTIN state code and customer state are available. Verify HSN/SAC and applicable tax rates before treating this as a statutory GST tax invoice.</p><button onclick="window.print()">Print / Save as PDF</button><script>window.onload=()=>setTimeout(()=>window.print(),300)</script></body></html>`;
+    const invoiceLogo = escapeHtml(storeSettings?.logoUrl || '/vk-vastram-logo.png');
+    const html = `<!doctype html><html><head><meta charset="utf-8"><title>Invoice ${escapeHtml(o.orderNumber || o.order_number || o.id)}</title><style>body{font:14px Arial,sans-serif;color:#222;margin:32px}header{display:flex;justify-content:space-between;border-bottom:2px solid #78281f;padding-bottom:16px}h1{font:28px Georgia,serif;color:#78281f;margin:0}table{width:100%;border-collapse:collapse;margin-top:28px}th,td{border:1px solid #ddd;padding:9px;text-align:left}th{background:#f4efe6}.totals{margin:24px 0 0 auto;width:320px}.totals p{display:flex;justify-content:space-between}.grand{font-weight:bold;border-top:2px solid #333;padding-top:10px}.tax-note{font-size:10px;color:#666;line-height:1.5}@media print{button{display:none}}</style></head><body><header><div><div style="display:flex;align-items:center;gap:12px"><img src="${invoiceLogo}" alt="VK VASTRAM logo" style="width:68px;height:68px;object-fit:contain"><h1>${sellerName}</h1></div><p>Order Invoice (recorded order amounts)</p><p>${sellerAddress}${sellerGstin ? `<br><strong>GSTIN:</strong> ${sellerGstin}` : ''}</p></div><div><strong>Order:</strong> ${escapeHtml(o.orderNumber || o.order_number || o.id)}<br><strong>Date:</strong> ${escapeHtml(o.createdAt || o.created_at || new Date().toISOString())}<br><strong>Payment:</strong> ${escapeHtml(o.paymentMethod || o.payment_method || '')} / ${escapeHtml(o.paymentStatus || o.payment_status || '')}</div></header><h3>Bill / Ship To</h3><p>${escapeHtml(address.recipientName || address.full_name || o.customerName || o.customer_name)}<br>${escapeHtml(address.addressLine1 || address.address_line1 || '')} ${escapeHtml(address.addressLine2 || address.address_line2 || '')}<br>${escapeHtml(address.city || '')}, ${escapeHtml(address.state || '')} ${escapeHtml(address.pincode || address.postal_code || '')}<br>${escapeHtml(o.customerEmail || o.customer_email || '')} · ${escapeHtml(address.phone || o.customerPhone || o.customer_phone || '')}</p><table><thead><tr><th>Item</th><th>SKU</th><th>Qty</th><th>Unit Price</th><th>Line Total</th></tr></thead><tbody>${itemRows || '<tr><td colspan="5">Order item details unavailable</td></tr>'}</tbody></table><div class="totals"><p><span>Item subtotal (GST-inclusive)</span><strong>${money(o.subtotal ?? o.subtotalAmount)}</strong></p>${gstRowsHtml}<p><span>Discount ${escapeHtml(o.couponCode || o.coupon_code || '')}</span><strong>−${money(o.discountAmount ?? o.discount_amount)}</strong></p><p><span>Shipping</span><strong>${money(o.shippingAmount ?? o.shipping_amount ?? o.shipping_cost)}</strong></p><p class="grand"><span>Grand Total</span><strong>${money(o.totalAmount ?? o.total_amount ?? o.total)}</strong></p></div><p style="margin-top:32px;color:#666;font-size:11px">Rate-wise GST values use the immutable line-item snapshot captured at checkout. IGST versus CGST/SGST is only split when the seller GSTIN state code and customer state are available. Verify HSN/SAC and applicable tax rates before treating this as a statutory GST tax invoice.</p><button onclick="window.print()">Print / Save as PDF</button><script>window.onload=()=>setTimeout(()=>window.print(),300)</script></body></html>`;
     const win = window.open('', '_blank');
     if (!win) { setErrorMessage('Allow popups to print or save the invoice.'); return; }
     win.document.open(); win.document.write(html); win.document.close();
@@ -549,7 +582,7 @@ export const AdminOrders: React.FC = () => {
         </div>
 
         <div className="flex items-center gap-2 self-start sm:self-auto">
-        <button onClick={exportOrdersExcel} title="Export the currently loaded order page to Excel" className="px-3 py-2.5 bg-[#F4EFE6] border border-[#1C1917]/15 rounded-xs text-[#1C1917] text-[11px] font-semibold hover:bg-[#ECE5D8]">Export Excel</button>
+        <button onClick={exportOrdersExcel} title="Export all orders matching the current filters, including GST breakdown" className="px-3 py-2.5 bg-[#F4EFE6] border border-[#1C1917]/15 rounded-xs text-[#1C1917] text-[11px] font-semibold hover:bg-[#ECE5D8]">Export Excel</button>
         <button
           onClick={fetchOrdersList}
           title="Refresh real-time data"
@@ -1187,6 +1220,7 @@ export const AdminOrders: React.FC = () => {
                                 {item.productMetadata?.size && ` · Size: ${item.productMetadata.size}`}
                                 {item.productMetadata?.category && ` · Category: ${item.productMetadata.category}`}
                               </p>
+                              {item.productMetadata?.includeFallPico === true && <p className="text-[10px] font-semibold text-[#78281F]">Fall & Pico finishing — included in saved line price</p>}
                             </div>
                           </div>
                           <div className="text-right">

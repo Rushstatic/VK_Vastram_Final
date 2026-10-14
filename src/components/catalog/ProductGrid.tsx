@@ -61,7 +61,7 @@ export const ProductGrid: React.FC<ProductGridProps> = ({
       : `grid grid-cols-2 ${columns === 4 ? 'lg:grid-cols-4 md:grid-cols-3' : 'md:grid-cols-3'} gap-x-4 gap-y-8 sm:gap-x-6 sm:gap-y-10 lg:gap-x-8`}
     >
       {products.map((product, idx) => (
-        <div key={product.id} className={mobileCarousel ? 'snap-start shrink-0 w-[72%] sm:w-[42%] md:w-auto' : undefined}>
+        <div key={product.id} className={mobileCarousel ? 'snap-start shrink-0 w-[88%] sm:w-[58%] md:w-auto min-w-0' : undefined}>
         <ScrollReveal
           delay={(idx % (columns || 3)) * 80}
           duration={550}

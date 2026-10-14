@@ -325,7 +325,7 @@ export const Header: React.FC<HeaderProps> = ({
           {/* Backdrop with silky fade animation */}
           <div
             ref={backdropRef}
-            className={`fixed inset-0 bg-[#1C1917]/55 transition-opacity duration-350 ease-out ${
+            className={`fixed inset-0 bg-[#1C1917]/42 transition-opacity duration-350 ease-out ${
               isClosing ? 'opacity-0 backdrop-blur-none pointer-events-none' : 'opacity-100 backdrop-blur-[3px]'
             }`}
             onClick={handleCloseMenu}
@@ -333,7 +333,7 @@ export const Header: React.FC<HeaderProps> = ({
           {/* Drawer Sheet with luxurious smooth sliding cubic-bezier animation */}
           <div
             ref={drawerRef}
-            className={`relative w-full max-w-sm bg-[#FAF8F5] h-full shadow-[0_20px_50px_rgba(28,25,23,0.35)] flex flex-col z-10 border-r border-[#1C1917]/10 transform transition-transform duration-350 ease-[cubic-bezier(0.16,1,0.3,1)] ${
+            className={`relative w-[min(88vw,24rem)] max-w-full vk-glass-surface rounded-r-2xl [clip-path:polygon(0_0,calc(100%_-_12px)_0,100%_12px,100%_calc(100%_-_12px),calc(100%_-_12px)_100%,0_100%)] h-full flex flex-col z-10 border-r transform transition-transform duration-350 ease-[cubic-bezier(0.16,1,0.3,1)] ${
               isClosing ? '-translate-x-full' : 'translate-x-0'
             }`}
             style={{
@@ -341,7 +341,7 @@ export const Header: React.FC<HeaderProps> = ({
             }}
           >
             {/* Drawer Header */}
-            <div className="flex items-center justify-between px-6 py-5 border-b border-[#1C1917]/10 bg-[#FAF8F5]/90 backdrop-blur-xs">
+            <div className="flex items-center justify-between px-6 py-5 border-b border-[#1C1917]/10 bg-[#FAF8F5]/65 backdrop-blur-xl">
               <div className="flex items-center gap-2.5">
                 <div className="relative w-7 h-7 flex items-center justify-center shrink-0">
                   <div className="absolute inset-0 border border-[#78281F]/30 rounded-full animate-spin-slow pointer-events-none" />

@@ -52,7 +52,7 @@ export const AboutPage: React.FC<AboutPageProps> = ({ onNavigate }) => {
               <img
                 src={CRAFT_IMAGE}
                 alt="Pit loom weaving"
-                className="w-full aspect-[4/3] object-cover"
+                className="w-full aspect-[3/4] object-cover"
               />
               <p className="p-2.5 text-[11px] text-[#78716C] bg-[#FAF8F5]">Traditional handloom shuttle & silk yarn</p>
             </div>
@@ -60,7 +60,7 @@ export const AboutPage: React.FC<AboutPageProps> = ({ onNavigate }) => {
               <img
                 src={BANARASI_IMAGE}
                 alt="Pure silk handloom saree"
-                className="w-full aspect-[4/3] object-cover"
+                className="w-full aspect-[3/4] object-cover"
               />
               <p className="p-2.5 text-[11px] text-[#78716C] bg-[#FAF8F5]">Handwoven Katan silk brocade</p>
             </div>

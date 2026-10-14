@@ -774,7 +774,7 @@ export default function App() {
             <CategoryShowcase categories={categories} onNavigate={handleNavigate} />
 
             {/* Featured Sarees */}
-            <section className="py-16 sm:py-20 bg-[#FAF8F5]">
+            <section className="py-10 sm:py-16 lg:py-20 bg-[#FAF8F5]">
               <Container>
                 <ScrollReveal distance={16} duration={550}>
                   <SectionHeading

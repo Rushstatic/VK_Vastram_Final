@@ -27,7 +27,7 @@ export const CategoryShowcase: React.FC<CategoryShowcaseProps> = ({
       }));
 
   return (
-    <section className="py-16 sm:py-24 bg-[#FAF8F5]">
+    <section className="py-7 sm:py-14 lg:py-20 bg-[#FAF8F5]">
       <Container>
         <ScrollReveal distance={16} duration={550}>
           <SectionHeading
@@ -38,11 +38,11 @@ export const CategoryShowcase: React.FC<CategoryShowcaseProps> = ({
         </ScrollReveal>
 
         <div
-          className="-mx-4 px-4 sm:mx-0 sm:px-0 flex gap-4 overflow-x-auto snap-x snap-mandatory pb-4 overscroll-x-contain md:grid md:grid-cols-3 md:gap-6 md:overflow-visible md:pb-0 lg:gap-8 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+          className="-mx-4 px-4 sm:mx-0 sm:px-0 flex gap-3 sm:gap-4 overflow-x-auto snap-x snap-mandatory pb-3 sm:pb-4 overscroll-x-contain md:grid md:grid-cols-3 md:gap-6 md:overflow-visible md:pb-0 lg:gap-8 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
           aria-label="Browse textile categories"
         >
           {displayCategories.map((cat, index) => (
-            <div key={cat.id} className="snap-start shrink-0 w-[82%] sm:w-[58%] md:w-auto">
+            <div key={cat.id} className="snap-start shrink-0 w-[88%] sm:w-[58%] md:w-auto min-w-0">
             <ScrollReveal delay={index * 100} duration={650} distance={20}>
               <div
                 onClick={() => onNavigate({ type: 'collection', category: cat.category })}
@@ -58,7 +58,7 @@ export const CategoryShowcase: React.FC<CategoryShowcaseProps> = ({
                   <div className="absolute inset-0 bg-gradient-to-t from-[#1C1917]/70 via-[#1C1917]/20 to-transparent" />
 
                   {/* Bottom Overlay Info */}
-                  <div className="absolute inset-x-0 bottom-0 p-5 text-[#FAF8F5] flex items-end justify-between">
+                  <div className="absolute inset-x-0 bottom-0 p-3 sm:p-5 text-[#FAF8F5] flex items-end justify-between min-w-0">
                     <div>
                       <span className="text-[10px] uppercase tracking-[0.2em] text-[#E5D7B7] font-medium block mb-1">
                         0{index + 1} · {cat.itemCount || 8} Weaves

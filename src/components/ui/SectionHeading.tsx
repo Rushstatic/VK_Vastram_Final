@@ -21,7 +21,7 @@ export const SectionHeading: React.FC<SectionHeadingProps> = ({
 
   return (
     <div
-      className={`flex flex-col md:flex-row md:items-end justify-between gap-4 mb-8 sm:mb-12 ${
+      className={`flex flex-col md:flex-row md:items-end justify-between gap-3 mb-6 sm:mb-10 ${
         isCenter ? 'text-center md:items-center' : ''
       } ${className}`}
     >

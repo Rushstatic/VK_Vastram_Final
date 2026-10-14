@@ -64,7 +64,7 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
     <div className="fixed inset-0 z-50 overflow-hidden">
       {/* Backdrop */}
       <div
-        className={`fixed inset-0 bg-[#1C1917]/60 transition-all duration-300 ease-out ${
+        className={`fixed inset-0 bg-[#1C1917]/45 transition-all duration-300 ease-out ${
           isClosing ? 'opacity-0 backdrop-blur-none pointer-events-none' : 'opacity-100 backdrop-blur-[3px]'
         }`}
         onClick={handleSmoothClose}
@@ -72,7 +72,7 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
 
       <div className="fixed inset-y-0 right-0 max-w-full flex pl-10 pointer-events-none">
         <div
-          className={`w-screen max-w-md bg-[#FAF8F5] shadow-2xl flex flex-col border-l border-[#1C1917]/10 pointer-events-auto transform transition-transform duration-320 ease-[cubic-bezier(0.16,1,0.3,1)] ${
+          className={`w-screen max-w-md vk-glass-surface rounded-l-2xl overflow-hidden flex flex-col border-l pointer-events-auto transform transition-transform duration-320 ease-[cubic-bezier(0.16,1,0.3,1)] ${
             isClosing ? 'translate-x-full' : 'translate-x-0'
           }`}
           style={{
@@ -80,7 +80,7 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
           }}
         >
           {/* Header */}
-          <div className="flex items-center justify-between px-6 py-5 border-b border-[#1C1917]/10 bg-[#FAF8F5]">
+          <div className="flex items-center justify-between px-6 py-5 border-b border-[#1C1917]/10 bg-[#FAF8F5]/65 backdrop-blur-xl">
             <div className="flex items-center gap-2">
               <ShoppingBag className="w-4 h-4 text-[#1C1917]" />
               <h3 className="font-serif text-xl font-normal text-[#1C1917]">
@@ -206,7 +206,7 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
 
           {/* Subtotal & Checkout CTA */}
           {items.length > 0 && (
-            <div className="p-6 border-t border-[#1C1917]/10 bg-[#FAF8F5] space-y-3">
+            <div className="p-6 border-t border-[#1C1917]/10 bg-[#FAF8F5]/78 backdrop-blur-xl space-y-3">
               <div className="space-y-1.5 text-xs text-[#57534E]">
                 <div className="flex justify-between items-baseline">
                   <span className="text-sm font-serif text-[#1C1917]">Subtotal</span>

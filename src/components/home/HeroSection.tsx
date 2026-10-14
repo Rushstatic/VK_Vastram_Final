@@ -368,7 +368,7 @@ export const HeroSection: React.FC<HeroSectionProps> = ({ onNavigate }) => {
                 {currentSlide.description}
               </p>
 
-              <div className="gsap-hero-anim mt-8 flex flex-wrap items-center gap-4">
+              <div className="gsap-hero-anim mt-6 sm:mt-8 flex flex-wrap items-center gap-3 sm:gap-4">
                 <Button
                   variant="primary"
                   size="md"

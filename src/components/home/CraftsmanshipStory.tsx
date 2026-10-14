@@ -77,7 +77,7 @@ export const CraftsmanshipStory: React.FC<CraftsmanshipStoryProps> = ({
   return (
     <section
       ref={sectionRef}
-      className="relative py-20 sm:py-28 bg-[#F4EFE6] border-y border-[#1C1917]/10 overflow-hidden"
+      className="relative py-8 sm:py-16 lg:py-24 bg-[#F4EFE6] border-y border-[#1C1917]/10 overflow-hidden"
     >
       {/* Background Editorial Typographic Watermark */}
       <div className="absolute inset-0 overflow-hidden pointer-events-none select-none flex items-center justify-center opacity-[0.035]">
@@ -90,7 +90,7 @@ export const CraftsmanshipStory: React.FC<CraftsmanshipStoryProps> = ({
       </div>
 
       <Container>
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-10 lg:gap-16 items-center relative z-10">
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-7 sm:gap-10 lg:gap-16 items-center relative z-10">
           {/* Visual on the Left */}
           <div className="lg:col-span-6" ref={imageContainerRef}>
             <ScrollReveal direction="up" duration={700} distance={24}>
@@ -98,7 +98,7 @@ export const CraftsmanshipStory: React.FC<CraftsmanshipStoryProps> = ({
                 <img
                   src={CRAFT_IMAGE}
                   alt="Traditional handloom weaving shuttle and threads"
-                  className="w-full aspect-[4/3] object-cover transition-transform duration-700 ease-out group-hover:scale-[1.02]"
+                  className="w-full aspect-[3/4] object-cover transition-transform duration-700 ease-out group-hover:scale-[1.02]"
                 />
                 <div className="p-4 sm:p-5 bg-[#FAF8F5] border-t border-[#1C1917]/10 flex items-center justify-between">
                   <div>

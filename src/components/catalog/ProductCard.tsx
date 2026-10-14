@@ -112,7 +112,7 @@ export const ProductCard: React.FC<ProductCardProps> = ({
       onMouseLeave={() => setIsHovered(false)}
       onClick={handleCardClick}
     >
-      {/* Product Image Stage (3:4 ratio) */}
+      {/* Product Image Stage (4:3 ratio) */}
       <div className="relative overflow-hidden bg-[#F4EFE6] rounded-xs transition-all duration-300">
         <ImageContainer
           src={displayImage}
@@ -159,7 +159,7 @@ export const ProductCard: React.FC<ProductCardProps> = ({
         </button>
 
         {/* Subtle Hover Action Bar */}
-        <div className="absolute inset-x-0 bottom-0 p-2.5 bg-gradient-to-t from-[#1C1917]/75 via-[#1C1917]/30 to-transparent opacity-0 translate-y-1.5 group-hover:opacity-100 group-hover:translate-y-0 transition-all duration-200 flex items-center gap-1.5 z-10">
+        <div className="absolute inset-x-0 bottom-0 p-1 sm:p-2.5 bg-gradient-to-t from-[#1C1917]/80 via-[#1C1917]/35 to-transparent opacity-100 translate-y-0 md:opacity-0 md:translate-y-1.5 md:group-hover:opacity-100 md:group-hover:translate-y-0 transition-all duration-200 flex items-center gap-1 z-10">
           {isSoldOut ? (
             <div className="flex-1 py-2 px-3 text-[11px] font-medium rounded-xs bg-[#1C1917]/80 text-[#FAF8F5]/80 text-center tracking-wide uppercase">
               Sold Out
@@ -168,7 +168,7 @@ export const ProductCard: React.FC<ProductCardProps> = ({
             <button
               type="button"
               onClick={handleAddToCart}
-              className={`flex-1 py-2 px-3 text-xs font-medium rounded-xs flex items-center justify-center gap-1.5 transition-all cursor-pointer active:scale-[0.98] ${
+              className={`min-w-0 flex-1 py-2 px-1.5 sm:px-3 text-[11px] sm:text-xs font-medium rounded-xs flex items-center justify-center gap-1 sm:gap-1.5 whitespace-nowrap transition-all cursor-pointer active:scale-[0.98] ${
                 justAdded
                   ? 'bg-[#1F382B] text-[#FAF8F5]'
                   : 'bg-[#FAF8F5] text-[#1C1917] hover:bg-[#FFFFFF]'
@@ -192,7 +192,7 @@ export const ProductCard: React.FC<ProductCardProps> = ({
             type="button"
             onClick={handleQuickViewClick}
             aria-label="Quick preview"
-            className="p-2 bg-[#FAF8F5]/90 hover:bg-[#FAF8F5] text-[#1C1917] rounded-xs transition-all cursor-pointer active:scale-95"
+            className="shrink-0 p-2 bg-[#FAF8F5]/90 hover:bg-[#FAF8F5] text-[#1C1917] rounded-xs transition-all cursor-pointer active:scale-95"
           >
             <Eye className="w-3.5 h-3.5" />
           </button>

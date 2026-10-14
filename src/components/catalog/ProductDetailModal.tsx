@@ -15,7 +15,7 @@ interface ProductDetailModalProps {
   onClose: () => void;
   isWishlisted?: boolean;
   onToggleWishlist?: (product: Product) => void;
-  onAddToCart?: (product: Product, quantity: number, color?: string, size?: string, variantId?: string, includeFallPico?: boolean) => void;
+  onAddToCart?: (product: Product, quantity: number, color?: string, size?: string, variantId?: string, includeFallPico?: boolean) => void | boolean | Promise<void | boolean>;
 }
 
 export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
@@ -86,23 +86,22 @@ export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
   const currentImage = (selectedImage && images.includes(selectedImage) ? selectedImage : '') || images[0] || '';
   const currentImageFallback = product.imagesWithRoles?.find((image) => normalizeImageUrl(image.imageUrl) === normalizeImageUrl(currentImage))?.fallbackImageUrl || activeVariant?.images?.find((image) => normalizeImageUrl(image.imageUrl) === normalizeImageUrl(currentImage))?.fallbackImageUrl;
 
-  const handleAddToCart = () => {
-    if (isSoldOut) return;
-    if (onAddToCart) {
-      onAddToCart(
-        {
-          ...product,
-          price: displayPrice,
-          sku: displaySku,
-        },
+  const handleAddToCart = async () => {
+    if (isSoldOut || !onAddToCart) return;
+    try {
+      const result = await onAddToCart(
+        { ...product, price: displayPrice, sku: displaySku },
         quantity,
         selectedColor,
         selectedSize,
         activeVariant?.id,
         false
       );
+      if (result === false) return;
       setAddedAnimation(true);
-      setTimeout(() => setAddedAnimation(false), 2000);
+      window.setTimeout(() => setAddedAnimation(false), 2000);
+    } catch (error) {
+      console.warn('Could not add item from quick view:', error);
     }
   };
 
@@ -112,12 +111,12 @@ export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 overflow-y-auto">
       {/* Backdrop */}
       <div
-        className="fixed inset-0 bg-[#1C1917]/65 backdrop-blur-xs transition-opacity"
+        className="fixed inset-0 bg-[#1C1917]/65 backdrop-blur-xs transition-opacity vk-product-modal-backdrop"
         onClick={onClose}
       />
 
       {/* Modal Dialog */}
-      <div className="relative w-full max-w-4xl bg-[#FAF8F5] shadow-2xl rounded-sm border border-[#1C1917]/10 z-10 overflow-hidden my-auto max-h-[92vh] flex flex-col md:flex-row">
+      <div className="relative w-full max-w-4xl bg-[#FAF8F5] shadow-2xl rounded-sm border border-[#1C1917]/10 z-10 overflow-hidden my-auto max-h-[92vh] flex flex-col md:flex-row vk-product-modal-panel">
         {/* Close button */}
         <button
           type="button"

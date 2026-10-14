@@ -1,8 +1,31 @@
 import { useState, useEffect, useCallback } from 'react';
 import { siteSettingsService, SiteSettingsData } from '../services/siteSettingsService';
 
-// Module-level cache to provide instant values to newly mounting components
-let cachedSettings: SiteSettingsData | null = null;
+// Warm in-memory cache plus a small public-settings cache prevents branding flashes
+// on reloads. Only public storefront settings are stored here (never credentials).
+const SETTINGS_CACHE_KEY = 'vk_public_site_settings_v1';
+
+function readCachedSettings(): SiteSettingsData | null {
+  try {
+    if (typeof window === 'undefined') return null;
+    const raw = window.localStorage.getItem(SETTINGS_CACHE_KEY);
+    return raw ? (JSON.parse(raw) as SiteSettingsData) : null;
+  } catch {
+    return null;
+  }
+}
+
+function persistCachedSettings(value: SiteSettingsData) {
+  try {
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(SETTINGS_CACHE_KEY, JSON.stringify(value));
+    }
+  } catch {
+    // Storage may be unavailable; the in-memory cache still works.
+  }
+}
+
+let cachedSettings: SiteSettingsData | null = readCachedSettings();
 
 export function useSiteSettings() {
   const [settings, setSettings] = useState<SiteSettingsData | null>(cachedSettings);
@@ -12,6 +35,7 @@ export function useSiteSettings() {
     try {
       const data = await siteSettingsService.getSettings();
       cachedSettings = data;
+      persistCachedSettings(data);
       setSettings(data);
       setLoading(false);
     } catch (error) {
@@ -29,6 +53,7 @@ export function useSiteSettings() {
       const customEvent = e as CustomEvent<SiteSettingsData>;
       if (customEvent.detail) {
         cachedSettings = customEvent.detail;
+        persistCachedSettings(customEvent.detail);
         setSettings(customEvent.detail);
       } else {
         fetchSettings();

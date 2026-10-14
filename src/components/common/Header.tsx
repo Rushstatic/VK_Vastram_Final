@@ -36,7 +36,7 @@ export const Header: React.FC<HeaderProps> = ({
   const progressBarRef = useRef<HTMLDivElement>(null);
   const drawerRef = useRef<HTMLDivElement>(null);
   const backdropRef = useRef<HTMLDivElement>(null);
-  const { settings } = useSiteSettings();
+  const { settings, loading: settingsLoading } = useSiteSettings();
   const storeName = settings?.storeName || 'VK VASTRAM';
 
   // Smooth close helper that triggers exit animation before unmounting
@@ -225,14 +225,24 @@ export const Header: React.FC<HeaderProps> = ({
   <div className="absolute inset-0 border border-[#78281F]/30 rounded-full animate-spin-slow pointer-events-none" />
 
   {/* Actual Logo Image - fills the circle (with small 2-3px inset so it sits cleanly inside the ring) */}
-  <img
-    src={settings?.logoUrl || DefaultLogo}
-    alt="Store Logo"
-    onError={(e) => {
-      (e.currentTarget as HTMLImageElement).src = DefaultLogo;
-    }}
-    className="w-full h-full p-0.5 rounded-full object-contain transition-all duration-300"
-  />
+  {settings?.logoUrl ? (
+    <img
+      src={settings.logoUrl}
+      alt="VK VASTRAM logo"
+      onError={(e) => {
+        (e.currentTarget as HTMLImageElement).src = DefaultLogo;
+      }}
+      className="w-full h-full p-0.5 rounded-full object-contain transition-opacity duration-150"
+    />
+  ) : settingsLoading ? (
+    <span aria-hidden="true" className="block w-full h-full rounded-full bg-[#F4EFE6]/70" />
+  ) : (
+    <img
+      src={DefaultLogo}
+      alt="VK VASTRAM logo"
+      className="w-full h-full p-0.5 rounded-full object-contain"
+    />
+  )}
 </div>
 
                 <span className={`font-serif font-semibold text-[#78281F] uppercase transition-all duration-300 group-hover:text-[#967029] whitespace-nowrap ${scrolled ? 'text-sm sm:text-xl lg:text-2xl tracking-[0.12em] sm:tracking-[0.28em]' : 'text-base sm:text-3xl lg:text-5xl tracking-[0.16em] sm:tracking-[0.35em]'}`}>

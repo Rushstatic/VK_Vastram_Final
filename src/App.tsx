@@ -46,6 +46,7 @@ import { Container } from './components/ui/Container';
 import { SectionHeading } from './components/ui/SectionHeading';
 import { ScrollReveal } from './components/ui/ScrollReveal';
 import { Button } from './components/ui/Button';
+import { BagWaveTransition } from './components/ui/BagWaveTransition';
 import { ScrollTrigger } from './lib/gsap';
 import { productService } from './services/productService';
 import { authService, AdminUser } from './services/authService';
@@ -155,6 +156,7 @@ export default function App() {
   const [isCartOpen, setIsCartOpen] = useState(false);
   const [isWishlistDrawerOpen, setIsWishlistDrawerOpen] = useState(false);
   const [isSearchOpen, setIsSearchOpen] = useState(false);
+  const [bagWaveKey, setBagWaveKey] = useState(0);
 
   const { settings } = useSiteSettings();
   const storeName = settings?.storeName || 'VK VASTRAM';
@@ -369,9 +371,14 @@ export default function App() {
     selectedColor?: string,
     selectedSize?: string,
     variantId?: string,
-    includeFallPico = false
-  ) => {
+    includeFallPico = false,
+    animateBag = true
+  ): Promise<boolean> => {
     const validAddQty = sanitizeQuantity(quantity, product.stockQuantity || MAX_CART_ITEM_QUANTITY);
+
+    // Start the visual response immediately on the user's tap, rather than waiting
+    // for the authenticated cart API and follow-up cart refresh to finish.
+    if (animateBag) setBagWaveKey((current) => current + 1);
 
     if (customerUser) {
       console.log(`[CART_MUTATION] source=handleAddToCart (auth) userId=${customerUser.id} product=${product.id} qty=${validAddQty}`);
@@ -389,6 +396,8 @@ export default function App() {
         setCart(updated);
       } catch (err) {
         console.warn('User cart addition error:', err);
+        if (animateBag) setBagWaveKey(0);
+        return false;
       }
     } else {
       console.log(`[CART_MUTATION] source=handleAddToCart (guest) product=${product.id} qty=${validAddQty}`);
@@ -432,6 +441,8 @@ export default function App() {
         return updated;
       });
     }
+
+    return true;
   };
 
   const handleBuyNow = async (
@@ -442,7 +453,8 @@ export default function App() {
     variantId?: string,
     includeFallPico = false
   ) => {
-    await handleAddToCart(product, quantity, selectedColor, selectedSize, variantId, includeFallPico);
+    const added = await handleAddToCart(product, quantity, selectedColor, selectedSize, variantId, includeFallPico, false);
+    if (!added) return;
     setIsCartOpen(false);
     handleNavigate({ type: 'checkout' });
   };
@@ -916,6 +928,13 @@ export default function App() {
       <Footer categories={categories} onNavigate={handleNavigate} />
 
 
+      {bagWaveKey > 0 && (
+        <BagWaveTransition
+          key={bagWaveKey}
+          onComplete={() => setBagWaveKey((current) => (current === bagWaveKey ? 0 : current))}
+        />
+      )}
+
       {/* Quick View Modal */}
       <ProductDetailModal
         product={quickViewProduct}
@@ -923,9 +942,10 @@ export default function App() {
         onClose={() => setQuickViewProduct(null)}
         isWishlisted={quickViewProduct ? wishlistIds.includes(quickViewProduct.id) : false}
         onToggleWishlist={handleToggleWishlist}
-        onAddToCart={(product, qty, color, size, variantId, includeFallPico) => {
-          handleAddToCart(product, qty, color, size, variantId, includeFallPico);
-          setIsCartOpen(true);
+        onAddToCart={async (product, qty, color, size, variantId, includeFallPico) => {
+          const added = await handleAddToCart(product, qty, color, size, variantId, includeFallPico);
+          if (added) setIsCartOpen(true);
+          return added;
         }}
       />
 

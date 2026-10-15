@@ -1,4 +1,5 @@
-import React from 'react';
+import React, { useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { X, RotateCcw } from 'lucide-react';
 import { ProductFilterSidebar, FilterState } from './ProductFilterSidebar';
 import { CanonicalColor } from '../../lib/colorSystem';
@@ -29,18 +30,34 @@ export const ProductFilterDrawer: React.FC<ProductFilterDrawerProps> = ({
   priceBounds,
   totalCount,
 }) => {
-  if (!isOpen) return null;
+  useEffect(() => {
+    if (!isOpen) return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [isOpen]);
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center sm:p-4">
+  if (!isOpen || typeof document === 'undefined') return null;
+
+  return createPortal((
+    <div className="fixed inset-0 z-[100] flex items-center justify-center p-0 sm:p-4" role="presentation">
       {/* Backdrop */}
-      <div
-        className="fixed inset-0 bg-[#1C1917]/60 backdrop-blur-xs transition-opacity"
+      <button
+        type="button"
+        aria-label="Close filters"
+        className="fixed inset-0 bg-[#1C1917]/60 backdrop-blur-sm transition-opacity cursor-default"
         onClick={onClose}
       />
 
       {/* Drawer Dialog */}
-      <div className="relative w-full max-w-lg bg-[#FAF8F5] rounded-t-xl sm:rounded-sm shadow-2xl border border-[#1C1917]/10 z-10 flex flex-col max-h-[85vh] overflow-hidden">
+      <div role="dialog" aria-modal="true" aria-label="Product filters" className="relative z-10 flex h-[min(92dvh,850px)] max-h-[92dvh] w-full max-w-lg flex-col overflow-hidden rounded-none bg-[#FAF8F5] shadow-2xl sm:rounded-sm sm:border sm:border-[#1C1917]/10">
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-[#1C1917]/10 shrink-0">
           <div>
@@ -63,7 +80,7 @@ export const ProductFilterDrawer: React.FC<ProductFilterDrawerProps> = ({
         </div>
 
         {/* Scrollable Filter Body */}
-        <div className="p-6 overflow-y-auto flex-1">
+        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 py-4 [scrollbar-width:thin] [scrollbar-color:#B88E3E_transparent] sm:px-6">
           <ProductFilterSidebar
             filters={filters}
             onFilterChange={onFilterChange}
@@ -73,6 +90,8 @@ export const ProductFilterDrawer: React.FC<ProductFilterDrawerProps> = ({
             availableColors={availableColors}
             priceBounds={priceBounds}
             totalCount={totalCount}
+            disableSectionScroll
+            className="filter-drawer-sidebar"
           />
         </div>
 
@@ -96,6 +115,5 @@ export const ProductFilterDrawer: React.FC<ProductFilterDrawerProps> = ({
           </Button>
         </div>
       </div>
-    </div>
-  );
+    </div>), document.body);
 };

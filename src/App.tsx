@@ -5,6 +5,8 @@ import { Footer } from './components/common/Footer';
 import { HeroSection } from './components/home/HeroSection';
 import { CategoryShowcase } from './components/home/CategoryShowcase';
 import { CraftsmanshipStory } from './components/home/CraftsmanshipStory';
+import { BudgetDiscovery } from './components/home/BudgetDiscovery';
+import { SareeTraditions } from './components/home/SareeTraditions';
 import { TrustGuarantees } from './components/home/TrustGuarantees';
 import { ProductGrid } from './components/catalog/ProductGrid';
 import { ProductDetailModal } from './components/catalog/ProductDetailModal';
@@ -58,6 +60,7 @@ import { Product, PageView, CartItem, AdminSubView } from './types';
 import { PRODUCTS } from './data/catalog';
 import { ArrowRight } from 'lucide-react';
 import { useSiteSettings } from './hooks/useSiteSettings';
+import { adminService, HomepageSectionData } from './services/adminService';
 
 import { sanitizeQuantity, MAX_CART_ITEM_QUANTITY } from './lib/validation';
 
@@ -81,15 +84,23 @@ const getPathFromPage = (page: PageView): string => {
       const sub = page.subView || 'dashboard';
       return `/admin/${sub}`;
     }
-    case 'collection': return `/collection/${page.category}`;
+    case 'collection': {
+      const params = new URLSearchParams();
+      if (page.priceMin !== undefined) params.set('minPrice', String(page.priceMin));
+      if (page.priceMax !== undefined) params.set('maxPrice', String(page.priceMax));
+      if (page.subCategory) params.set('subCategory', page.subCategory);
+      const query = params.toString();
+      return `/collection/${page.category}${query ? `?${query}` : ''}`;
+    }
     case 'product': return `/product/${page.slug}`;
     case 'sale': return '/sale';
     default: return '/';
   }
 };
 
-const getPageFromPath = (path: string): PageView => {
+const getPageFromPath = (path: string, search = ''): PageView => {
   const cleanPath = path.toLowerCase().trim().replace(/\/$/, '');
+  const query = new URLSearchParams(search);
   if (!cleanPath || cleanPath === '') return { type: 'home' };
   if (cleanPath === '/about') return { type: 'about' };
   if (cleanPath === '/faq') return { type: 'faq' };
@@ -120,7 +131,15 @@ const getPageFromPath = (path: string): PageView => {
   
   if (cleanPath.startsWith('/collection/')) {
     const cat = cleanPath.split('/')[2];
-    return { type: 'collection', category: cat as any };
+    const min = Number(query.get('minPrice'));
+    const max = Number(query.get('maxPrice'));
+    return {
+      type: 'collection',
+      category: cat as any,
+      ...(query.has('minPrice') && Number.isFinite(min) ? { priceMin: min } : {}),
+      ...(query.has('maxPrice') && Number.isFinite(max) ? { priceMax: max } : {}),
+      ...(query.has('subCategory') && query.get('subCategory') ? { subCategory: query.get('subCategory')! } : {}),
+    };
   }
   
   if (cleanPath.startsWith('/product/')) {
@@ -134,7 +153,7 @@ const getPageFromPath = (path: string): PageView => {
 };
 
 export default function App() {
-  const [currentPage, setCurrentPage] = useState<PageView>(() => getPageFromPath(window.location.pathname));
+  const [currentPage, setCurrentPage] = useState<PageView>(() => getPageFromPath(window.location.pathname, window.location.search));
   const [products, setProducts] = useState<Product[]>(() => isSupabaseConfigured() ? [] : PRODUCTS);
   const [categories, setCategories] = useState<any[]>([]);
 
@@ -160,11 +179,33 @@ export default function App() {
 
   const { settings } = useSiteSettings();
   const storeName = settings?.storeName || 'VK VASTRAM';
+  const [homepageSections, setHomepageSections] = useState<HomepageSectionData[] | null>(null);
+
+  useEffect(() => {
+    let mounted = true;
+    const refreshHomepageSections = async () => {
+      const sections = await adminService.getHomepageSections();
+      if (mounted) setHomepageSections(sections.length ? sections : null);
+    };
+    void refreshHomepageSections();
+    window.addEventListener('vk_homepage_updated', refreshHomepageSections);
+    return () => {
+      mounted = false;
+      window.removeEventListener('vk_homepage_updated', refreshHomepageSections);
+    };
+  }, []);
+
+  const isHomepageSectionActive = (sectionType: string) => {
+    // Avoid briefly flashing the Philosophy block before the saved CMS visibility has loaded.
+    if (!homepageSections) return !isSupabaseConfigured() || sectionType !== 'philosophy';
+    const section = homepageSections.find((item) => item.sectionType?.toLowerCase() === sectionType.toLowerCase());
+    return section ? section.isActive !== false : true;
+  };
 
   // Admin Auth state
   const [adminUser, setAdminUser] = useState<AdminUser | null>(null);
   const [adminSubView, setAdminSubView] = useState<AdminSubView>(() => {
-    const init = getPageFromPath(window.location.pathname);
+    const init = getPageFromPath(window.location.pathname, window.location.search);
     return (init.type === 'admin' && init.subView) ? init.subView : 'dashboard';
   });
   const [adminSelectedProductId, setAdminSelectedProductId] = useState<string | undefined>(undefined);
@@ -238,7 +279,7 @@ export default function App() {
             });
             // Restore the requested admin route after the persisted Supabase session
             // and database-backed admin role have both been verified.
-            const requestedPage = getPageFromPath(window.location.pathname);
+            const requestedPage = getPageFromPath(window.location.pathname, window.location.search);
             if (requestedPage.type === 'admin' || requestedPage.type === 'admin-login') {
               setCurrentPage({ type: 'admin', subView: requestedPage.type === 'admin' ? (requestedPage.subView || 'dashboard') : 'dashboard' });
             }
@@ -261,7 +302,7 @@ export default function App() {
               .eq('id', session.user.id).maybeSingle();
             if (roleProfile?.role === 'admin') {
               setAdminUser({ id: session.user.id, email: roleProfile.email || session.user.email || '', fullName: roleProfile.full_name || profile?.fullName || 'Administrator', role: 'admin' });
-              const requestedPage = getPageFromPath(window.location.pathname);
+              const requestedPage = getPageFromPath(window.location.pathname, window.location.search);
               if (requestedPage.type === 'admin' || requestedPage.type === 'admin-login') {
                 setCurrentPage({ type: 'admin', subView: requestedPage.type === 'admin' ? (requestedPage.subView || 'dashboard') : 'dashboard' });
               }
@@ -312,7 +353,7 @@ export default function App() {
   // Sync browser back/forward buttons with App page state
   useEffect(() => {
     const handlePopState = () => {
-      const page = getPageFromPath(window.location.pathname);
+      const page = getPageFromPath(window.location.pathname, window.location.search);
       setCurrentPage(page);
       if (page.type === 'admin' && page.subView) {
         setAdminSubView(page.subView);
@@ -350,7 +391,7 @@ export default function App() {
 
     // Sync URL in browser address bar without hard reloading
     const newPath = getPathFromPage(page);
-    if (window.location.pathname !== newPath) {
+    if (`${window.location.pathname}${window.location.search}` !== newPath) {
       window.history.pushState(null, '', newPath);
     }
   };
@@ -563,7 +604,7 @@ export default function App() {
           setCurrentPage({ type: 'admin', subView: adminSubView || 'dashboard' });
           // Ensure URL syncs on login success
           const newPath = `/admin/${adminSubView || 'dashboard'}`;
-          if (window.location.pathname !== newPath) {
+          if (`${window.location.pathname}${window.location.search}` !== newPath) {
             window.history.pushState(null, '', newPath);
           }
         }}
@@ -581,7 +622,7 @@ export default function App() {
             setCurrentPage({ type: 'admin', subView: adminSubView || 'dashboard' });
             // Ensure URL syncs on login success
             const newPath = `/admin/${adminSubView || 'dashboard'}`;
-            if (window.location.pathname !== newPath) {
+            if (`${window.location.pathname}${window.location.search}` !== newPath) {
               window.history.pushState(null, '', newPath);
             }
           }}
@@ -598,7 +639,7 @@ export default function App() {
           setAdminSelectedProductId(pId);
           // Sync URL path as they navigate between admin CMS subviews
           const newPath = `/admin/${view}`;
-          if (window.location.pathname !== newPath) {
+          if (`${window.location.pathname}${window.location.search}` !== newPath) {
             window.history.pushState(null, '', newPath);
           }
         }}
@@ -770,8 +811,8 @@ export default function App() {
         {/* CATALOG & EDITORIAL PAGES */}
         {currentPage.type === 'home' && (
           <div className="space-y-0">
-            <HeroSection onNavigate={handleNavigate} />
-            <CategoryShowcase categories={categories} onNavigate={handleNavigate} />
+            {isHomepageSectionActive('hero') && <HeroSection onNavigate={handleNavigate} />}
+            {isHomepageSectionActive('categories') && <CategoryShowcase categories={categories} onNavigate={handleNavigate} />}
 
             {/* Featured Sarees */}
             <section className="py-10 sm:py-16 lg:py-20 bg-[#FAF8F5]">
@@ -807,7 +848,10 @@ export default function App() {
               </Container>
             </section>
 
-            <CraftsmanshipStory onNavigate={handleNavigate} />
+            <BudgetDiscovery products={activeProducts} onNavigate={handleNavigate} />
+            <SareeTraditions products={activeProducts} onNavigate={handleNavigate} />
+
+            {isHomepageSectionActive('philosophy') && <CraftsmanshipStory onNavigate={handleNavigate} />}
 
             {/* Curated Bedsheets */}
             <section className="py-16 sm:py-20 bg-[#FAF8F5]">
@@ -864,6 +908,8 @@ export default function App() {
           <CollectionPage
             category={currentPage.category}
             subCategoryFilter={currentPage.subCategory}
+            initialPriceMin={currentPage.priceMin}
+            initialPriceMax={currentPage.priceMax}
             onNavigate={handleNavigate}
             wishlistIds={wishlistIds}
             onToggleWishlist={handleToggleWishlist}

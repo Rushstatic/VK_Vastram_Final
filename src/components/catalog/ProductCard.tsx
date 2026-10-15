@@ -1,7 +1,7 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Heart, ShoppingBag, Eye, Check } from 'lucide-react';
 import { Product } from '../../types';
-import { PriceDisplay } from '../ui/PriceDisplay';
+import { PriceDisplay, formatPrice } from '../ui/PriceDisplay';
 import { ImageContainer } from '../ui/ImageContainer';
 import { ColorSwatch } from '../ui/ColorSwatch';
 import { ProductRatingBadge } from './ProductRatingBadge';
@@ -26,6 +26,13 @@ export const ProductCard: React.FC<ProductCardProps> = ({
   const [isHovered, setIsHovered] = useState(false);
   const [justAdded, setJustAdded] = useState(false);
   const [selectedColorIndex, setSelectedColorIndex] = useState(0);
+  const [isImageFlipped, setIsImageFlipped] = useState(false);
+  const [hasViewedDetails, setHasViewedDetails] = useState(false);
+  const flipTimeoutRef = useRef<number | null>(null);
+
+  useEffect(() => () => {
+    if (flipTimeoutRef.current !== null) window.clearTimeout(flipTimeoutRef.current);
+  }, []);
 
   const colors = product.colors && product.colors.length > 0 ? product.colors : [];
   const selectedColor = colors[selectedColorIndex];
@@ -46,9 +53,52 @@ export const ProductCard: React.FC<ProductCardProps> = ({
   }, [product.variants, selectedColor]);
 
   const handleCardClick = () => {
-    if (onSelectProduct) {
-      onSelectProduct(product.slug);
+    if (onSelectProduct) onSelectProduct(product.slug);
+  };
+
+  const revealDetailsBriefly = () => {
+    setHasViewedDetails(true);
+    setIsImageFlipped(true);
+    if (flipTimeoutRef.current !== null) window.clearTimeout(flipTimeoutRef.current);
+    // Briefly reveal the product details, then return to the image. The next tap opens the PDP.
+    flipTimeoutRef.current = window.setTimeout(() => {
+      setIsImageFlipped(false);
+      flipTimeoutRef.current = null;
+    }, 1500);
+  };
+
+  const handleImageStageClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    e.stopPropagation();
+    if (isImageFlipped || hasViewedDetails) {
+      handleCardClick();
+      return;
     }
+    revealDetailsBriefly();
+  };
+
+  const handleImageStageKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (e.target !== e.currentTarget) return;
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      e.stopPropagation();
+      if (isImageFlipped || hasViewedDetails) handleCardClick();
+      else revealDetailsBriefly();
+    }
+    if (e.key === 'Escape') setIsImageFlipped(false);
+  };
+
+  const handleTiltMove = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (window.matchMedia('(hover: none)').matches || isImageFlipped) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = (e.clientX - rect.left) / rect.width;
+    const y = (e.clientY - rect.top) / rect.height;
+    e.currentTarget.style.setProperty('--vk-tilt-x', `${((0.5 - y) * 3).toFixed(2)}deg`);
+    e.currentTarget.style.setProperty('--vk-tilt-y', `${((x - 0.5) * 3).toFixed(2)}deg`);
+  };
+
+  const resetTilt = (e: React.MouseEvent<HTMLDivElement>) => {
+    e.currentTarget.style.setProperty('--vk-tilt-x', '0deg');
+    e.currentTarget.style.setProperty('--vk-tilt-y', '0deg');
   };
 
   const activeStock = activeVariant
@@ -112,8 +162,17 @@ export const ProductCard: React.FC<ProductCardProps> = ({
       onMouseLeave={() => setIsHovered(false)}
       onClick={handleCardClick}
     >
-      {/* Product Image Stage (4:3 ratio) */}
-      <div className="relative overflow-hidden bg-[#F4EFE6] rounded-xs transition-all duration-300">
+      {/* Product Image Stage — fixed 3:4; restrained TiltedCard-inspired interaction */}
+      <div
+        role="group"
+        tabIndex={0}
+        aria-label={`${isImageFlipped ? 'Close details for' : 'Show details for'} ${product.name}`}
+        onClick={handleImageStageClick}
+        onKeyDown={handleImageStageKeyDown}
+        onMouseMove={handleTiltMove}
+        onMouseLeave={resetTilt}
+        style={{ transform: 'perspective(900px) rotateX(var(--vk-tilt-x, 0deg)) rotateY(var(--vk-tilt-y, 0deg))' }}
+        className="relative overflow-hidden bg-[#F4EFE6] rounded-xs transition-transform duration-200 ease-out [transform-style:preserve-3d] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#B88E3E]">
         <ImageContainer
           src={displayImage}
           alt={product.name}
@@ -196,6 +255,23 @@ export const ProductCard: React.FC<ProductCardProps> = ({
           >
             <Eye className="w-3.5 h-3.5" />
           </button>
+        </div>
+
+        {/* Flip-back details: a deliberate first tap, with an explicit path to the PDP. */}
+        <div className={`absolute inset-0 z-20 flex flex-col gap-3 p-3 sm:p-4 bg-[#FAF8F5]/97 backdrop-blur-sm border border-[#B88E3E]/50 transition-all duration-300 [backface-visibility:hidden] motion-reduce:transition-none ${isImageFlipped ? 'opacity-100 [transform:rotateY(0deg)] pointer-events-auto ring-1 ring-inset ring-[#B88E3E]/45 shadow-[inset_0_0_18px_rgba(184,142,62,0.10)]' : 'opacity-0 [transform:rotateY(90deg)] pointer-events-none'}`} aria-hidden={!isImageFlipped}>
+          <div className="min-h-0">
+            <span className="text-[8px] sm:text-[9px] uppercase tracking-[0.18em] text-[#967029]">Saree details</span>
+            <h4 className="font-serif text-sm sm:text-base text-[#1C1917] leading-snug mt-1.5 line-clamp-3 break-words">{product.name}</h4>
+          </div>
+          <div className="min-h-0 flex-1 flex flex-col justify-center gap-2 text-[10px] sm:text-xs text-[#57534E]">
+            <p className="leading-snug line-clamp-2"><span className="text-[#967029]">Fabric</span> · {product.fabric || 'See product details'}</p>
+            <p className="leading-snug line-clamp-2"><span className="text-[#967029]">Weave</span> · {product.weave || product.subCategory || 'Traditional textile'}</p>
+            <p className="font-medium text-sm sm:text-base text-[#1C1917]">{formatPrice(displayPrice)}</p>
+          </div>
+          <button type="button" tabIndex={isImageFlipped ? 0 : -1} onClick={(e) => { e.stopPropagation(); handleCardClick(); }} className="shrink-0 w-full bg-[#78281F] hover:bg-[#642019] text-[#FAF8F5] py-2 sm:py-2.5 px-2 flex items-center justify-center gap-2 text-[10px] sm:text-[11px] uppercase tracking-[0.1em] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#B88E3E]">
+            View Saree <Eye className="w-3.5 h-3.5" />
+          </button>
+          <span className="shrink-0 text-center text-[9px] text-[#78716C]">Details return to image automatically</span>
         </div>
       </div>
 

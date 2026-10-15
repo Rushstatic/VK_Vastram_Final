@@ -13,6 +13,8 @@ import { Button } from '../ui/Button';
 interface CollectionPageProps {
   category: ProductCategory;
   subCategoryFilter?: string;
+  initialPriceMin?: number;
+  initialPriceMax?: number;
   onNavigate: (page: PageView) => void;
   wishlistIds: string[];
   onToggleWishlist: (product: Product) => void;
@@ -25,6 +27,8 @@ interface CollectionPageProps {
 export const CollectionPage: React.FC<CollectionPageProps> = ({
   category,
   subCategoryFilter,
+  initialPriceMin,
+  initialPriceMax,
   onNavigate,
   wishlistIds,
   onToggleWishlist,
@@ -39,13 +43,18 @@ export const CollectionPage: React.FC<CollectionPageProps> = ({
   // Filter State
   const [filters, setFilters] = useState<FilterState>({
     availability: 'all',
-    minPrice: undefined,
-    maxPrice: undefined,
+    minPrice: initialPriceMin,
+    maxPrice: initialPriceMax,
     selectedSubCategories: subCategoryFilter && subCategoryFilter !== 'all' ? [subCategoryFilter] : [],
     selectedFabrics: [],
     selectedColors: [],
     onSaleOnly: false,
   });
+
+  // Apply optional homepage price shortcuts when a collection is opened.
+  useEffect(() => {
+    setFilters((prev) => ({ ...prev, minPrice: initialPriceMin, maxPrice: initialPriceMax }));
+  }, [initialPriceMin, initialPriceMax]);
 
   // Sync subCategoryFilter prop if it changes
   useEffect(() => {
@@ -420,7 +429,7 @@ export const CollectionPage: React.FC<CollectionPageProps> = ({
         {/* Main 12-Column Responsive Layout */}
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
           {/* Desktop Filter Sidebar (Col 3) */}
-          <div className="hidden lg:block lg:col-span-3 sticky top-24">
+          <div className="hidden lg:block lg:col-span-3 sticky top-24 self-start max-h-[calc(100vh-7rem)] overflow-y-auto overscroll-contain pr-2 [scrollbar-width:thin] [scrollbar-color:#B88E3E_transparent]">
             <ProductFilterSidebar
               filters={filters}
               onFilterChange={setFilters}

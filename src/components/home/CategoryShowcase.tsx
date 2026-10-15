@@ -42,14 +42,14 @@ export const CategoryShowcase: React.FC<CategoryShowcaseProps> = ({
           aria-label="Browse textile categories"
         >
           {displayCategories.map((cat, index) => (
-            <div key={cat.id} className="snap-start shrink-0 w-[88%] sm:w-[58%] md:w-auto min-w-0">
+            <div key={cat.id} className="snap-start shrink-0 min-w-0 w-[88%] sm:w-[58%] md:w-auto">
             <ScrollReveal delay={index * 100} duration={650} distance={20}>
               <div
                 onClick={() => onNavigate({ type: 'collection', category: cat.category })}
                 className="group relative flex h-full flex-col bg-[#F4EFE6] rounded-xs overflow-hidden cursor-pointer border border-[#1C1917]/10 transition-all duration-300 hover:border-[#1C1917]/30"
               >
                 {/* Image Box */}
-                <div className="relative aspect-[3/4] overflow-hidden bg-[#EFE9DC]">
+                <div className="relative aspect-[3/4] w-full overflow-hidden bg-[#EFE9DC]">
                   <img
                     src={cat.image}
                     alt={cat.title}

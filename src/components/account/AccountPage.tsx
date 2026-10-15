@@ -405,6 +405,18 @@ export const AccountPage: React.FC<AccountPageProps> = ({
             {/* 1. Profile Tab */}
             {activeTab === 'profile' && (
               <div className="bg-[#FAF8F5] border border-[#1C1917]/10 rounded-xs p-6 sm:p-8 space-y-6 shadow-2xs">
+                <div className="relative overflow-hidden rounded-xl border border-[#B88E3E]/35 bg-gradient-to-br from-[#FFFEFB] via-[#F4EFE6] to-[#E9DFCF] p-5 sm:p-6 shadow-[0_12px_28px_-20px_rgba(28,25,23,0.45)]">
+                  <div aria-hidden="true" className="pointer-events-none absolute -inset-y-10 -left-1/3 w-1/3 rotate-[18deg] bg-gradient-to-r from-transparent via-white/70 to-transparent vk-profile-sheen" />
+                  <div className="relative flex items-start justify-between gap-4">
+                    <div className="min-w-0">
+                      <span className="text-[9px] uppercase tracking-[0.24em] text-[#967029] font-semibold">VK VASTRAM · MEMBER PROFILE</span>
+                      <h3 className="font-serif text-xl sm:text-2xl text-[#1C1917] mt-2 truncate">{profile?.fullName || userEmail.split('@')[0]}</h3>
+                      <p className="text-xs text-[#57534E] mt-1 truncate">{userEmail}</p>
+                    </div>
+                    <div className="shrink-0 w-10 h-10 rounded-full border border-[#B88E3E]/50 bg-[#FAF8F5]/70 flex items-center justify-center font-serif text-[#78281F]" aria-hidden="true">VK</div>
+                  </div>
+                  <div className="relative mt-5 pt-3 border-t border-[#B88E3E]/25 flex items-center justify-between text-[10px] uppercase tracking-[0.16em] text-[#78716C]"><span>Personal details</span><span>Vastram Coins · {profile?.loyaltyCoins || 0}</span></div>
+                </div>
                 <div className="border-b border-[#1C1917]/10 pb-4">
                   <h2 className="font-serif text-xl text-[#1C1917] font-normal">
                     Personal Information

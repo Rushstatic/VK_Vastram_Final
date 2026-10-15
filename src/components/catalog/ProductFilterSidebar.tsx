@@ -23,6 +23,7 @@ interface ProductFilterSidebarProps {
   priceBounds: { min: number; max: number };
   totalCount: number;
   className?: string;
+  disableSectionScroll?: boolean;
 }
 
 export const ProductFilterSidebar: React.FC<ProductFilterSidebarProps> = ({
@@ -35,6 +36,7 @@ export const ProductFilterSidebar: React.FC<ProductFilterSidebarProps> = ({
   priceBounds,
   totalCount,
   className = '',
+  disableSectionScroll = false,
 }) => {
   const isMeaningless = (val?: string | null) => {
     if (!val) return true;
@@ -193,7 +195,7 @@ export const ProductFilterSidebar: React.FC<ProductFilterSidebarProps> = ({
           <h4 className="text-[11px] uppercase tracking-wider font-semibold text-[#1C1917]">
             Weave / Style
           </h4>
-          <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
+          <div className={`space-y-1.5 ${disableSectionScroll ? '' : 'max-h-48 overflow-y-auto pr-1'}`}>
             {cleanSubCategories.map((sub) => {
               const checked = filters.selectedSubCategories.includes(sub);
               return (
@@ -223,7 +225,7 @@ export const ProductFilterSidebar: React.FC<ProductFilterSidebarProps> = ({
           <h4 className="text-[11px] uppercase tracking-wider font-semibold text-[#1C1917]">
             Fabric
           </h4>
-          <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
+          <div className={`space-y-1.5 ${disableSectionScroll ? '' : 'max-h-48 overflow-y-auto pr-1'}`}>
             {cleanFabrics.map((fabric) => {
               const checked = filters.selectedFabrics.includes(fabric);
               return (

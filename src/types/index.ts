@@ -242,7 +242,7 @@ export type AdminSubView =
 
 export type PageView =
   | { type: 'home' }
-  | { type: 'collection'; category: ProductCategory; subCategory?: string }
+  | { type: 'collection'; category: ProductCategory; subCategory?: string; priceMin?: number; priceMax?: number }
   | { type: 'product'; slug: string }
   | { type: 'sale' }
   | { type: 'about' }

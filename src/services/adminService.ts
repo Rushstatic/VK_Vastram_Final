@@ -1807,8 +1807,8 @@ export const adminService = {
         .eq('id', id);
 
       if (!error) {
-        // Refresh cache asynchronously
-        this.getHomepageSections();
+        // Refresh both memory and browser caches before notifying storefront listeners.
+        await this.getHomepageSections();
       }
 
       return !error;

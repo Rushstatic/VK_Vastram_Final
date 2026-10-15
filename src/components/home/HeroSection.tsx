@@ -47,6 +47,7 @@ export const HeroSection: React.FC<HeroSectionProps> = ({ onNavigate }) => {
 
     const ctx = gsap.context(() => {
       const items = el.querySelectorAll('.gsap-hero-anim');
+      const headingWords = el.querySelectorAll('.gsap-hero-word');
       if (items.length > 0) {
         gsap.fromTo(
           items,
@@ -60,6 +61,9 @@ export const HeroSection: React.FC<HeroSectionProps> = ({ onNavigate }) => {
             clearProps: 'transform',
           }
         );
+      }
+      if (headingWords.length > 0) {
+        gsap.fromTo(headingWords, { autoAlpha: 0, y: 12 }, { autoAlpha: 1, y: 0, duration: 0.62, stagger: 0.035, ease: 'power2.out', delay: 0.08, clearProps: 'transform' });
       }
     }, narrativeRef);
 
@@ -360,8 +364,8 @@ export const HeroSection: React.FC<HeroSectionProps> = ({ onNavigate }) => {
                 </span>
               </div>
 
-              <h1 className="gsap-hero-anim font-serif text-3xl sm:text-4xl lg:text-5xl font-normal text-[#1C1917] tracking-tight leading-[1.15] text-balance">
-                {currentSlide.heading}
+              <h1 className="font-serif text-3xl sm:text-4xl lg:text-5xl font-normal text-[#1C1917] tracking-tight leading-[1.15] text-balance" aria-label={currentSlide.heading}>
+                {currentSlide.heading.split(/(\s+)/).map((part, index) => part.trim() ? <span key={`${index}-${part}`} className="gsap-hero-word inline-block" aria-hidden="true">{part}</span> : part)}
               </h1>
 
               <p className="gsap-hero-anim mt-4 sm:mt-5 text-sm sm:text-base text-[#57534E] leading-relaxed max-w-lg font-normal text-balance">

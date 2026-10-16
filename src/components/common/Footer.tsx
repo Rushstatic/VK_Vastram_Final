@@ -8,9 +8,10 @@ import { VKVastramLogo } from './VKVastramLogo';
 interface FooterProps {
   onNavigate: (page: PageView) => void;
   categories?: any[];
+  saleNavigationPage?: PageView | null;
 }
 
-export const Footer: React.FC<FooterProps> = ({ onNavigate, categories }) => {
+export const Footer: React.FC<FooterProps> = ({ onNavigate, categories, saleNavigationPage }) => {
   const { settings } = useSiteSettings();
   const storeName = settings?.storeName || 'VK VASTRAM';
   const supportEmail = settings?.supportEmail || 'care@vkvastram.com';
@@ -122,14 +123,16 @@ export const Footer: React.FC<FooterProps> = ({ onNavigate, categories }) => {
                   </button>
                 </li>
               ))}
-              <li>
-                <button
-                  onClick={() => onNavigate({ type: 'sale' })}
-                  className="hover:text-[#FAF8F5] transition-colors cursor-pointer text-left text-[#E5D7B7]"
-                >
-                  Seasonal Sale
-                </button>
-              </li>
+              {saleNavigationPage !== null && (
+                <li>
+                  <button
+                    onClick={() => onNavigate(saleNavigationPage || { type: 'sale' })}
+                    className="hover:text-[#FAF8F5] transition-colors cursor-pointer text-left text-[#E5D7B7]"
+                  >
+                    Seasonal Sale
+                  </button>
+                </li>
+              )}
             </ul>
           </div>
 
@@ -145,6 +148,14 @@ export const Footer: React.FC<FooterProps> = ({ onNavigate, categories }) => {
                   className="hover:text-[#FAF8F5] transition-colors cursor-pointer text-left"
                 >
                   Frequently Asked Questions
+                </button>
+              </li>
+              <li>
+                <button
+                  onClick={() => onNavigate({ type: 'track-order' })}
+                  className="hover:text-[#FAF8F5] transition-colors cursor-pointer text-left"
+                >
+                  Track Your Order
                 </button>
               </li>
               <li>

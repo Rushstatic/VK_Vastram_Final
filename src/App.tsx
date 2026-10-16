@@ -25,6 +25,7 @@ import { WishlistPage } from './components/pages/WishlistPage';
 import { CartPage } from './components/pages/CartPage';
 import { CheckoutPage } from './components/checkout/CheckoutPage';
 import { OrderConfirmationPage } from './components/checkout/OrderConfirmationPage';
+import { TrackOrderPage } from './components/pages/TrackOrderPage';
 import { CustomerLogin } from './components/auth/CustomerLogin';
 import { CustomerRegister } from './components/auth/CustomerRegister';
 import { ForgotPassword } from './components/auth/ForgotPassword';
@@ -60,7 +61,7 @@ import { Product, PageView, CartItem, AdminSubView } from './types';
 import { PRODUCTS } from './data/catalog';
 import { ArrowRight } from 'lucide-react';
 import { useSiteSettings } from './hooks/useSiteSettings';
-import { adminService, HomepageSectionData } from './services/adminService';
+import { adminService, HomepageSectionData, CollectionAdminData } from './services/adminService';
 
 import { sanitizeQuantity, MAX_CART_ITEM_QUANTITY } from './lib/validation';
 
@@ -74,6 +75,7 @@ const getPathFromPage = (page: PageView): string => {
     case 'wishlist': return '/wishlist';
     case 'cart': return '/cart';
     case 'checkout': return '/checkout';
+    case 'track-order': return '/track-order';
     case 'login': return '/login';
     case 'register': return '/register';
     case 'forgot-password': return '/forgot-password';
@@ -85,6 +87,7 @@ const getPathFromPage = (page: PageView): string => {
       return `/admin/${sub}`;
     }
     case 'collection': {
+      if (page.collectionSlug) return `/collections/${encodeURIComponent(page.collectionSlug)}`;
       const params = new URLSearchParams();
       if (page.priceMin !== undefined) params.set('minPrice', String(page.priceMin));
       if (page.priceMax !== undefined) params.set('maxPrice', String(page.priceMax));
@@ -108,6 +111,7 @@ const getPageFromPath = (path: string, search = ''): PageView => {
   if (cleanPath === '/wishlist') return { type: 'wishlist' };
   if (cleanPath === '/cart') return { type: 'cart' };
   if (cleanPath === '/checkout') return { type: 'checkout' };
+  if (cleanPath === '/track-order') return { type: 'track-order' };
   if (cleanPath === '/login') return { type: 'login' };
   if (cleanPath === '/register') return { type: 'register' };
   if (cleanPath === '/forgot-password') return { type: 'forgot-password' };
@@ -129,6 +133,10 @@ const getPageFromPath = (path: string, search = ''): PageView => {
     return { type: 'admin', subView: 'dashboard' };
   }
   
+  if (cleanPath.startsWith('/collections/')) {
+    const slug = cleanPath.split('/')[2];
+    return slug ? { type: 'collection', category: 'all', collectionSlug: decodeURIComponent(slug) } : { type: 'home' };
+  }
   if (cleanPath.startsWith('/collection/')) {
     const cat = cleanPath.split('/')[2];
     const min = Number(query.get('minPrice'));
@@ -179,27 +187,53 @@ export default function App() {
 
   const { settings } = useSiteSettings();
   const storeName = settings?.storeName || 'VK VASTRAM';
-  const [homepageSections, setHomepageSections] = useState<HomepageSectionData[] | null>(null);
+  const [homepageSections, setHomepageSections] = useState<HomepageSectionData[] | null>(() => adminService.getCachedHomepageSections());
+  const [cmsCollections, setCmsCollections] = useState<CollectionAdminData[]>([]);
+  const [cmsCollectionsLoaded, setCmsCollectionsLoaded] = useState(false);
 
   useEffect(() => {
     let mounted = true;
     const refreshHomepageSections = async () => {
       const sections = await adminService.getHomepageSections();
-      if (mounted) setHomepageSections(sections.length ? sections : null);
+      if (mounted) setHomepageSections(sections);
+    };
+    const refreshCollections = async () => {
+      const collections = await adminService.getCollections();
+      if (mounted) {
+        // Keep active and archived rows locally: storefront modules need to respect
+        // archive state rather than treating an archived collection as non-existent.
+        setCmsCollections(collections);
+        setCmsCollectionsLoaded(true);
+      }
     };
     void refreshHomepageSections();
+    void refreshCollections();
     window.addEventListener('vk_homepage_updated', refreshHomepageSections);
+    window.addEventListener('vk_collections_updated', refreshCollections);
+    // Refresh after returning from another tab/device workflow so archived/active
+    // CMS content cannot remain stale until a full reload.
+    window.addEventListener('focus', refreshHomepageSections);
+    window.addEventListener('focus', refreshCollections);
+    window.addEventListener('storage', refreshHomepageSections);
+    window.addEventListener('storage', refreshCollections);
     return () => {
       mounted = false;
       window.removeEventListener('vk_homepage_updated', refreshHomepageSections);
+      window.removeEventListener('vk_collections_updated', refreshCollections);
+      window.removeEventListener('focus', refreshHomepageSections);
+      window.removeEventListener('focus', refreshCollections);
+      window.removeEventListener('storage', refreshHomepageSections);
+      window.removeEventListener('storage', refreshCollections);
     };
   }, []);
 
   const isHomepageSectionActive = (sectionType: string) => {
     // Avoid briefly flashing the Philosophy block before the saved CMS visibility has loaded.
-    if (!homepageSections) return !isSupabaseConfigured() || sectionType !== 'philosophy';
+    if (!homepageSections) return !isSupabaseConfigured();
     const section = homepageSections.find((item) => item.sectionType?.toLowerCase() === sectionType.toLowerCase());
-    return section ? section.isActive !== false : true;
+    // When Supabase is configured, CMS is authoritative: missing/inactive rows must not
+    // silently re-enable a section that the administrator has disabled.
+    return Boolean(section && section.isActive !== false);
   };
 
   // Admin Auth state
@@ -592,6 +626,31 @@ export default function App() {
   const activeProducts = products.filter((p) => p.status !== 'draft' && p.status !== 'archived');
   const featuredSarees = activeProducts.filter((p) => p.category === 'sarees').slice(0, 3);
   const featuredBedsheets = activeProducts.filter((p) => p.category === 'bedsheets').slice(0, 3);
+  const isSeasonalSaleCollection = (collection: CollectionAdminData) => {
+    const slug = collection.slug?.trim().toLowerCase();
+    const name = collection.name?.trim().toLowerCase();
+    return slug === 'seasonal-archive' || slug === 'seasonal-sale' || name === 'seasonal sale';
+  };
+  const seasonalCollectionRecord = cmsCollections.find(isSeasonalSaleCollection);
+  const activeSeasonalCollection = seasonalCollectionRecord?.isActive !== false ? seasonalCollectionRecord : undefined;
+  const seasonalSaleProducts = activeSeasonalCollection
+    ? activeProducts.filter((product) => product.collectionId === activeSeasonalCollection.id).slice(0, 4)
+    : [];
+  const artisanalBedsheetsCollection = cmsCollections.find((collection) => {
+    const slug = collection.slug?.trim().toLowerCase();
+    const name = collection.name?.trim().toLowerCase();
+    return slug === 'artisanal-bedsheets' || name === 'artisanal bedsheets';
+  });
+  // If an admin has explicitly archived the CMS collection, do not keep showing
+  // the hardcoded bedsheet showcase on the homepage.
+  const showFeaturedBedsheets = !isSupabaseConfigured()
+    ? true
+    : cmsCollectionsLoaded
+      ? !(artisanalBedsheetsCollection && artisanalBedsheetsCollection.isActive === false)
+      : false;
+  const saleNavigationPage: PageView | null = seasonalCollectionRecord
+    ? (activeSeasonalCollection ? { type: 'collection', category: 'all', collectionSlug: activeSeasonalCollection.slug } : null)
+    : { type: 'sale' };
 
   // ==========================================
   // ADMIN VIEW ROUTER
@@ -731,6 +790,8 @@ export default function App() {
         key={currentPage.type + ('category' in currentPage ? String(currentPage.category) : '') + ('slug' in currentPage ? String(currentPage.slug) : '')}
         className="flex-1 animate-page-enter"
       >
+        {currentPage.type === 'track-order' && <TrackOrderPage />}
+
         {/* CHECKOUT & ORDER CONFIRMATION */}
         {currentPage.type === 'checkout' && (
           <CheckoutPage
@@ -851,10 +912,52 @@ export default function App() {
             <BudgetDiscovery products={activeProducts} onNavigate={handleNavigate} />
             <SareeTraditions products={activeProducts} onNavigate={handleNavigate} />
 
+            {/* Active Seasonal Sale collection is a storefront feature, not just an admin record. */}
+            {activeSeasonalCollection && (
+              <section className="py-9 sm:py-16 bg-[#FAF8F5] border-t border-[#1C1917]/10">
+                <Container>
+                  <ScrollReveal distance={16} duration={550}>
+                    <SectionHeading
+                      kicker="Seasonal Edit"
+                      title={activeSeasonalCollection.name}
+                      subtitle={activeSeasonalCollection.description || 'A considered selection of limited seasonal pieces.'}
+                      action={
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => handleNavigate({ type: 'collection', category: 'all', collectionSlug: activeSeasonalCollection.slug })}
+                          rightIcon={<ArrowRight className="w-4 h-4" />}
+                        >
+                          Explore the Edit
+                        </Button>
+                      }
+                    />
+                  </ScrollReveal>
+                  {seasonalSaleProducts.length > 0 ? (
+                    <ProductGrid
+                      products={seasonalSaleProducts}
+                      wishlistIds={wishlistIds}
+                      columns={4}
+                      mobileCarousel
+                      onToggleWishlist={handleToggleWishlist}
+                      onSelectProduct={(slug) => handleNavigate({ type: 'product', slug })}
+                      onQuickView={(product) => setQuickViewProduct(product)}
+                      onAddToCart={(product) => handleAddToCart(product, 1)}
+                    />
+                  ) : (
+                    <div className="border border-[#1C1917]/10 bg-[#F4EFE6]/45 px-5 py-8 text-center">
+                      <p className="font-serif text-lg text-[#1C1917]">This seasonal edit is being curated.</p>
+                      <p className="mt-2 text-sm text-[#78716C]">Please check back soon for the selected pieces.</p>
+                    </div>
+                  )}
+                </Container>
+              </section>
+            )}
+
             {isHomepageSectionActive('philosophy') && <CraftsmanshipStory onNavigate={handleNavigate} />}
 
-            {/* Curated Bedsheets */}
-            <section className="py-16 sm:py-20 bg-[#FAF8F5]">
+            {/* Curated Bedsheets — respects an explicit CMS archive state. */}
+            {showFeaturedBedsheets && <section className="pt-9 pb-12 sm:py-20 bg-[#FAF8F5]">
               <Container>
                 <ScrollReveal distance={16} duration={550}>
                   <SectionHeading
@@ -884,7 +987,7 @@ export default function App() {
                   onAddToCart={(p) => handleAddToCart(p, 1)}
                 />
               </Container>
-            </section>
+            </section>}
 
             {/* Recently Viewed Rail (Homepage Discovery) */}
             {recentlyViewedService.getRecentlyViewed(products).length > 0 && (
@@ -904,21 +1007,31 @@ export default function App() {
           </div>
         )}
 
-        {currentPage.type === 'collection' && (
-          <CollectionPage
-            category={currentPage.category}
-            subCategoryFilter={currentPage.subCategory}
-            initialPriceMin={currentPage.priceMin}
-            initialPriceMax={currentPage.priceMax}
-            onNavigate={handleNavigate}
-            wishlistIds={wishlistIds}
-            onToggleWishlist={handleToggleWishlist}
-            onQuickView={(p) => setQuickViewProduct(p)}
-            onAddToCart={(p) => handleAddToCart(p, 1)}
-            products={products}
-            categories={categories}
-          />
-        )}
+        {currentPage.type === 'collection' && (() => {
+          const cmsCollection = currentPage.collectionSlug
+            ? cmsCollections.find((item) => item.slug.toLowerCase() === currentPage.collectionSlug!.toLowerCase() && item.isActive !== false)
+            : undefined;
+          return (
+            <CollectionPage
+              category={currentPage.collectionSlug ? 'all' : currentPage.category}
+              collectionId={currentPage.collectionSlug ? (cmsCollection?.id || '__missing_cms_collection__') : undefined}
+              collectionTitle={currentPage.collectionSlug ? (cmsCollection?.name || 'Collection unavailable') : undefined}
+              collectionSubtitle={currentPage.collectionSlug ? (cmsCollection?.description || 'This curated collection is not available right now.') : undefined}
+              collectionImageUrl={cmsCollection?.imageUrl}
+              collectionBannerImageUrl={cmsCollection?.bannerImageUrl}
+              subCategoryFilter={currentPage.subCategory}
+              initialPriceMin={currentPage.priceMin}
+              initialPriceMax={currentPage.priceMax}
+              onNavigate={handleNavigate}
+              wishlistIds={wishlistIds}
+              onToggleWishlist={handleToggleWishlist}
+              onQuickView={(p) => setQuickViewProduct(p)}
+              onAddToCart={(p) => handleAddToCart(p, 1)}
+              products={products}
+              categories={categories}
+            />
+          );
+        })()}
 
         {currentPage.type === 'product' && (
           <ProductDetailPage
@@ -971,7 +1084,7 @@ export default function App() {
       </main>
 
       {/* 4. Editorial Footer */}
-      <Footer categories={categories} onNavigate={handleNavigate} />
+      <Footer categories={categories} onNavigate={handleNavigate} saleNavigationPage={saleNavigationPage} />
 
 
       {bagWaveKey > 0 && (

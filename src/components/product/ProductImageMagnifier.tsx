@@ -4,6 +4,7 @@ import { Sparkles, ZoomIn } from 'lucide-react';
 
 interface ProductImageMagnifierProps {
   src: string;
+  fallbackSrc?: string;
   alt: string;
   zoomLevel?: number; // e.g. 2.2x to 2.8x
   aspectRatio?: '3/4' | '1/1' | '4/5';
@@ -33,6 +34,7 @@ function parseFocalPercent(val?: string | number): string {
 
 export const ProductImageMagnifier: React.FC<ProductImageMagnifierProps> = ({
   src,
+  fallbackSrc,
   alt,
   zoomLevel = 2.4,
   aspectRatio = '3/4',
@@ -53,20 +55,21 @@ export const ProductImageMagnifier: React.FC<ProductImageMagnifierProps> = ({
   const [prefersReducedMotion, setPrefersReducedMotion] = useState(false);
 
   const normalizedSrc = normalizeImageUrl(src);
+  const normalizedFallbackSrc = normalizeImageUrl(fallbackSrc);
+  const [activeSrc, setActiveSrc] = useState('');
 
-  // Immediately reset load status when image src changes — eliminates cross-variant buffer flash
+  // Reset the primary/fallback selection before paint when URLs change.
   useLayoutEffect(() => {
-    // Reset before paint when the URL changes, preventing a cached onLoad event
-    // from being overwritten by a later passive effect.
+    setActiveSrc(normalizedSrc || normalizedFallbackSrc);
     setLoadedSrc(null);
-    setHasError(!normalizedSrc);
-  }, [normalizedSrc]);
+    setHasError(!(normalizedSrc || normalizedFallbackSrc));
+  }, [normalizedSrc, normalizedFallbackSrc]);
 
   useEffect(() => {
-    if (!normalizedSrc || loadedSrc === normalizedSrc || hasError) return;
+    if (!activeSrc || loadedSrc === activeSrc || hasError) return;
     const timeout = window.setTimeout(() => setHasError(true), 12000);
     return () => window.clearTimeout(timeout);
-  }, [normalizedSrc, loadedSrc, hasError]);
+  }, [activeSrc, loadedSrc, hasError]);
 
   // Check prefers-reduced-motion
   useEffect(() => {
@@ -88,9 +91,11 @@ export const ProductImageMagnifier: React.FC<ProductImageMagnifierProps> = ({
   }, [prefersReducedMotion]);
 
   const handleMouseEnter = () => {
-    if (!prefersReducedMotion) {
-      setIsHovering(true);
-    }
+    // Touch browsers can synthesize mouseenter after a tap. Only enable the
+    // magnifier when the current device genuinely supports hover/fine pointers.
+    const supportsHover = typeof window !== 'undefined' &&
+      window.matchMedia('(hover: hover) and (pointer: fine)').matches;
+    if (supportsHover && !prefersReducedMotion) setIsHovering(true);
   };
 
   const handleMouseLeave = () => {
@@ -103,7 +108,7 @@ export const ProductImageMagnifier: React.FC<ProductImageMagnifierProps> = ({
     '4/5': 'aspect-[4/5]',
   }[aspectRatio];
 
-  const isLoaded = Boolean(normalizedSrc && loadedSrc === normalizedSrc && !hasError);
+  const isLoaded = Boolean(activeSrc && loadedSrc === activeSrc && !hasError);
 
   const focalXCss = parseFocalPercent(focalPositionX);
   const focalYCss = parseFocalPercent(focalPositionY);
@@ -133,17 +138,26 @@ export const ProductImageMagnifier: React.FC<ProductImageMagnifierProps> = ({
       )}
 
       {/* 3. Base High Quality Image (Keyed to clear previous buffer immediately) */}
-      {normalizedSrc && !hasError && (
+      {activeSrc && !hasError && (
         <img
-          key={normalizedSrc}
-          src={normalizedSrc}
+          key={activeSrc}
+          src={activeSrc}
           alt={alt}
+          referrerPolicy="no-referrer"
           loading={priority ? 'eager' : 'lazy'}
           fetchPriority={priority ? 'high' : 'auto'}
-          onLoad={() => setLoadedSrc(normalizedSrc)}
-          onError={() => setHasError(true)}
+          onLoad={() => setLoadedSrc(activeSrc)}
+          onError={() => {
+            if (normalizedFallbackSrc && activeSrc !== normalizedFallbackSrc) {
+              setLoadedSrc(null);
+              setActiveSrc(normalizedFallbackSrc);
+              setHasError(false);
+            } else {
+              setHasError(true);
+            }
+          }}
           className={`w-full h-full transition-opacity duration-300 ${
-            isLoaded && !isHovering ? 'opacity-100' : 'opacity-0'
+            isLoaded ? 'opacity-100' : 'opacity-0'
           }`}
           style={{
             objectFit: fit,
@@ -168,7 +182,7 @@ export const ProductImageMagnifier: React.FC<ProductImageMagnifierProps> = ({
         <div
           className="absolute inset-0 pointer-events-none transition-opacity duration-200"
           style={{
-            backgroundImage: `url("${normalizedSrc}")`,
+            backgroundImage: `url("${activeSrc}")`,
             backgroundPosition: `${cursorPos.x}% ${cursorPos.y}%`,
             backgroundSize: `${zoomLevel * 100}%`,
             backgroundRepeat: 'no-repeat',

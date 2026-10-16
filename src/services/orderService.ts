@@ -286,7 +286,7 @@ export const orderService = {
         .select(`
           *,
           items:order_items(*),
-          payments:payments(*)
+          payments:payments(id,order_id,provider,provider_order_id,provider_payment_id,amount,currency,status,method,verified_at,created_at)
         `)
         .eq('user_id', userId)
         .order('created_at', { ascending: false });
@@ -325,12 +325,10 @@ export const orderService = {
                 provider: paymentRecord.provider,
                 providerOrderId: paymentRecord.provider_order_id,
                 providerPaymentId: paymentRecord.provider_payment_id,
-                providerSignature: paymentRecord.provider_signature,
                 amount: Number(paymentRecord.amount),
                 currency: paymentRecord.currency,
                 status: paymentRecord.status,
                 method: paymentRecord.method,
-                errorReason: paymentRecord.error_reason,
                 verifiedAt: paymentRecord.verified_at,
                 createdAt: paymentRecord.created_at,
               }
@@ -484,7 +482,7 @@ export const orderService = {
         .select(`
           *,
           items:order_items(*),
-          payments:payments(*)
+          payments:payments(id,order_id,provider,provider_order_id,provider_payment_id,amount,currency,status,method,verified_at,created_at)
         `)
         .order('created_at', { ascending: false });
 
@@ -522,12 +520,10 @@ export const orderService = {
                 provider: paymentRecord.provider,
                 providerOrderId: paymentRecord.provider_order_id,
                 providerPaymentId: paymentRecord.provider_payment_id,
-                providerSignature: paymentRecord.provider_signature,
                 amount: Number(paymentRecord.amount),
                 currency: paymentRecord.currency,
                 status: paymentRecord.status,
                 method: paymentRecord.method,
-                errorReason: paymentRecord.error_reason,
                 verifiedAt: paymentRecord.verified_at,
                 createdAt: paymentRecord.created_at,
               }

@@ -44,8 +44,13 @@ export const SareeTraditions: React.FC<SareeTraditionsProps> = ({ products, onNa
     };
     void loadCmsTypes();
     const refresh = () => { void loadCmsTypes(); };
+    const channel = (supabase as any).channel('public-saree-type-settings-sync')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'site_settings', filter: 'key=eq.saree_types' }, refresh)
+      .subscribe();
     window.addEventListener('vk_saree_types_updated', refresh);
-    return () => { active = false; window.removeEventListener('vk_saree_types_updated', refresh); };
+    window.addEventListener('storage', refresh);
+    window.addEventListener('focus', refresh);
+    return () => { active = false; window.removeEventListener('vk_saree_types_updated', refresh); window.removeEventListener('storage', refresh); window.removeEventListener('focus', refresh); void (supabase as any).removeChannel(channel); };
   }, []);
 
   const availableTypes = cmsTypes ?? Array.from(
@@ -62,10 +67,10 @@ export const SareeTraditions: React.FC<SareeTraditionsProps> = ({ products, onNa
   if (!traditions.length) return null;
 
   return (
-    <section className="py-10 sm:py-16 bg-[#FAF8F5]">
+    <section className="pt-8 pb-7 sm:py-16 bg-[#FAF8F5]">
       <Container>
         <ScrollReveal distance={14} duration={550}>
-          <div className="flex items-end justify-between gap-4 mb-6 sm:mb-8">
+          <div className="flex items-end justify-between gap-4 mb-5 sm:mb-8">
             <div className="max-w-2xl">
               <span className="text-[10px] uppercase tracking-[0.24em] text-[#967029] font-medium">The Stories in Every Weave</span>
               <AnimatedSplitHeading text="Explore Saree Traditions" className="font-serif text-2xl sm:text-3xl text-[#1C1917] mt-2" />
@@ -74,10 +79,10 @@ export const SareeTraditions: React.FC<SareeTraditionsProps> = ({ products, onNa
             <button type="button" onClick={() => onNavigate({ type: 'collection', category: 'sarees' })} className="hidden sm:inline-flex items-center gap-1.5 text-xs text-[#78281F] hover:text-[#967029] transition-colors">All sarees <ArrowUpRight className="w-4 h-4" /></button>
           </div>
         </ScrollReveal>
-        <div className="-mx-4 px-4 sm:mx-0 sm:px-0 flex gap-4 overflow-x-auto snap-x snap-mandatory pb-3 overscroll-x-contain sm:grid sm:grid-cols-3 lg:grid-cols-6 sm:overflow-visible [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+        <div className="-mx-4 px-4 sm:mx-0 sm:px-0 flex items-start gap-3 sm:gap-4 overflow-x-auto snap-x snap-mandatory pb-1 overscroll-x-contain sm:grid sm:grid-cols-3 lg:grid-cols-6 sm:overflow-visible [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           {traditions.map(({ name, product, imageUrl }, index) => (
-            <ScrollReveal key={name} delay={index * 55} duration={500} distance={12}>
-              <button type="button" onClick={() => onNavigate({ type: 'collection', category: 'sarees', subCategory: name })} className="group snap-start shrink-0 w-[38vw] max-w-[176px] sm:w-auto sm:max-w-none text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#B88E3E] rounded-full">
+            <ScrollReveal key={name} className="w-[min(64vw,15rem)] shrink-0 sm:w-auto sm:min-w-0" delay={index * 55} duration={500} distance={12}>
+              <button type="button" onClick={() => onNavigate({ type: 'collection', category: 'sarees', subCategory: name })} className="group snap-start block w-full sm:w-full text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#B88E3E] rounded-full">
                 <div className="relative aspect-square w-full overflow-hidden bg-[#EFE9DC] rounded-full border border-[#B88E3E]/60 p-1 shadow-sm">
                   {(imageUrl || product?.primaryImage) ? (
                     <img src={imageUrl || product?.primaryImage || ''} alt={`${name} saree`} loading="lazy" decoding="async" fetchPriority="low" className="w-full h-full object-cover rounded-full transition-transform duration-500 ease-out motion-reduce:transition-none group-hover:scale-[1.035]" />

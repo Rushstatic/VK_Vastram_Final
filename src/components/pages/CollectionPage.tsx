@@ -13,6 +13,11 @@ import { Button } from '../ui/Button';
 interface CollectionPageProps {
   category: ProductCategory;
   subCategoryFilter?: string;
+  collectionId?: string;
+  collectionTitle?: string;
+  collectionSubtitle?: string;
+  collectionImageUrl?: string;
+  collectionBannerImageUrl?: string;
   initialPriceMin?: number;
   initialPriceMax?: number;
   onNavigate: (page: PageView) => void;
@@ -27,6 +32,11 @@ interface CollectionPageProps {
 export const CollectionPage: React.FC<CollectionPageProps> = ({
   category,
   subCategoryFilter,
+  collectionId,
+  collectionTitle,
+  collectionSubtitle,
+  collectionImageUrl,
+  collectionBannerImageUrl,
   initialPriceMin,
   initialPriceMax,
   onNavigate,
@@ -51,6 +61,13 @@ export const CollectionPage: React.FC<CollectionPageProps> = ({
     onSaleOnly: false,
   });
 
+
+  useEffect(() => {
+    if (collectionId) {
+      setFilters({ availability: 'all', minPrice: undefined, maxPrice: undefined, selectedSubCategories: [], selectedFabrics: [], selectedColors: [], onSaleOnly: false });
+    }
+  }, [collectionId]);
+
   // Apply optional homepage price shortcuts when a collection is opened.
   useEffect(() => {
     setFilters((prev) => ({ ...prev, minPrice: initialPriceMin, maxPrice: initialPriceMax }));
@@ -66,15 +83,22 @@ export const CollectionPage: React.FC<CollectionPageProps> = ({
     }
   }, [subCategoryFilter]);
 
-  const categoryMeta = categories.find((c) => c.category === category) || {
+  const baseCategoryMeta = categories.find((c) => c.category === category) || {
     title: category === 'all' ? 'All Handloom Creations' : 'Textile Collection',
     subtitle: 'Authentic Indian handlooms, ceremonial silks, and curated home goods.',
+  };
+  const categoryMeta = {
+    title: collectionTitle || baseCategoryMeta.title,
+    subtitle: collectionSubtitle || baseCategoryMeta.subtitle,
   };
 
   // Base product pool for this category
   const categoryPool = useMemo(() => {
-    return products.filter((p) => category === 'all' || p.category === category);
-  }, [category, products]);
+    return products.filter((p) => {
+      if (collectionId) return p.collectionId === collectionId;
+      return category === 'all' || p.category === category;
+    });
+  }, [category, collectionId, products]);
 
   // Meaningless / placeholder filter suppression
   const isMeaninglessValue = (val?: string | null): boolean => {
@@ -240,6 +264,19 @@ export const CollectionPage: React.FC<CollectionPageProps> = ({
           <span>/</span>
           <span className="text-[#1C1917] font-medium">{categoryMeta.title}</span>
         </nav>
+
+        {/* CMS-managed collection banner */}
+        {(collectionBannerImageUrl || collectionImageUrl) && collectionId && (
+          <div className="mb-8 overflow-hidden border border-[#1C1917]/10 bg-[#F4EFE6]">
+            <img
+              src={collectionBannerImageUrl || collectionImageUrl}
+              alt={categoryMeta.title}
+              loading="eager"
+              decoding="async"
+              className="w-full aspect-[16/7] sm:aspect-[21/7] object-cover"
+            />
+          </div>
+        )}
 
         {/* Collection Header */}
         <div className="border-b border-[#1C1917]/10 pb-8 mb-8">

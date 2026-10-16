@@ -62,7 +62,7 @@ export function normalizeImageUrl(url?: string | null): string {
   // Example: /storage/v1/object/public/store-assets/catalog/saree.jpg
   const relativeStorage = trimmed.match(/^\/?storage\/v1\/object\/public\/([^/]+)\/(.+)$/i);
   if (relativeStorage && SUPABASE_URL) {
-    return `${SUPABASE_URL.replace(/\/$/, '')}/storage/v1/object/public/${relativeStorage[1]}/${relativeStorage[2].split('/').map(encodeURIComponent).join('/')}`;
+    return `${SUPABASE_URL.replace(/\/+$/, '')}/storage/v1/object/public/${relativeStorage[1]}/${relativeStorage[2].split('/').map(encodeURIComponent).join('/')}`;
   }
 
   // 5. Base64 data URL
@@ -81,7 +81,7 @@ export function normalizeImageUrl(url?: string | null): string {
       ? trimmed.slice(DEFAULT_BUCKET.length + 1)
       : trimmed.replace(/^\/+/, '');
 
-    return `${SUPABASE_URL}/storage/v1/object/public/${DEFAULT_BUCKET}/${cleanPath}`;
+    return `${SUPABASE_URL.replace(/\/+$/, '')}/storage/v1/object/public/${DEFAULT_BUCKET}/${cleanPath}`;
   }
 
   return trimmed;
@@ -95,5 +95,5 @@ export function getPublicStorageUrl(storagePath: string, bucket = DEFAULT_BUCKET
   if (!SUPABASE_URL || SUPABASE_URL.includes('placeholder')) {
     return storagePath;
   }
-  return `${SUPABASE_URL}/storage/v1/object/public/${bucket}/${storagePath.replace(/^\/+/, '')}`;
+  return `${SUPABASE_URL.replace(/\/+$/, '')}/storage/v1/object/public/${bucket}/${storagePath.replace(/^\/+/, '')}`;
 }

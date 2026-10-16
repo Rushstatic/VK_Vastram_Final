@@ -1,0 +1,31 @@
+import React, { useState } from 'react';
+import { PackageCheck, Search, CheckCircle2, Circle, Truck, Clock3 } from 'lucide-react';
+import { Container } from '../ui/Container';
+
+type TrackingOrder = { orderNumber:string; orderStatus:string; paymentStatus:string; createdAt:string; shippedAt?:string|null; deliveredAt?:string|null; courierName?:string; trackingNumber?:string; trackingUrl?:string; totalAmount:number; items:Array<{name?:string;productName?:string;quantity:number}> };
+const stages = [
+  { key: ['pending','pending_payment','confirmed','processing'], label: 'Order received', note: 'We have received your order.' },
+  { key: ['processing','packed','ready_to_ship'], label: 'Preparing your order', note: 'Your order is being prepared.' },
+  { key: ['shipped','in_transit'], label: 'Shipped', note: 'Your order has left us.' },
+  { key: ['out_for_delivery'], label: 'Out for delivery', note: 'Your parcel is on its way to you.' },
+  { key: ['delivered'], label: 'Delivered', note: 'Your order has been delivered.' },
+];
+export const TrackOrderPage: React.FC = () => {
+ const params = new URLSearchParams(window.location.search);
+ const [orderId,setOrderId] = useState(params.get('orderId') || '');
+ const [email,setEmail] = useState('');
+ const [order,setOrder] = useState<TrackingOrder|null>(null);
+ const [busy,setBusy] = useState(false);
+ const [error,setError] = useState('');
+ const lookup = async (e:React.FormEvent) => { e.preventDefault(); setBusy(true); setError(''); setOrder(null);
+  try { const r=await fetch('/api/orders/track',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({orderId:orderId.trim(),email:email.trim()})}); const d=await r.json(); if(!r.ok||!d.success) throw new Error(d.error||'We could not find an order with those details.'); setOrder(d.order); }
+  catch(err:any){setError(err?.message||'Unable to look up this order. Please try again.');} finally {setBusy(false);} };
+ const status=String(order?.orderStatus||'pending').toLowerCase();
+ const stageIndex = status==='cancelled' ? -1 : Math.max(0, stages.findIndex(s=>s.key.includes(status)));
+ return <div className="flex-1 bg-[#FAF8F5] py-12 sm:py-16"><Container><div className="mx-auto max-w-3xl"><div className="text-center mb-10"><div className="mx-auto mb-5 flex h-14 w-14 items-center justify-center rounded-full border border-[#B88E3E]/40 text-[#78281F]"><PackageCheck size={26}/></div><p className="text-xs uppercase tracking-[0.25em] text-[#B88E3E]">VK VASTRAM · CUSTOMER CARE</p><h1 className="mt-3 font-serif text-4xl sm:text-5xl text-[#1C1917]">Track your order</h1><p className="mt-4 text-sm sm:text-base text-[#57534E]">A little closer to your doorstep. Enter your order ID and checkout email to see the latest progress.</p></div>
+ <form onSubmit={lookup} className="rounded-2xl border border-[#E7DFD2] bg-white/80 p-5 sm:p-8 shadow-sm"><div className="grid gap-4 sm:grid-cols-2"><label className="text-sm text-[#57534E]">Order ID<input required value={orderId} onChange={e=>setOrderId(e.target.value)} placeholder="e.g. VKV-..." className="mt-2 w-full rounded-xl border border-[#D8D0C3] bg-[#FAF8F5] px-4 py-3 text-[#1C1917] outline-none focus:border-[#B88E3E]"/></label><label className="text-sm text-[#57534E]">Email used at checkout<input required type="email" value={email} onChange={e=>setEmail(e.target.value)} placeholder="you@example.com" className="mt-2 w-full rounded-xl border border-[#D8D0C3] bg-[#FAF8F5] px-4 py-3 text-[#1C1917] outline-none focus:border-[#B88E3E]"/></label></div><button disabled={busy} className="mt-5 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-[#1C1917] px-5 py-3.5 text-sm font-medium text-white transition hover:bg-[#78281F] disabled:opacity-60"><Search size={16}/>{busy?'Finding your order…':'Track order'}</button>{error&&<p role="alert" className="mt-4 text-sm text-red-700">{error}</p>}<p className="mt-4 text-xs leading-5 text-[#78716C]">For privacy, order details are shown only when the order ID and checkout email match.</p></form>
+ {order&&<section className="mt-8 rounded-2xl border border-[#E7DFD2] bg-white p-5 sm:p-8"><div className="flex flex-wrap items-start justify-between gap-3 border-b border-[#E7DFD2] pb-5"><div><p className="text-xs uppercase tracking-widest text-[#B88E3E]">Order</p><h2 className="mt-1 text-xl font-serif">{order.orderNumber}</h2><p className="mt-1 text-xs text-[#78716C]">Placed {new Date(order.createdAt).toLocaleDateString('en-IN',{day:'numeric',month:'long',year:'numeric'})}</p></div><span className="rounded-full bg-[#F4EFE6] px-3 py-1.5 text-xs capitalize text-[#78281F]">{status.replace(/_/g,' ')}</span></div>
+ {status==='cancelled'?<p className="mt-6 text-sm text-[#78281F]">This order is cancelled. Please contact Customer Care if you need assistance.</p>:<ol className="mt-7 space-y-6">{stages.map((stage,i)=>{const done=i<=stageIndex;const active=i===stageIndex;return <li key={stage.label} className="flex gap-4"><div className="flex flex-col items-center">{done?<CheckCircle2 className="text-[#B88E3E]" size={22}/>:<Circle className="text-[#D6CEC1]" size={22} />}{i<stages.length-1&&<span className={`mt-1 min-h-8 w-px ${done?'bg-[#B88E3E]':'bg-[#E7DFD2]'}`}/>}</div><div className="pb-1"><p className={`text-sm font-medium ${active?'text-[#78281F]':'text-[#1C1917]'}`}>{stage.label}</p><p className="mt-1 text-sm text-[#78716C]">{stage.note}</p>{stage.key.includes('shipped')&&order.shippedAt&&<p className="mt-1 text-xs text-[#78716C]">Shipped {new Date(order.shippedAt).toLocaleDateString('en-IN')}</p>}</div></li>})}</ol>}
+ <div className="mt-5 border-t border-[#E7DFD2] pt-5 text-sm"><p className="flex items-center gap-2 text-[#57534E]"><Truck size={16}/> Courier: {order.courierName||'Updates will appear when dispatched'}</p>{order.trackingUrl&&<a className="mt-3 inline-block text-[#78281F] underline underline-offset-4" href={order.trackingUrl} target="_blank" rel="noreferrer">Open courier tracking{order.trackingNumber?` · ${order.trackingNumber}`:''}</a>}<p className="mt-4 flex items-center gap-2 text-[#57534E]"><Clock3 size={16}/> Total paid / payable: ₹{Number(order.totalAmount||0).toLocaleString('en-IN')}</p></div></section>}
+ <p className="mt-8 text-center text-xs text-[#78716C]">Need help? Contact VK VASTRAM Customer Care.</p></div></Container></div>
+};

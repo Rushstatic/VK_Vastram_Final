@@ -31,14 +31,17 @@ export const AdminCollections: React.FC = () => {
     e.preventDefault();
     if (!editingCollection?.name || !editingCollection?.slug) return;
     setSaving(true);
-    await adminService.saveCollection(editingCollection);
+    const saved = await adminService.saveCollection(editingCollection);
     setSaving(false);
+    if (!saved) { alert('Collection could not be saved. Check the database response and permissions.'); return; }
     setEditingCollection(null);
+    window.dispatchEvent(new CustomEvent('vk_collections_updated'));
     fetchCollections();
   };
 
   const handleToggleArchive = async (col: CollectionAdminData) => {
-    await adminService.saveCollection({ ...col, isActive: !col.isActive });
+    const saved = await adminService.saveCollection({ ...col, isActive: !col.isActive });
+    if (saved) window.dispatchEvent(new CustomEvent('vk_collections_updated'));
     fetchCollections();
   };
 
@@ -59,6 +62,7 @@ export const AdminCollections: React.FC = () => {
     setDeleteModalOpen(false);
     setSelectedCollection(null);
     if (res.success) {
+      window.dispatchEvent(new CustomEvent('vk_collections_updated'));
       fetchCollections();
     } else {
       alert(res.error || 'Delete failed.');

@@ -181,6 +181,14 @@ export const ProductGallery: React.FC<ProductGalleryProps> = ({
                 <img
                   src={normalizeImageUrl(img.imageUrl)}
                   alt={`${productName} thumbnail ${idx + 1}`}
+                  referrerPolicy="no-referrer"
+                  onError={(event) => {
+                    const fallback = normalizeImageUrl(img.fallbackImageUrl);
+                    if (fallback && event.currentTarget.dataset.fallbackTried !== 'true') {
+                      event.currentTarget.dataset.fallbackTried = 'true';
+                      event.currentTarget.src = fallback;
+                    }
+                  }}
                   loading="lazy"
                   className="w-full h-full object-cover"
                 />
@@ -201,6 +209,7 @@ export const ProductGallery: React.FC<ProductGalleryProps> = ({
           <ProductImageMagnifier
             key={activeImage.imageUrl}
             src={activeImage.imageUrl}
+            fallbackSrc={activeImage.fallbackImageUrl}
             alt={`${productName} — ${activeImage.role || 'Main View'}`}
             roleTag={getRoleDisplayName(activeImage.role)}
             onOpenFullscreen={() => setIsFullscreenOpen(true)}

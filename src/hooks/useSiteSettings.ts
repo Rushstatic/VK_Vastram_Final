@@ -45,6 +45,13 @@ export function useSiteSettings() {
   }, []);
 
   useEffect(() => {
+    if (typeof document === 'undefined') return;
+    const faviconUrl = settings?.logoUrl || '/vk-vastram-logo.png?v=2';
+    const iconLinks = document.querySelectorAll<HTMLLinkElement>('link[rel~="icon"], link[rel="apple-touch-icon"]');
+    iconLinks.forEach((link) => { link.removeAttribute('type'); link.href = faviconUrl; });
+  }, [settings?.logoUrl]);
+
+  useEffect(() => {
     // 1. Initial fetch
     fetchSettings();
 

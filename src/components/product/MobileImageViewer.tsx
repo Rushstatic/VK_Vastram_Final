@@ -23,6 +23,7 @@ export const MobileImageViewer: React.FC<MobileImageViewerProps> = ({
   const [zoomScale, setZoomScale] = useState(1);
   const [imageLoadError, setImageLoadError] = useState(false);
   const [imageLoaded, setImageLoaded] = useState(false);
+  const [activeImageUrl, setActiveImageUrl] = useState('');
   const modalRef = useRef<HTMLDivElement>(null);
   const imageContainerRef = useRef<HTMLDivElement>(null);
 
@@ -71,20 +72,23 @@ export const MobileImageViewer: React.FC<MobileImageViewerProps> = ({
 
   const currentItem = images[currentIndex] || images[0];
   const currentUrl = typeof currentItem === 'string' ? currentItem : currentItem?.imageUrl;
+  const currentFallbackUrl = typeof currentItem === 'object' ? currentItem?.fallbackImageUrl : undefined;
   const currentRole = currentItem && typeof currentItem === 'object' ? currentItem.role : undefined;
   const normalizedCurrentUrl = normalizeImageUrl(currentUrl);
+  const normalizedFallbackUrl = normalizeImageUrl(currentFallbackUrl);
 
   useLayoutEffect(() => {
-    // Clear stale image state before paint; passive reset effects can race cached image loads.
+    // Reset state and try the primary URL first, falling back to storage_path if needed.
+    setActiveImageUrl(normalizedCurrentUrl || normalizedFallbackUrl);
     setImageLoaded(false);
     setImageLoadError(false);
-  }, [normalizedCurrentUrl, isOpen]);
+  }, [normalizedCurrentUrl, normalizedFallbackUrl, isOpen]);
 
   useEffect(() => {
-    if (!isOpen || !normalizedCurrentUrl || imageLoaded) return;
+    if (!isOpen || !activeImageUrl || imageLoaded || imageLoadError) return;
     const timeout = window.setTimeout(() => setImageLoadError(true), 12000);
     return () => window.clearTimeout(timeout);
-  }, [normalizedCurrentUrl, isOpen, imageLoaded]);
+  }, [activeImageUrl, isOpen, imageLoaded, imageLoadError]);
 
   if (!isOpen || images.length === 0) return null;
 
@@ -206,13 +210,23 @@ export const MobileImageViewer: React.FC<MobileImageViewerProps> = ({
             <span className="font-serif italic text-sm">Unveiling the weave…</span>
           </div>
         )}
-        {normalizedCurrentUrl && !imageLoadError ? (
+        {activeImageUrl && !imageLoadError ? (
           <img
-            key={normalizedCurrentUrl}
-            src={normalizedCurrentUrl}
+            key={activeImageUrl}
+            src={activeImageUrl}
             alt={`${productName} view ${currentIndex + 1}`}
+            referrerPolicy="no-referrer"
             onLoad={handleImageLoaded}
-            onError={() => { setImageLoaded(false); setImageLoadError(true); }}
+            onError={() => {
+              if (normalizedFallbackUrl && activeImageUrl !== normalizedFallbackUrl) {
+                setActiveImageUrl(normalizedFallbackUrl);
+                setImageLoaded(false);
+                setImageLoadError(false);
+              } else {
+                setImageLoaded(false);
+                setImageLoadError(true);
+              }
+            }}
             loading="eager"
             decoding="async"
             className={`max-h-[85vh] max-w-[95vw] object-contain transition-opacity duration-200 cursor-grab active:cursor-grabbing ${imageLoaded ? 'opacity-100' : 'opacity-0'}`}
@@ -311,7 +325,20 @@ export const MobileImageViewer: React.FC<MobileImageViewerProps> = ({
                       : 'border-white/20 opacity-40 hover:opacity-80'
                   }`}
                 >
-                  <img src={normalizeImageUrl(url) || undefined} alt={`Thumb ${idx + 1}`} loading="lazy" decoding="async" className="w-full h-full object-cover" />
+                  <img
+                    src={normalizeImageUrl(url) || undefined}
+                    alt={`Thumb ${idx + 1}`}
+                    referrerPolicy="no-referrer"
+                    onError={(event) => {
+                      const entry = images[idx];
+                      const fallback = typeof entry === 'string' ? '' : normalizeImageUrl(entry?.fallbackImageUrl);
+                      if (fallback && event.currentTarget.dataset.fallbackTried !== 'true') {
+                        event.currentTarget.dataset.fallbackTried = 'true';
+                        event.currentTarget.src = fallback;
+                      }
+                    }}
+                    loading="lazy" decoding="async" className="w-full h-full object-cover"
+                  />
                 </button>
               );
             })}

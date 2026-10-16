@@ -1069,14 +1069,20 @@ export const adminService = {
     }
 
     try {
-      const { data, error } = await (supabase as any)
-        .from('collections')
-        .select('*, products:products(id)')
-        .order('sort_order', { ascending: true });
+      const [{ data, error }, visibilityResult] = await Promise.all([
+        (supabase as any)
+          .from('collections')
+          .select('*, products:products(id)')
+          .order('sort_order', { ascending: true }),
+        // Public RLS intentionally hides archived collection rows. This tiny RPC
+        // exposes only each slug and active flag so storefront sections/nav can
+        // respect archive state without exposing hidden descriptions or images.
+        (supabase as any).rpc('storefront_collection_visibility'),
+      ]);
 
       if (error || !data) return [];
 
-      return data.map((col: any) => ({
+      const mapped: CollectionAdminData[] = data.map((col: any) => ({
         id: col.id,
         name: col.name,
         slug: col.slug,
@@ -1087,6 +1093,35 @@ export const adminService = {
         isActive: col.is_active,
         productCount: col.products?.length || 0,
       }));
+
+      // For public visitors, synthesize minimal state-only entries for archived
+      // collections that RLS correctly excludes from the detailed collection query.
+      const knownSlugs = new Set(mapped.map((item) => item.slug.toLowerCase()));
+      const visibilityRows = !visibilityResult?.error && Array.isArray(visibilityResult?.data)
+        ? visibilityResult.data
+        : [];
+      for (const status of visibilityRows) {
+        if (status?.is_active === false && typeof status.slug === 'string' && !knownSlugs.has(status.slug.toLowerCase())) {
+          const title = status.slug
+            .split('-')
+            .filter(Boolean)
+            .map((part: string) => part.charAt(0).toUpperCase() + part.slice(1))
+            .join(' ');
+          mapped.push({
+            id: `visibility-${status.slug}`,
+            name: title,
+            slug: status.slug,
+            description: '',
+            imageUrl: '',
+            bannerImageUrl: '',
+            sortOrder: Number(status.sort_order) || 0,
+            isActive: false,
+            productCount: 0,
+          });
+        }
+      }
+
+      return mapped.sort((a, b) => a.sortOrder - b.sortOrder);
     } catch {
       return [];
     }
@@ -1751,7 +1786,19 @@ export const adminService = {
         .select('*')
         .order('sort_order', { ascending: true });
 
-      if (error || !data || data.length === 0) return [];
+      if (error) {
+        // Keep the last known-good settings only when the read itself failed.
+        // A successful empty result is authoritative and must clear stale cache.
+        return this.getCachedHomepageSections() || [];
+      }
+      if (!data) return this.getCachedHomepageSections() || [];
+      if (data.length === 0) {
+        cachedHomepageSectionsMemory = [];
+        if (typeof window !== 'undefined') {
+          try { localStorage.setItem(HOMEPAGE_CACHE_KEY, '[]'); sessionStorage.setItem(HOMEPAGE_CACHE_KEY, '[]'); } catch { /* ignore */ }
+        }
+        return [];
+      }
 
       const result: HomepageSectionData[] = data.map((sec: any) => ({
         id: sec.id,
@@ -1807,7 +1854,16 @@ export const adminService = {
         .eq('id', id);
 
       if (!error) {
-        // Refresh both memory and browser caches before notifying storefront listeners.
+        const cached = this.getCachedHomepageSections() || [];
+        const cachedRow = cached.find((section) => section.id === id);
+        if (cachedRow) {
+          const updatedCache = cached.map((section) => section.id === id ? { ...section, ...data } : section);
+          cachedHomepageSectionsMemory = updatedCache;
+          if (typeof window !== 'undefined') {
+            try { localStorage.setItem(HOMEPAGE_CACHE_KEY, JSON.stringify(updatedCache)); sessionStorage.setItem(HOMEPAGE_CACHE_KEY, JSON.stringify(updatedCache)); } catch { /* ignore */ }
+          }
+        }
+        // Then refresh from Supabase; a successful read replaces this optimistic cache.
         await this.getHomepageSections();
       }
 

@@ -242,7 +242,7 @@ export type AdminSubView =
 
 export type PageView =
   | { type: 'home' }
-  | { type: 'collection'; category: ProductCategory; subCategory?: string; priceMin?: number; priceMax?: number }
+  | { type: 'collection'; category: ProductCategory; subCategory?: string; priceMin?: number; priceMax?: number; collectionSlug?: string }
   | { type: 'product'; slug: string }
   | { type: 'sale' }
   | { type: 'about' }
@@ -251,6 +251,7 @@ export type PageView =
   | { type: 'wishlist' }
   | { type: 'cart' }
   | { type: 'checkout' }
+  | { type: 'track-order' }
   | {
       type: 'order-confirmation';
       orderId: string;

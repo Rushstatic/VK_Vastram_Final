@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Search, Heart, ShoppingBag, Menu, X, User, Plus, Minus, Mail, Phone, Clock } from 'lucide-react';
+import { Search, Heart, ShoppingBag, Menu, X, User, Plus, Minus, Mail, Phone, Clock, PackageSearch } from 'lucide-react';
 import { Container } from '../ui/Container';
 import { PageView } from '../../types';
 import { useSiteSettings } from '../../hooks/useSiteSettings';
@@ -97,7 +97,8 @@ export const Header: React.FC<HeaderProps> = ({
   }, []);
 
   const [openAccordions, setOpenAccordions] = useState<Record<string, boolean>>({});
-  const [activeCollections, setActiveCollections] = useState<CollectionAdminData[]>([]);
+  const [allCollections, setAllCollections] = useState<CollectionAdminData[]>([]);
+  const activeCollections = allCollections.filter((collection) => collection.isActive !== false);
 
   useEffect(() => {
     if (!mobileMenuOpen) {
@@ -106,9 +107,16 @@ export const Header: React.FC<HeaderProps> = ({
   }, [mobileMenuOpen]);
 
   useEffect(() => {
-    adminService.getCollections().then((cols) => {
-      setActiveCollections(cols.filter((c) => c.isActive !== false));
-    }).catch(() => {});
+    let mounted = true;
+    const refreshCollections = () => {
+      adminService.getCollections().then((cols) => {
+        if (mounted) setAllCollections(cols);
+      }).catch(() => {});
+    };
+    refreshCollections();
+    window.addEventListener('vk_collections_updated', refreshCollections);
+    window.addEventListener('focus', refreshCollections);
+    return () => { mounted = false; window.removeEventListener('vk_collections_updated', refreshCollections); window.removeEventListener('focus', refreshCollections); };
   }, []);
 
   const toggleAccordion = (key: string) => {
@@ -130,10 +138,23 @@ export const Header: React.FC<HeaderProps> = ({
     ? categories.some((c) => c.category === 'bedsheets' || c.slug === 'bedsheets')
     : false;
 
+  const seasonalCollectionRecord = allCollections.find((collection) => {
+    const slug = collection.slug?.trim().toLowerCase();
+    const name = collection.name?.trim().toLowerCase();
+    return slug === 'seasonal-archive' || slug === 'seasonal-sale' || name === 'seasonal sale';
+  });
+  const activeSeasonalCollection = seasonalCollectionRecord?.isActive !== false ? seasonalCollectionRecord : undefined;
+  // If the CMS explicitly manages a Seasonal Sale collection, its active/archive
+  // flag controls the Sale navigation. Otherwise retain the existing /sale page.
+  const saleNavigationPage: PageView | null = seasonalCollectionRecord
+    ? (activeSeasonalCollection ? { type: 'collection', category: 'all', collectionSlug: activeSeasonalCollection.slug } as PageView : null)
+    : { type: 'sale' } as PageView;
+
   const mainNavLinks: { label: string; page: PageView }[] = [
     ...dynamicCategoryLinks,
-    { label: 'Sale', page: { type: 'sale' } as PageView },
+    ...(saleNavigationPage ? [{ label: 'Sale', page: saleNavigationPage }] : []),
     { label: 'Our Story', page: { type: 'about' } as PageView },
+    { label: 'Track Order', page: { type: 'track-order' } as PageView },
   ];
 
   const mobileNavLinks: { label: string; page: PageView }[] = [
@@ -144,6 +165,7 @@ export const Header: React.FC<HeaderProps> = ({
     })),
     { label: 'Seasonal Sale', page: { type: 'sale' } as PageView },
     { label: 'Our Story & Heritage', page: { type: 'about' } as PageView },
+    { label: 'Track Your Order', page: { type: 'track-order' } as PageView },
     { label: 'FAQ & Client Care', page: { type: 'faq' } as PageView },
     { label: 'Contact Us', page: { type: 'contact' } as PageView },
   ];
@@ -151,7 +173,10 @@ export const Header: React.FC<HeaderProps> = ({
   const isLinkActive = (target: PageView) => {
     if (currentPage.type === target.type) {
       if (currentPage.type === 'collection' && target.type === 'collection') {
-        return currentPage.category === target.category;
+        if (target.collectionSlug) {
+          return currentPage.collectionSlug?.toLowerCase() === target.collectionSlug.toLowerCase();
+        }
+        return !currentPage.collectionSlug && currentPage.category === target.category;
       }
       return true;
     }
@@ -169,9 +194,9 @@ export const Header: React.FC<HeaderProps> = ({
     <>
       <header className={`sticky top-0 z-30 bg-[#FAF8F5]/95 backdrop-blur-md border-b border-[#1C1917]/10 transition-all duration-300 ${scrolled ? 'shadow-[0_1px_3px_rgba(28,25,23,0.05)]' : ''}`}>
         <Container>
-          <div className={`flex items-center justify-between transition-all duration-300 ${scrolled ? 'h-15 sm:h-17' : 'h-20 sm:h-22'}`}>
+          <div className={`flex items-center justify-between transition-all duration-300 xl:grid xl:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] xl:gap-4 ${scrolled ? 'h-15 sm:h-17' : 'h-20 sm:h-22'}`}>
             {/* Mobile Left: Menu Toggle */}
-            <div className="flex items-center lg:hidden">
+            <div className="flex items-center xl:hidden">
               <button
                 type="button"
                 onClick={() => setMobileMenuOpen(true)}
@@ -183,7 +208,7 @@ export const Header: React.FC<HeaderProps> = ({
             </div>
 
             {/* Desktop Left: Navigation Links */}
-            <nav className="hidden lg:flex items-center gap-7 text-xs tracking-wider uppercase font-medium">
+            <nav className="hidden xl:flex items-center gap-2 2xl:gap-4 text-[10px] 2xl:text-[11px] tracking-[0.07em] uppercase font-medium min-w-0">
               {mainNavLinks.map((link, idx) => {
                 const active = isLinkActive(link.page);
                 return (
@@ -206,7 +231,7 @@ export const Header: React.FC<HeaderProps> = ({
             </nav>
 
             {/* Center / Brand Zone: VK VASTRAM Wordmark */}
-            <div className="flex items-center justify-center min-w-0">
+            <div className="flex items-center justify-center min-w-0 xl:justify-self-center">
               <button
                 type="button"
                 onClick={() => handleNavClick({ type: 'home' })}
@@ -245,14 +270,14 @@ export const Header: React.FC<HeaderProps> = ({
   )}
 </div>
 
-                <span className={`font-serif font-semibold text-[#78281F] uppercase transition-all duration-300 group-hover:text-[#967029] whitespace-nowrap ${scrolled ? 'text-sm sm:text-xl lg:text-2xl tracking-[0.12em] sm:tracking-[0.28em]' : 'text-base sm:text-3xl lg:text-5xl tracking-[0.16em] sm:tracking-[0.35em]'}`}>
+                <span className={`font-serif font-semibold text-[#78281F] uppercase transition-all duration-300 group-hover:text-[#967029] whitespace-nowrap ${scrolled ? 'text-xs sm:text-xl xl:text-2xl 2xl:text-3xl tracking-[0.08em] sm:tracking-[0.16em] xl:tracking-[0.18em]' : 'text-sm sm:text-2xl md:text-3xl xl:text-3xl 2xl:text-4xl tracking-[0.1em] sm:tracking-[0.18em] xl:tracking-[0.2em]'}`}>
                   {storeName}
                 </span>
               </button>
             </div>
 
             {/* Right: Actions (Search, Account [desktop only], Wishlist, Bag) */}
-            <div className="flex items-center gap-0.5 sm:gap-2">
+            <div className="flex items-center gap-0.5 sm:gap-2 xl:justify-self-end">
               <button
                 type="button"
                 onClick={onOpenSearch}
@@ -321,7 +346,7 @@ export const Header: React.FC<HeaderProps> = ({
 
       {/* Mobile Drawer Navigation (Information Architecture per Prompt 26B) */}
       {(mobileMenuOpen || isClosing) && (
-        <div className="fixed inset-0 z-50 flex lg:hidden">
+        <div className="fixed inset-0 z-50 flex xl:hidden">
           {/* Backdrop with silky fade animation */}
           <div
             ref={backdropRef}
@@ -538,7 +563,7 @@ export const Header: React.FC<HeaderProps> = ({
                             <button
                               key={col.id}
                               type="button"
-                              onClick={() => handleNavClick({ type: 'collection', category: 'sarees' })}
+                              onClick={() => handleNavClick({ type: 'collection', category: 'all', collectionSlug: col.slug })}
                               className="block w-full text-left hover:text-[#1C1917] transition-all hover:translate-x-1 duration-150 cursor-pointer"
                             >
                               {col.name}
@@ -566,19 +591,33 @@ export const Header: React.FC<HeaderProps> = ({
                     </div>
                   </div>
 
-                  {/* 5. Sale */}
+                  {/* 5. Sale — connected to the active Seasonal Sale CMS collection when managed there */}
+                  {saleNavigationPage && (
+                    <div className="py-3.5 transition-transform hover:translate-x-1 duration-200">
+                      <button
+                        type="button"
+                        onClick={() => handleNavClick(saleNavigationPage)}
+                        className="w-full flex items-center justify-between text-base font-medium text-[#78281F] hover:text-[#967029] transition-colors cursor-pointer group"
+                      >
+                        <span className="group-hover:translate-x-0.5 transition-transform duration-200 font-serif italic text-lg">Sale</span>
+                        <span className="text-xs font-serif italic text-[#78281F]">Curated Offers</span>
+                      </button>
+                    </div>
+                  )}
+
+                  {/* 6. Track order — visible directly in the mobile drawer */}
                   <div className="py-3.5 transition-transform hover:translate-x-1 duration-200">
                     <button
                       type="button"
-                      onClick={() => handleNavClick({ type: 'sale' })}
-                      className="w-full flex items-center justify-between text-base font-medium text-[#78281F] hover:text-[#967029] transition-colors cursor-pointer group"
+                      onClick={() => handleNavClick({ type: 'track-order' })}
+                      className="w-full flex items-center gap-2.5 text-base font-medium text-[#1C1917] hover:text-[#78281F] transition-colors cursor-pointer group"
                     >
-                      <span className="group-hover:translate-x-0.5 transition-transform duration-200 font-serif italic text-lg">Sale</span>
-                      <span className="text-xs font-serif italic text-[#78281F]">Curated Offers</span>
+                      <PackageSearch className="w-4 h-4 text-[#967029] group-hover:scale-110 transition-transform duration-200" />
+                      <span>Track Your Order</span>
                     </button>
                   </div>
 
-                  {/* 6. Wishlist */}
+                  {/* 7. Wishlist */}
                   <div className="py-3.5 transition-transform hover:translate-x-1 duration-200">
                     <button
                       type="button"

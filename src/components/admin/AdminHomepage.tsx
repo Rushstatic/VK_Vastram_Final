@@ -202,6 +202,8 @@ export const AdminHomepage: React.FC = () => {
       window.dispatchEvent(new CustomEvent('vk_homepage_updated'));
       setFeedback(`Section "${sec.title.slice(0, 25)}..." updated and synchronized across storefront.`);
       setTimeout(() => setFeedback(null), 3000);
+    } else {
+      setFeedback(`Save failed for "${sec.title.slice(0, 25)}". Check Supabase permissions and try again.`);
     }
   };
 

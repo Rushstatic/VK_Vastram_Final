@@ -34,10 +34,12 @@ const RAZORPAY_KEY_ID = process.env.RAZORPAY_KEY_ID || process.env.VITE_RAZORPAY
 const RAZORPAY_KEY_SECRET = process.env.RAZORPAY_KEY_SECRET || '';
 const RAZORPAY_WEBHOOK_SECRET = process.env.RAZORPAY_WEBHOOK_SECRET || '';
 
-// Initialize privileged server-side Supabase client (service role preferred, anon key fallback)
+// In production, privileged server-side database operations must never fall back to
+// the public anon key. Development may use the anon key for safe local/read-only work.
+const supabaseServerKey = SUPABASE_SERVICE_ROLE_KEY || (!isProduction ? SUPABASE_ANON_KEY : '');
 const supabaseAdmin: SupabaseClient | null =
-  SUPABASE_URL && (SUPABASE_SERVICE_ROLE_KEY || SUPABASE_ANON_KEY)
-    ? createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY || SUPABASE_ANON_KEY, {
+  SUPABASE_URL && supabaseServerKey
+    ? createClient(SUPABASE_URL, supabaseServerKey, {
         auth: {
           autoRefreshToken: false,
           persistSession: false,
@@ -73,7 +75,7 @@ async function dispatchAdminOrderAlert(orderId: string, eventType: 'new_order' |
         }
       } catch { console.warn('[admin-notifications] push delivery attempt failed'); }
     }
-    const to = String(process.env.ADMIN_NOTIFICATION_EMAIL || '').trim();
+    const to = eventType === 'new_order' ? String(process.env.ADMIN_NOTIFICATION_EMAIL || '').trim() : '';
     if (to && process.env.RESEND_API_KEY && process.env.RESEND_FROM_EMAIL) {
       const safe = (v: unknown) => String(v ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c] || c));
       try {
@@ -86,6 +88,26 @@ async function dispatchAdminOrderAlert(orderId: string, eventType: 'new_order' |
 }
 
 
+
+
+/** Customer order email: order summary/invoice details plus a direct link to the tracking page. */
+async function dispatchCustomerOrderEmail(orderId: string): Promise<void> {
+  if (!db || !process.env.RESEND_API_KEY || !process.env.RESEND_FROM_EMAIL) return;
+  const baseUrl = String(process.env.SITE_URL || process.env.APP_URL || '').replace(/\/$/, '');
+  if (!baseUrl) return;
+  try {
+    const { data: order, error } = await db.from('orders').select('id,order_number,customer_name,customer_email,total_amount,subtotal,discount_amount,shipping_amount,tax_amount,currency,payment_status,order_status,created_at,items:order_items(product_name_snapshot,quantity,price_snapshot,total_amount)').eq('id',orderId).maybeSingle();
+    if (error || !order?.customer_email) return;
+    const esc = (v: unknown) => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c] || c));
+    const orderNo = String(order.order_number || order.id);
+    const trackingUrl = `${baseUrl}/track-order?orderId=${encodeURIComponent(orderNo)}`;
+    const items = (order.items || []).map((item:any) => `<tr><td style="padding:10px;border-bottom:1px solid #eee">${esc(item.product_name_snapshot || 'VK VASTRAM product')} × ${Number(item.quantity||1)}</td><td style="padding:10px;border-bottom:1px solid #eee;text-align:right">₹${Number(item.total_amount ?? (Number(item.price_snapshot||0)*Number(item.quantity||1))).toLocaleString('en-IN')}</td></tr>`).join('');
+    const amount = (label:string,value:unknown) => `<tr><td style="padding:7px 10px;color:#57534e">${label}</td><td style="padding:7px 10px;text-align:right">₹${Number(value||0).toLocaleString('en-IN')}</td></tr>`;
+    const html = `<div style="margin:0 auto;max-width:640px;background:#faf8f5;padding:28px;font-family:Arial,sans-serif;color:#1c1917"><div style="text-align:center;padding:22px 12px"><p style="letter-spacing:4px;color:#b88e3e;font-size:11px">VK VASTRAM</p><h1 style="font-family:Georgia,serif;font-weight:normal">Thank you for your order.</h1><p style="color:#57534e">Your order ${esc(orderNo)} has been received.</p></div><div style="background:#fff;padding:22px;border:1px solid #e7dfd2"><h2 style="font-family:Georgia,serif;font-weight:normal">Order summary / invoice details</h2><p>Order date: ${esc(new Date(order.created_at).toLocaleDateString('en-IN'))}<br>Payment status: ${esc(order.payment_status)}<br>Order status: ${esc(order.order_status)}</p><table style="width:100%;border-collapse:collapse">${items}${amount('Subtotal',order.subtotal)}${amount('Discount',order.discount_amount)}${amount('Shipping',order.shipping_amount)}${amount('Tax',order.tax_amount)}${amount('Total',order.total_amount)}</table><p style="font-size:12px;color:#78716c">This email contains your order and tax summary; your official tax invoice remains available through the order records/invoice workflow.</p><p style="text-align:center;margin:28px 0"><a href="${trackingUrl}" style="display:inline-block;background:#1c1917;color:#fff;text-decoration:none;padding:14px 24px">TRACK YOUR ORDER</a></p><p style="font-size:12px;color:#78716c">For privacy, the tracking page asks for your order ID and checkout email.</p></div><p style="text-align:center;font-size:12px;color:#78716c;padding:18px">With care, VK VASTRAM</p></div>`;
+    const response = await fetch('https://api.resend.com/emails',{method:'POST',headers:{Authorization:`Bearer ${process.env.RESEND_API_KEY}`,'Content-Type':'application/json'},body:JSON.stringify({from:process.env.RESEND_FROM_EMAIL,to:[order.customer_email],subject:`Order received · ${orderNo} | VK VASTRAM`,html})});
+    if(!response.ok) console.error(`[customer-order-email] Resend rejected email (${response.status}) for order ${orderNo}`); else console.info(`[customer-order-email] accepted for order ${orderNo}`);
+  } catch (e) { console.warn('[customer-order-email] dispatch failed; order remains committed'); }
+}
 
 /** Sends queued restock notices when Resend is configured; never fails inventory commits. */
 async function dispatchReadyBackInStockEmails(variantId: string): Promise<void> {
@@ -160,7 +182,7 @@ function hashGuestToken(token: string): string {
 }
 
 /**
- * Extract guest token from request headers, query string, or body
+ * Extract guest token from request headers or legacy request body; never use query strings
  */
 function extractGuestToken(req: Request): string | null {
   const headerToken =
@@ -171,9 +193,6 @@ function extractGuestToken(req: Request): string | null {
   }
   if (req.body && typeof req.body.guestAccessToken === 'string' && req.body.guestAccessToken.trim()) {
     return req.body.guestAccessToken.trim();
-  }
-  if (req.query && typeof req.query.token === 'string' && (req.query.token as string).trim()) {
-    return (req.query.token as string).trim();
   }
   return null;
 }
@@ -421,18 +440,103 @@ async function optionalAuthenticateUser(req: AuthenticatedRequest, res: Response
   }
 }
 
+
+// Small process-local fallback limiter. Production should run a single trusted proxy hop
+// (Render) or configure TRUST_PROXY_HOPS explicitly. Webhooks are intentionally excluded.
+type LimitBucket = { count: number; resetAt: number };
+const rateLimitBuckets = new Map<string, LimitBucket>();
+function rateLimit(options: { windowMs: number; max: number; key?: (req: Request) => string; message?: string }) {
+  return (req: Request, res: Response, next: () => void) => {
+    const now = Date.now();
+    const identity = options.key ? options.key(req) : req.ip || req.socket.remoteAddress || 'unknown';
+    const key = `${options.windowMs}:${options.max}:${identity}`;
+    let bucket = rateLimitBuckets.get(key);
+    if (!bucket || bucket.resetAt <= now) {
+      bucket = { count: 0, resetAt: now + options.windowMs };
+      rateLimitBuckets.set(key, bucket);
+    }
+    bucket.count += 1;
+    res.setHeader('RateLimit-Limit', String(options.max));
+    res.setHeader('RateLimit-Remaining', String(Math.max(0, options.max - bucket.count)));
+    res.setHeader('RateLimit-Reset', String(Math.ceil(bucket.resetAt / 1000)));
+    if (bucket.count > options.max) {
+      res.setHeader('Retry-After', String(Math.max(1, Math.ceil((bucket.resetAt - now) / 1000))));
+      res.status(429).json({ success: false, error: options.message || 'Too many requests. Please try again shortly.' });
+      return;
+    }
+    next();
+    // Bound memory use for long-lived processes.
+    if (rateLimitBuckets.size > 5000) {
+      for (const [k, v] of rateLimitBuckets) if (v.resetAt <= now) rateLimitBuckets.delete(k);
+    }
+  };
+}
+
+function safePostgrestSearch(value: unknown): string {
+  return String(value ?? '')
+    .normalize('NFKC')
+    .replace(/[,%()\\*"']/g, ' ')
+    .replace(/[\r\n\t]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 80);
+}
+
+function hasImageSignature(buffer: Buffer, contentType: string): boolean {
+  const type = contentType.toLowerCase();
+  if (type === 'image/jpeg' || type === 'image/jpg') {
+    return buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff;
+  }
+  if (type === 'image/png') {
+    return buffer.length >= 8 && buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+  }
+  if (type === 'image/webp') {
+    return buffer.length >= 12 && buffer.toString('ascii', 0, 4) === 'RIFF' && buffer.toString('ascii', 8, 12) === 'WEBP';
+  }
+  return false;
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const ORDER_NUMBER_RE = /^VKV(?:-[A-Z0-9]{1,12}){2,4}$/i;
+
 async function startServer() {
   const app = express();
 
-  // Parse JSON with rawBody capture for cryptographic webhook verification
-  app.use(
-    express.json({
-      limit: '10mb',
-      verify: (req: any, _res, buf) => {
-        req.rawBody = buf;
-      },
-    })
-  );
+  // Render forwards one proxy hop. Do not trust arbitrary X-Forwarded-For chains.
+  const proxyHops = Number(process.env.TRUST_PROXY_HOPS || (isProduction ? 1 : 0));
+  if (Number.isInteger(proxyHops) && proxyHops >= 0 && proxyHops <= 3) app.set('trust proxy', proxyHops);
+
+  // Baseline security headers (intentionally no CSP here: storefront checkout and Vite
+  // require a separately tested CSP policy before one can safely be enforced).
+  app.disable('x-powered-by');
+  app.use((_req, res, next) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('Referrer-Policy', 'no-referrer');
+    res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+    if (isProduction) res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+    next();
+  });
+
+  // Route-specific parsers run first: preserve exact raw webhook bytes for HMAC,
+  // and allow bounded image payloads without a permissive global 10 MB parser.
+  app.use('/api/payment/webhook', express.json({
+    limit: '256kb',
+    verify: (req: any, _res, buf) => { req.rawBody = Buffer.from(buf); },
+  }));
+  app.use('/api/admin/media/upload', express.json({ limit: '16mb' }));
+  app.use('/api/reviews/upload-image', express.json({ limit: '7mb' }));
+  app.use(express.json({ limit: '1mb' }));
+
+  // Route families: payment/order/coupon endpoints get tighter limits; admin routes
+  // are additionally bounded. Razorpay webhook retries are deliberately not limited.
+  app.use('/api/orders/create', rateLimit({ windowMs: 60_000, max: 12 }));
+  app.use('/api/orders', rateLimit({ windowMs: 60_000, max: 45 }));
+  app.use('/api/payment/create-order', rateLimit({ windowMs: 60_000, max: 8 }));
+  app.use('/api/payment/verify', rateLimit({ windowMs: 60_000, max: 12 }));
+  app.use('/api/coupons/validate', rateLimit({ windowMs: 60_000, max: 20 }));
+  app.use('/api/admin', rateLimit({ windowMs: 60_000, max: 120 }));
+  app.use('/api/auth', rateLimit({ windowMs: 60_000, max: 10 }));
 
   // -------------------------------------------------------------------
   // 1. Health Check Endpoint
@@ -624,7 +728,7 @@ async function startServer() {
             console.error('Razorpay API error creating order:', errorData);
             res.status(502).json({
               success: false,
-              error: errorData.error?.description || 'Failed to initialize order with Razorpay.',
+              error: 'Failed to initialize payment with Razorpay. Please retry.',
             });
             return;
           }
@@ -641,41 +745,24 @@ async function startServer() {
           res.status(503).json({ success: false, error: 'Persistent payment storage is unavailable.' });
           return;
         }
-        if (supabaseAdmin) {
-          const { data: existingPayment, error: lookupPaymentError } = await supabaseAdmin
-            .from('payments')
-            .select('id')
-            .eq('order_id', orderId)
-            .maybeSingle();
-
-          if (lookupPaymentError) throw lookupPaymentError;
-
-          if (existingPayment) {
-            const { error: paymentUpdateError } = await supabaseAdmin
-              .from('payments')
-              .update({
-                provider: 'razorpay',
-                provider_order_id: razorpayOrderId,
-                amount: authoritativeTotal,
-                currency,
-                status: 'pending',
-                method: 'Razorpay Online',
-                updated_at: new Date().toISOString(),
-              })
-              .eq('id', existingPayment.id);
-            if (paymentUpdateError) throw paymentUpdateError;
-          } else {
-            const { error: paymentInsertError } = await supabaseAdmin.from('payments').insert({
-              order_id: orderId,
-              provider: 'razorpay',
-              provider_order_id: razorpayOrderId,
-              amount: authoritativeTotal,
-              currency,
-              status: 'pending',
-              method: 'Razorpay Online',
-            });
-            if (paymentInsertError) throw paymentInsertError;
-          }
+        // Each Razorpay order is a distinct persisted attempt. Never overwrite an
+        // earlier attempt: a late capture/webhook must still reconcile against its ID.
+        const { error: paymentInsertError } = await supabaseAdmin.from('payments').insert({
+          order_id: orderId,
+          provider: 'razorpay',
+          provider_order_id: razorpayOrderId,
+          amount: authoritativeTotal,
+          currency,
+          status: 'pending',
+          method: 'Razorpay Online',
+          metadata: { attempt_created_at: new Date().toISOString() },
+        });
+        if (paymentInsertError) {
+          // The provider order exists but persistence failed. Do not expose it to the
+          // browser; log only a request-safe error and let operations reconcile orphan IDs.
+          console.error('[payment/create-order] could not persist provider order attempt:', paymentInsertError.code || 'DB_ERROR');
+          res.status(503).json({ success: false, error: 'Unable to prepare payment safely. Please retry.' });
+          return;
         }
 
         res.json({
@@ -749,7 +836,7 @@ async function startServer() {
           return;
         }
         const { data: associatedPayment, error: paymentLookupError } = await supabaseAdmin
-          .from('payments').select('id, provider_order_id, status, amount, currency').eq('order_id', orderId).maybeSingle();
+          .from('payments').select('id, provider_order_id, status, amount, currency, provider_payment_id').eq('order_id', orderId).eq('provider_order_id', razorpayOrderId).maybeSingle();
         if (paymentLookupError) throw paymentLookupError;
         if (!associatedPayment || associatedPayment.provider_order_id !== razorpayOrderId || !associatedPayment.id) {
           res.status(400).json({ success: false, verified: false, error: 'No matching persisted payment attempt.' });
@@ -840,6 +927,7 @@ async function startServer() {
             .from('payments')
             .select('id, provider_order_id, status')
             .eq('order_id', orderId)
+            .eq('provider_order_id', razorpayOrderId)
             .maybeSingle();
 
           if (paymentRecordError) throw paymentRecordError;
@@ -957,6 +1045,58 @@ async function startServer() {
         }
 
         const orderLines = validateOrderLines(items);
+        const boundedText = (value: unknown, max: number) => typeof value === 'string' && value.trim().length > 0 && value.trim().length <= max;
+        const nameValue = customerName || shippingAddress.recipientName;
+        const emailValue = customerEmail || shippingAddress.email || req.user?.email || '';
+        const phoneValue = customerPhone || shippingAddress.phone || '';
+        if (!boundedText(nameValue, 100) ||
+            !boundedText(shippingAddress.addressLine1, 180) ||
+            (shippingAddress.addressLine2 != null && String(shippingAddress.addressLine2).length > 180) ||
+            !boundedText(shippingAddress.city, 80) ||
+            !boundedText(shippingAddress.state, 80) ||
+            !/^\d{6}$/.test(String(shippingAddress.pincode || shippingAddress.postalCode || '')) ||
+            !/^[+\d()\-\s]{10,18}$/.test(String(phoneValue)) ||
+            (emailValue && (String(emailValue).length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(emailValue)))) ||
+            (notes != null && String(notes).length > 500)) {
+          res.status(400).json({ success: false, error: 'Please check your name, contact details, and delivery address.' });
+          return;
+        }
+        const normalizedEmail = String(emailValue || '').trim().toLowerCase();
+        const normalizedPhone = String(phoneValue || '').replace(/[^+\d]/g, '').slice(0, 18);
+        // Gentle COD abuse controls: cap large COD baskets and throttle repeated attempts
+        // by contact details without blocking routine returning-customer orders.
+        if (paymentMethod === 'cod') {
+          const ipLimiter = rateLimit({ windowMs: 60 * 60 * 1000, max: 20 });
+          const phoneLimiter = rateLimit({ windowMs: 60 * 60 * 1000, max: 8, key: () => `cod-phone:${normalizedPhone}` });
+          const emailLimiter = rateLimit({ windowMs: 60 * 60 * 1000, max: 8, key: () => `cod-email:${normalizedEmail}` });
+          ipLimiter(req, res, () => {});
+          if (res.headersSent) return;
+          phoneLimiter(req, res, () => {});
+          if (res.headersSent) return;
+          if (normalizedEmail) {
+            emailLimiter(req, res, () => {});
+            if (res.headersSent) return;
+          }
+          const { data: pricedVariants, error: priceError } = await db
+            .from('product_variants')
+            .select('id,price_override,products!inner(price,status)')
+            .in('id', orderLines.map(line => line.variant_id));
+          if (priceError) throw priceError;
+          const priceMap = new Map((pricedVariants || []).map((v: any) => [v.id, v]));
+          const { data: generalSettings } = await db.from('site_settings').select('value').eq('key', 'general').maybeSingle();
+          const fallPicoPrice = Math.max(0, Number(generalSettings?.value?.fall_pico_price || 0));
+          const authoritativeSubtotal = orderLines.reduce((sum, line) => {
+            const variant: any = priceMap.get(line.variant_id);
+            if (!variant || variant.products?.status !== 'active') return sum + 1_000_000_000;
+            const surcharge = line.metadata.includeFallPico === true ? fallPicoPrice : 0;
+            return sum + (Number(variant.price_override ?? variant.products.price) + surcharge) * line.quantity;
+          }, 0);
+          // Conservative COD subtotal ceiling leaves room for applicable tax/shipping.
+          if (!Number.isFinite(authoritativeSubtotal) || authoritativeSubtotal > 20_000) {
+            res.status(400).json({ success: false, error: 'Cash on Delivery is unavailable for orders above ₹20,000 before tax and delivery. Please choose online payment.' });
+            return;
+          }
+        }
         const userId = req.user?.id || null;
         const isGuest = !userId;
         const email = customerEmail || shippingAddress.email || req.user?.email || null;
@@ -1005,6 +1145,7 @@ const orderPayload = {
           throw new OrderSafetyError('Order service returned an incomplete result.', 503, 'INVALID_RPC_RESULT');
         }
         void dispatchAdminOrderAlert(created.order_id, 'new_order');
+        void dispatchCustomerOrderEmail(created.order_id);
 
         res.json({
           success: true,
@@ -1024,6 +1165,26 @@ const orderPayload = {
   );
 
   // -------------------------------------------------------------------
+  // Public, low-friction tracking lookup: order number + checkout email; returns only tracking essentials.
+  app.post('/api/orders/track', async (req: Request, res: Response) => {
+    try {
+      const orderId = String(req.body?.orderId || '').trim();
+      const email = String(req.body?.email || '').trim().toLowerCase();
+      if (!orderId || orderId.length > 80 || !/^[A-Za-z0-9_-]+$/.test(orderId) || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254) {
+        res.status(400).json({success:false,error:'Enter a valid order ID and checkout email.'}); return;
+      }
+      if (!supabaseAdmin) { res.status(503).json({success:false,error:'Order tracking is temporarily unavailable.'}); return; }
+      const safeOrderNumber = orderId.replace(/[\\%_]/g,'');
+      const { data: order, error } = await supabaseAdmin.from('orders')
+        .select('id,order_number,customer_email,total_amount,payment_status,order_status,created_at,shipped_at,delivered_at,courier_name,tracking_number,tracking_url,items:order_items(product_name_snapshot,quantity)')
+        .eq('order_number',safeOrderNumber).maybeSingle();
+      if (error || !order || String(order.customer_email||'').trim().toLowerCase() !== email) {
+        res.status(404).json({success:false,error:'We could not find an order matching those details.'}); return;
+      }
+      res.json({success:true,order:{orderNumber:order.order_number,orderStatus:order.order_status,paymentStatus:order.payment_status,createdAt:order.created_at,shippedAt:order.shipped_at,deliveredAt:order.delivered_at,courierName:order.courier_name,trackingNumber:order.tracking_number,trackingUrl:order.tracking_url,totalAmount:Number(order.total_amount||0),items:order.items||[]}});
+    } catch { res.status(500).json({success:false,error:'Unable to look up this order right now.'}); }
+  });
+
   // 6. GET /api/orders/:id (ORDER LOOKUP FOR CONFIRMATION & TRACKING)
   // Supports Guest & Authenticated Patrons
   // -------------------------------------------------------------------
@@ -1033,8 +1194,10 @@ const orderPayload = {
     async (req: AuthenticatedRequest, res: Response) => {
       try {
         const { id } = req.params;
-        if (!id) {
-          res.status(400).json({ success: false, error: 'Order identifier required.' });
+        const isUuid = UUID_RE.test(id || '');
+        const isOrderNumber = ORDER_NUMBER_RE.test(id || '');
+        if (!id || (!isUuid && !isOrderNumber)) {
+          res.status(400).json({ success: false, error: 'A valid order ID or order number is required.' });
           return;
         }
 
@@ -1048,7 +1211,7 @@ const orderPayload = {
           .select(`
             *,
             items:order_items(*),
-            payments:payments(*)
+            payments:payments(id,order_id,provider,provider_order_id,provider_payment_id,amount,currency,status,method,verified_at,created_at)
           `)
           .or(`id.eq.${id},order_number.eq.${id}`)
           .maybeSingle();
@@ -1075,7 +1238,9 @@ const orderPayload = {
           return;
         }
 
-        const paymentRecord = Array.isArray(order.payments) ? order.payments[0] : order.payments;
+        const paymentRecord = Array.isArray(order.payments)
+          ? [...order.payments].sort((a: any, b: any) => String(b.created_at || '').localeCompare(String(a.created_at || ''))).find((p: any) => p.provider_order_id) || order.payments[0]
+          : order.payments;
 
         // Privacy & Data Sanitization: Strip guest tokens and hashes from snapshots
         const sanitizedShippingSnapshot = order.shipping_address_snapshot
@@ -1136,12 +1301,10 @@ const orderPayload = {
                   provider: paymentRecord.provider,
                   providerOrderId: paymentRecord.provider_order_id,
                   providerPaymentId: paymentRecord.provider_payment_id,
-                  providerSignature: paymentRecord.provider_signature,
                   amount: Number(paymentRecord.amount),
                   currency: paymentRecord.currency,
                   status: paymentRecord.status,
                   method: paymentRecord.method,
-                  errorReason: paymentRecord.error_reason,
                   verifiedAt: paymentRecord.verified_at,
                   createdAt: paymentRecord.created_at,
                 }
@@ -1166,7 +1329,7 @@ const orderPayload = {
         });
       } catch (err: any) {
         console.error('Error fetching order by ID:', err);
-        res.status(500).json({ success: false, error: err.message || 'Internal error retrieving order.' });
+        res.status(500).json({ success: false, error: 'Unable to retrieve this order right now.' });
       }
     }
   );
@@ -1257,7 +1420,7 @@ const orderPayload = {
         res.json({ success: true, linkedCount });
       } catch (err: any) {
         console.error('Error in /api/customer/link-guest-orders:', err);
-        res.status(500).json({ success: false, error: err.message });
+        res.status(500).json({ success: false, error: 'Unable to link guest orders right now.' });
       }
     }
   );
@@ -1347,8 +1510,31 @@ const orderPayload = {
       const orderEntity = event.payload?.order?.entity;
 
       const rzpOrderId = paymentEntity?.order_id || orderEntity?.id;
-      const rzpPaymentId = paymentEntity?.id;
+      let rzpPaymentId = paymentEntity?.id;
       let internalOrderId: string | null = null;
+
+      // order.paid carries an order entity rather than a payment entity. Resolve its
+      // captured payment from Razorpay before matching it to the persisted attempt.
+      if (eventType === 'order.paid' && rzpOrderId && !rzpPaymentId) {
+        if (!RAZORPAY_KEY_ID || !RAZORPAY_KEY_SECRET) {
+          res.status(503).json({ error: 'Payment verification is temporarily unavailable.' });
+          return;
+        }
+        const listResponse = await fetch(`https://api.razorpay.com/v1/orders/${encodeURIComponent(rzpOrderId)}/payments`, {
+          headers: { Authorization: `Basic ${Buffer.from(`${RAZORPAY_KEY_ID}:${RAZORPAY_KEY_SECRET}`).toString('base64')}` },
+        });
+        if (!listResponse.ok) {
+          res.status(503).json({ error: 'Payment verification is temporarily unavailable.' });
+          return;
+        }
+        const listData: any = await listResponse.json();
+        const captured = Array.isArray(listData.items) ? listData.items.find((item: any) => item.status === 'captured' && item.order_id === rzpOrderId) : null;
+        if (!captured) {
+          res.status(400).json({ error: 'No captured payment was found for this provider order.' });
+          return;
+        }
+        rzpPaymentId = captured.id;
+      }
 
       if (!rzpOrderId || (eventType.startsWith('payment.') && !rzpPaymentId)) {
         res.status(400).json({ error: 'Webhook is missing provider identifiers.' });
@@ -1367,6 +1553,29 @@ const orderPayload = {
       if (paymentEntity && (Number(paymentEntity.amount) !== Math.round(Number(matchedPayment.amount) * 100) || paymentEntity.currency !== matchedPayment.currency)) {
         res.status(400).json({ error: 'Webhook payment amount or currency mismatch.' });
         return;
+      }
+      // A signed webhook proves origin, while the provider API confirms the current
+      // authoritative payment state. Do this before recording a capture as successful.
+      if ((eventType === 'payment.captured' || eventType === 'order.paid') && rzpPaymentId) {
+        if (!RAZORPAY_KEY_ID || !RAZORPAY_KEY_SECRET) {
+          res.status(503).json({ error: 'Payment verification is temporarily unavailable.' });
+          return;
+        }
+        const providerCheck = await fetch(`https://api.razorpay.com/v1/payments/${encodeURIComponent(rzpPaymentId)}`, {
+          headers: { Authorization: `Basic ${Buffer.from(`${RAZORPAY_KEY_ID}:${RAZORPAY_KEY_SECRET}`).toString('base64')}` },
+        });
+        if (!providerCheck.ok) {
+          res.status(503).json({ error: 'Payment verification is temporarily unavailable.' });
+          return;
+        }
+        const verifiedEntity: any = await providerCheck.json();
+        if (verifiedEntity.id !== rzpPaymentId || verifiedEntity.order_id !== rzpOrderId ||
+            verifiedEntity.status !== 'captured' ||
+            Number(verifiedEntity.amount) !== Math.round(Number(matchedPayment.amount) * 100) ||
+            verifiedEntity.currency !== matchedPayment.currency) {
+          res.status(400).json({ error: 'Provider payment does not match the persisted attempt.' });
+          return;
+        }
       }
 
       if (supabaseAdmin) {
@@ -1711,12 +1920,15 @@ const orderPayload = {
             .select(`
               *,
               items:order_items(*),
-              payments:payments(*)
+              payments:payments(id,order_id,provider,provider_order_id,provider_payment_id,amount,currency,status,method,verified_at,created_at)
             `, { count: 'exact' });
 
           if (search) {
-            const s = `%${search}%`;
-            query = query.or(`order_number.ilike.${s},customer_name.ilike.${s},customer_email.ilike.${s},customer_phone.ilike.${s}`);
+            const safeSearch = safePostgrestSearch(search);
+            if (safeSearch) {
+              const pattern = `%${safeSearch}%`;
+              query = query.or(`order_number.ilike.${pattern},customer_name.ilike.${pattern},customer_email.ilike.${pattern},customer_phone.ilike.${pattern}`);
+            }
           }
 
           if (orderStatus !== 'all') {
@@ -1951,7 +2163,7 @@ const orderPayload = {
             .select(`
               *,
               items:order_items(*),
-              payments:payments(*)
+              payments:payments(id,order_id,provider,provider_order_id,provider_payment_id,amount,currency,status,method,verified_at,created_at)
             `)
             .eq('id', id)
             .maybeSingle();
@@ -2533,6 +2745,7 @@ const orderPayload = {
       if (!match || match[1] !== contentType) { res.status(400).json({ success: false, error: 'Unsupported review image format.' }); return; }
       const buffer = Buffer.from(match[2], 'base64');
       if (!buffer.length || buffer.length > 5 * 1024 * 1024) { res.status(413).json({ success: false, error: 'Review photos must be 5 MB or smaller.' }); return; }
+      if (!hasImageSignature(buffer, contentType)) { res.status(400).json({ success: false, error: 'The uploaded file content does not match a supported image format.' }); return; }
       // Eligibility is checked again when the review is submitted. Uploads are private-by-convention paths in the existing public assets bucket.
       const extension = contentType === 'image/jpeg' ? 'jpg' : contentType === 'image/png' ? 'png' : 'webp';
       const objectPath = `reviews/${userId}/${crypto.randomUUID()}.${extension}`;
@@ -3244,21 +3457,25 @@ const orderPayload = {
           return;
         }
 
-        const allowedMime = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/svg+xml'];
+        const allowedMime = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
         if (!allowedMime.includes(contentType.toLowerCase())) {
-          res.status(400).json({ success: false, error: 'Invalid file type. Allowed: JPEG, PNG, WebP, SVG.' });
+          res.status(400).json({ success: false, error: 'Invalid file type. Allowed: JPEG, PNG, WebP. SVG uploads are not accepted.' });
           return;
         }
 
         const base64Clean = fileData.replace(/^data:image\/[a-zA-Z0-9+.-]+;base64,/, '');
         const buffer = Buffer.from(base64Clean, 'base64');
 
-        if (buffer.length > 15 * 1024 * 1024) {
-          res.status(400).json({ success: false, error: 'File too large. Maximum size is 15MB.' });
+        if (!buffer.length || buffer.length > 8 * 1024 * 1024) {
+          res.status(413).json({ success: false, error: 'File too large. Maximum size is 8MB.' });
+          return;
+        }
+        if (!hasImageSignature(buffer, contentType)) {
+          res.status(400).json({ success: false, error: 'The uploaded file content does not match a supported image format.' });
           return;
         }
 
-        const ext = contentType === 'image/webp' ? 'webp' : filename.split('.').pop() || 'jpg';
+        const ext = contentType.toLowerCase() === 'image/webp' ? 'webp' : contentType.toLowerCase() === 'image/png' ? 'png' : 'jpg';
         const sanitizedFolder = ['logo', 'homepage', 'banners', 'collections', 'categories', 'products', 'pages'].includes(folder)
           ? folder
           : 'uploads';
@@ -3279,7 +3496,8 @@ const orderPayload = {
           });
 
         if (uploadError) {
-          res.status(500).json({ success: false, error: uploadError.message });
+          console.error('[admin/media/upload] storage upload failed:', uploadError.name || 'STORAGE_ERROR');
+          res.status(500).json({ success: false, error: 'Media upload failed.' });
           return;
         }
 
@@ -3293,7 +3511,8 @@ const orderPayload = {
           path: storagePath,
         });
       } catch (err: any) {
-        res.status(500).json({ success: false, error: err.message || 'Media upload failed.' });
+        console.error('[admin/media/upload] request failed');
+        res.status(500).json({ success: false, error: 'Media upload failed.' });
       }
     }
   );

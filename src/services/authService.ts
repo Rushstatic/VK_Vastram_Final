@@ -14,7 +14,11 @@ export const authService = {
    */
   async getCurrentUser(): Promise<AdminUser | null> {
     if (!isSupabaseConfigured()) {
-      // Return a simulated mock session in local offline mode
+      // A mock session is development-only; discard stale local sessions in production.
+      if (import.meta.env.PROD) {
+        localStorage.removeItem('vk_local_admin');
+        return null;
+      }
       const localAdmin = localStorage.getItem('vk_local_admin');
       if (localAdmin) {
         try {
@@ -78,6 +82,10 @@ export const authService = {
    */
   async signIn(email: string, password: string): Promise<{ success: boolean; error?: string; user?: AdminUser }> {
     if (!isSupabaseConfigured()) {
+      // Fail closed in production. Mock admin sessions are strictly local-development only.
+      if (import.meta.env.PROD) {
+        return { success: false, error: 'Administrator sign-in is unavailable because Supabase is not configured.' };
+      }
       // Local development test mode
       if (email.trim().toLowerCase() === 'admin@vkvastram.com' && password === 'vastram2026') {
         const mockUser: AdminUser = {
@@ -91,7 +99,7 @@ export const authService = {
       }
       return {
         success: false,
-        error: 'Invalid credentials. For local test mode use: admin@vkvastram.com / vastram2026',
+        error: 'Invalid credentials for local test mode.',
       };
     }
 

@@ -60,6 +60,18 @@ export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
     setSelectedImage('');
   }, [selectedColor, activeVariant?.id]);
 
+  React.useEffect(() => {
+    if (!isOpen) return;
+    const previousOverflow = document.body.style.overflow;
+    const previousOverscroll = document.body.style.overscrollBehavior;
+    document.body.style.overflow = 'hidden';
+    document.body.style.overscrollBehavior = 'none';
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      document.body.style.overscrollBehavior = previousOverscroll;
+    };
+  }, [isOpen]);
+
   const { settings } = useSiteSettings();
   const announcementText = settings?.announcementBarText || 'Shipping charges calculated at checkout.';
   const exchangeWindow = settings?.exchangeWindowDays || 7;
@@ -108,7 +120,7 @@ export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
   const currentImageIndex = Math.max(0, images.findIndex((image) => normalizeImageUrl(image) === normalizeImageUrl(currentImage)));
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 overflow-y-auto">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 overflow-hidden overscroll-none">
       {/* Backdrop */}
       <div
         className="fixed inset-0 bg-[#1C1917]/65 backdrop-blur-xs transition-opacity vk-product-modal-backdrop"
@@ -116,7 +128,7 @@ export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
       />
 
       {/* Modal Dialog */}
-      <div className="relative w-full max-w-4xl bg-[#FAF8F5] shadow-2xl rounded-sm border border-[#1C1917]/10 z-10 overflow-hidden my-auto max-h-[92vh] flex flex-col md:flex-row vk-product-modal-panel">
+      <div className="relative w-full max-w-4xl bg-[#FAF8F5] shadow-2xl rounded-sm border border-[#1C1917]/10 z-10 overflow-y-auto overscroll-contain my-auto max-h-[92dvh] flex flex-col md:flex-row vk-product-modal-panel">
         {/* Close button */}
         <button
           type="button"
@@ -177,7 +189,7 @@ export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
         </div>
 
         {/* Right Column: Information & Purchase Module */}
-        <div className="w-full md:w-1/2 p-4 sm:p-8 flex flex-col overflow-y-auto max-h-[85vh] md:max-h-[90vh]">
+        <div className="w-full md:w-1/2 p-4 sm:p-8 flex flex-col md:overflow-y-auto md:max-h-[90dvh] overscroll-contain">
           {/* Category & Origin */}
           <div className="flex items-center justify-between text-xs text-[#78716C] mb-2">
             <span className="uppercase tracking-widest text-[#967029] font-medium">

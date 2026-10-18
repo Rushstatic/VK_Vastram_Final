@@ -35,6 +35,19 @@ interface ParsedRow {
   primaryImageUrl: string;
   status: 'active' | 'draft';
   color: string;
+  slug: string;
+  sareeType: string;
+  primaryColourHex: string;
+  secondaryColourName: string;
+  secondaryColourHex: string;
+  additionalImageUrls: string;
+  imageAltText: string;
+  seoTitle: string;
+  seoDescription: string;
+  featured: boolean;
+  bestSeller: boolean;
+  newArrival: boolean;
+  tags: string;
   isValid: boolean;
   errors: string[];
 }
@@ -103,7 +116,8 @@ export const AdminImport: React.FC = () => {
 
       setSheetName(targetSheetName);
       const worksheet = workbook.Sheets[targetSheetName];
-      const rawRows: any[] = XLSX.utils.sheet_to_json(worksheet);
+      const allRawRows: any[] = XLSX.utils.sheet_to_json(worksheet);
+      const rawRows = allRawRows.filter((row: any) => !String(getField(row, ['Product Title', 'Name', 'Product Name', 'Title', 'Product']) || '').toLowerCase().includes('delete this row'));
 
       if (rawRows.length === 0) {
         throw new Error(`Sheet "${targetSheetName}" is empty.`);
@@ -114,7 +128,7 @@ export const AdminImport: React.FC = () => {
         const rowNumber = index + 2; // header is row 1
         const errors: string[] = [];
 
-        const name = String(getField(raw, ['Name', 'Product Name', 'Title', 'Product']) || '').trim();
+        const name = String(getField(raw, ['Product Title', 'Name', 'Product Name', 'Title', 'Product']) || '').trim();
         if (!name) {
           errors.push('Product name is required');
         }
@@ -125,9 +139,9 @@ export const AdminImport: React.FC = () => {
           errors.push('Valid positive price is required');
         }
 
-        const rawGstRate = getField(raw, ['GST Rate (%)', 'GST Rate', 'Tax Rate', 'gst_rate']);
+        const rawGstRate = getField(raw, ['GST Rate %', 'GST Rate (%)', 'GST Rate', 'Tax Rate', 'gst_rate']);
         const gstRate = rawGstRate === undefined || String(rawGstRate).trim() === '' ? null : Number(rawGstRate);
-        if (gstRate !== null && (!Number.isFinite(gstRate) || gstRate < 0 || gstRate > 100)) errors.push('GST Rate must be between 0 and 100, or blank if not yet configured.');
+        if (gstRate !== null && (!Number.isFinite(gstRate) || ![0, 5, 12, 18].includes(gstRate))) errors.push('GST Rate must be one of 0, 5, 12 or 18. Confirm the applicable rate with your accountant.');
 
         const rawMrp = getField(raw, ['MRP', 'Maximum Retail Price', 'Original Price', 'List Price']);
         const mrp = rawMrp !== undefined && !isNaN(Number(rawMrp)) ? Number(rawMrp) : undefined;
@@ -138,7 +152,8 @@ export const AdminImport: React.FC = () => {
         const rawSku = String(getField(raw, ['SKU', 'Product SKU', 'Item Code', 'Code']) || '').trim();
         const sku = rawSku || `VKV-SAR-${(index + 1).toString().padStart(4, '0')}`;
 
-        const category = String(getField(raw, ['Category', 'Category Name', 'Collection Type']) || 'Sarees').trim();
+        const category = String(getField(raw, ['Category', 'Category Name', 'Collection Type']) || '').trim();
+        if (!category) errors.push('Category is required. Choose a value from the LISTS sheet.');
         const collection = String(getField(raw, ['Collection', 'Collection Name']) || '').trim();
 
         const rawStock = getField(raw, ['Stock', 'Quantity', 'Stock Quantity', 'Inventory']);
@@ -149,15 +164,40 @@ export const AdminImport: React.FC = () => {
         }
 
         const fabric = String(getField(raw, ['Fabric', 'Material', 'Fabric Composition']) || '').trim();
-        const weave = String(getField(raw, ['Weave', 'Craft', 'Weave Type']) || '').trim();
-        const origin = String(getField(raw, ['Origin', 'Region', 'City', 'Provenance']) || '').trim();
-        const dimensions = String(getField(raw, ['Dimensions', 'Length', 'Measurements', 'Size']) || '').trim();
+        const weave = String(getField(raw, ['Weave / Technique', 'Weave / Style', 'Weave', 'Craft', 'Weave Type']) || '').trim();
+        const origin = String(getField(raw, ['Weaving Origin', 'Origin', 'Region', 'City', 'Provenance']) || '').trim();
+        const dimensions = String(getField(raw, ['Dimensions / Sizing', 'Dimensions', 'Length', 'Measurements', 'Size']) || '').trim();
         const careInstructions = String(getField(raw, ['Care Instructions', 'Care', 'Wash Care']) || '').trim();
         const description = String(getField(raw, ['Description', 'Short Description', 'Details']) || '').trim();
-        const primaryImageUrl = String(getField(raw, ['Primary Image', 'Image URL', 'Image', 'Photo']) || '').trim();
-        const color = String(getField(raw, ['Color', 'Colours', 'Primary Color']) || '').trim();
+        const primaryImageUrl = String(getField(raw, ['Primary Image URL', 'Primary Image', 'Image URL', 'Image', 'Photo']) || '').trim();
+        const color = String(getField(raw, ['Primary Colour Name', 'Primary Color Name', 'Color', 'Colours', 'Primary Color']) || '').trim();
+        const slugRaw = String(getField(raw, ['URL Slug', 'Slug', 'Product Slug']) || '').trim();
+        const slug = (slugRaw || name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')).toLowerCase();
+        const sareeType = String(getField(raw, ['Saree Type', 'SareeType', 'Type']) || '').trim();
+        const primaryColourHex = String(getField(raw, ['Primary Colour Hex', 'Primary Color Hex', 'Primary Colour HEX', 'Primary Color HEX']) || '').trim().toUpperCase();
+        const secondaryColourName = String(getField(raw, ['Secondary Colour Name', 'Secondary Color Name']) || '').trim();
+        const secondaryColourHex = String(getField(raw, ['Secondary Colour Hex', 'Secondary Color Hex']) || '').trim().toUpperCase();
+        const additionalImageUrls = String(getField(raw, ['Additional Image URLs', 'Additional Images', 'Additional Image URLs (comma-separated)']) || '').trim();
+        const imageAltText = String(getField(raw, ['Image Alt Text', 'Alt Text']) || '').trim();
+        const seoTitle = String(getField(raw, ['SEO Title']) || '').trim();
+        const seoDescription = String(getField(raw, ['SEO Description', 'SEO Meta Description']) || '').trim();
+        const boolValue = (value: any) => ['true', 'yes', '1', 'y'].includes(String(value ?? '').trim().toLowerCase());
+        const featured = boolValue(getField(raw, ['Featured', 'Featured (TRUE/FALSE)']));
+        const bestSeller = boolValue(getField(raw, ['Best Seller', 'Best Seller (TRUE/FALSE)', 'Bestseller']));
+        const newArrival = boolValue(getField(raw, ['New Arrival', 'New Arrival (TRUE/FALSE)', 'New Arrivals']));
+        const tags = String(getField(raw, ['Tags', 'Tags (comma-separated)']) || '').trim();
+        if (!color) errors.push('Primary Colour Name is required.');
+        if (!primaryColourHex) errors.push('Primary Colour Hex is required.');
+        if (primaryColourHex && !/^#[0-9A-F]{6}$/.test(primaryColourHex)) errors.push('Primary Colour Hex must use #RRGGBB format.');
+        if (secondaryColourHex && !/^#[0-9A-F]{6}$/.test(secondaryColourHex)) errors.push('Secondary Colour Hex must use #RRGGBB format.');
+        if (secondaryColourName && !secondaryColourHex) errors.push('Secondary Colour Hex is required when Secondary Colour Name is provided.');
+        if (!primaryImageUrl) errors.push('Primary Image URL is required.');
+        if (category.toLowerCase().includes('saree') && !sareeType) errors.push('Saree Type is required for saree products.');
+        if (category.toLowerCase().includes('saree') && !fabric) errors.push('Fabric is required for saree products.');
+        if (mrp !== undefined && mrp < price) errors.push(`MRP (${mrp}) cannot be lower than price (${price}).`);
 
-        const rawStatus = String(getField(raw, ['Status', 'Product Status']) || '').toLowerCase().trim();
+        const rawStatus = String(getField(raw, ['Catalog Status', 'Status', 'Product Status']) || '').toLowerCase().trim();
+        if (!['active', 'draft'].includes(rawStatus)) errors.push('Catalog Status must be active or draft.');
         const status: 'active' | 'draft' = rawStatus === 'draft' ? 'draft' : 'active';
 
         return {
@@ -179,12 +219,58 @@ export const AdminImport: React.FC = () => {
           primaryImageUrl,
           status,
           color,
+          slug,
+          sareeType,
+          primaryColourHex,
+          secondaryColourName,
+          secondaryColourHex,
+          additionalImageUrls,
+          imageAltText,
+          seoTitle,
+          seoDescription,
+          featured,
+          bestSeller,
+          newArrival,
+          tags,
           isValid: errors.length === 0,
           errors,
         };
       });
 
-      setParsedRows(parsed);
+      // Validate duplicates against the uploaded workbook and existing catalogue, and
+      // reject unknown managed taxonomy values instead of silently creating new ones.
+      const seenSkus = new Set<string>();
+      const seenSlugs = new Set<string>();
+      const knownSlugs = new Set<string>();
+      const existingSlugBySku = new Map<string, string>();
+      let knownTypes: Set<string> | null = null;
+      let knownFabrics: Set<string> | null = null;
+      if (isSupabaseConfigured()) {
+        const [{ data: existingProducts }, { data: typeSetting }, { data: fabricSetting }] = await Promise.all([
+          (supabase as any).from('products').select('sku, slug'),
+          (supabase as any).from('site_settings').select('value').eq('key', 'saree_types').maybeSingle(),
+          (supabase as any).from('site_settings').select('value').eq('key', 'fabric_types').maybeSingle(),
+        ]);
+        (existingProducts || []).forEach((product: any) => { if (product.sku && product.slug) existingSlugBySku.set(String(product.sku).toLowerCase(), String(product.slug).toLowerCase()); if (product.slug) knownSlugs.add(String(product.slug).toLowerCase()); });
+        const extractNames = (value: any): Set<string> | null => {
+          if (typeof value === 'string') { try { value = JSON.parse(value); } catch { value = null; } }
+          return Array.isArray(value?.types) ? new Set<string>(value.types.filter((x: any) => x && x.active !== false && x.name).map((x: any) => String(x.name).trim().toLowerCase())) : null;
+        };
+        knownTypes = extractNames(typeSetting?.value);
+        knownFabrics = extractNames(fabricSetting?.value);
+      }
+      const validated = parsed.map((row) => {
+        const errors = [...row.errors];
+        const skuKey = row.sku.toLowerCase(); const slugKey = row.slug.toLowerCase();
+        if (seenSkus.has(skuKey)) errors.push(`Duplicate SKU in this workbook: ${row.sku}`);
+        const existingSlugForSku = existingSlugBySku.get(skuKey);
+        if (seenSlugs.has(slugKey) || (knownSlugs.has(slugKey) && existingSlugForSku !== slugKey)) errors.push(`Duplicate URL slug: ${row.slug}`);
+        seenSkus.add(skuKey); seenSlugs.add(slugKey);
+        if (row.category.toLowerCase().includes('saree') && row.sareeType && knownTypes && !knownTypes.has(row.sareeType.toLowerCase())) errors.push(`Unknown Saree Type: ${row.sareeType}. Add it in Admin > Saree Attributes first.`);
+        if (row.fabric && knownFabrics && !knownFabrics.has(row.fabric.toLowerCase())) errors.push(`Unknown Fabric: ${row.fabric}. Add it in Admin > Saree Attributes first.`);
+        return { ...row, errors, isValid: errors.length === 0 };
+      });
+      setParsedRows(validated);
       setStatus('ready');
     } catch (err: any) {
       console.error('Excel parse error:', err);
@@ -207,7 +293,7 @@ export const AdminImport: React.FC = () => {
     const payload = validRows.map((r) => ({
       sku: r.sku,
       name: r.name,
-      slug: r.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, ''),
+      slug: r.slug,
       category: r.category,
       collection: r.collection,
       price: r.price,
@@ -223,6 +309,18 @@ export const AdminImport: React.FC = () => {
       primaryImageUrl: r.primaryImageUrl,
       status: r.status,
       color: r.color,
+      sareeType: r.sareeType,
+      primaryColourHex: r.primaryColourHex,
+      secondaryColourName: r.secondaryColourName,
+      secondaryColourHex: r.secondaryColourHex,
+      additionalImageUrls: r.additionalImageUrls.split(',').map((url) => url.trim()).filter(Boolean),
+      imageAltText: r.imageAltText,
+      seoTitle: r.seoTitle,
+      seoDescription: r.seoDescription,
+      featured: r.featured,
+      bestSeller: r.bestSeller,
+      newArrival: r.newArrival,
+      tags: r.tags.split(',').map((tag) => tag.trim()).filter(Boolean),
     }));
 
     try {
@@ -239,158 +337,19 @@ export const AdminImport: React.FC = () => {
         body: JSON.stringify({ products: payload }),
       });
 
-      if (res.ok) {
-        const data = await res.json();
-        if (data.success) {
-          setSummary({
-            total: data.total || payload.length,
-            imported: data.imported || 0,
-            updated: data.updated || 0,
-            failed: data.failed || 0,
-            errors: data.errors || [],
-          });
-          setStatus('completed');
-          return;
-        }
+      const responseData = await res.json().catch(() => ({}));
+      if (!res.ok || !responseData.success) {
+        throw new Error(responseData?.error || responseData?.message || `Secure import failed (HTTP ${res.status}). No products were imported. Check admin authorization and server logs, then retry.`);
       }
-
-      // 2. Direct client fallback if API route returned error
-      if (isSupabaseConfigured()) {
-        let imported = 0;
-        let updated = 0;
-        let failed = 0;
-        const errors: { row: number; sku?: string; error: string }[] = [];
-
-        // Fetch categories to map IDs
-        const { data: catData } = await (supabase as any).from('categories').select('id, slug, name');
-        const defaultCatId = catData?.[0]?.id || null;
-
-        for (const item of payload) {
-          const originalRow = parsedRows.find((r) => r.sku === item.sku);
-          const rowNumber = originalRow?.rowNumber || 0;
-
-          try {
-            if (!item.name || item.price <= 0) {
-              throw new Error('Name and valid positive price are required');
-            }
-
-            // Find category ID
-            let categoryId = defaultCatId;
-            if (item.category && catData) {
-              const matched = catData.find(
-                (c: any) =>
-                  c.slug.toLowerCase() === item.category.toLowerCase() ||
-                  c.name.toLowerCase() === item.category.toLowerCase()
-              );
-              if (matched) categoryId = matched.id;
-            }
-
-            // Check if SKU exists
-            const { data: existing } = await (supabase as any)
-              .from('products')
-              .select('id')
-              .eq('sku', item.sku)
-              .maybeSingle();
-
-            if (existing) {
-              // Update
-              const { error: updErr } = await (supabase as any)
-                .from('products')
-                .update({
-                  name: item.name,
-                  price: item.price,
-                  mrp: item.mrp || null,
-                  category_id: categoryId,
-                  status: item.status,
-                  fabric: item.fabric || null,
-                  weave: item.weave || null,
-                  origin: item.origin || null,
-                  dimensions: item.dimensions || null,
-                  care_instructions: item.careInstructions || null,
-                  description: item.description || null,
-                  updated_at: new Date().toISOString(),
-                })
-                .eq('id', existing.id);
-
-              if (updErr) throw updErr;
-
-              if (item.primaryImageUrl) {
-                await (supabase as any)
-                  .from('product_images')
-                  .upsert({
-                    product_id: existing.id,
-                    image_url: item.primaryImageUrl,
-                    is_primary: true,
-                    alt_text: item.name,
-                    sort_order: 1,
-                  });
-              }
-
-              updated++;
-            } else {
-              // Insert
-              const { data: newProd, error: insErr } = await (supabase as any)
-                .from('products')
-                .insert({
-                  sku: item.sku,
-                  slug: `${item.slug}-${Date.now().toString().slice(-4)}`,
-                  name: item.name,
-                  price: item.price,
-                  mrp: item.mrp || null,
-                  category_id: categoryId,
-                  status: item.status,
-                  fabric: item.fabric || null,
-                  weave: item.weave || null,
-                  origin: item.origin || null,
-                  dimensions: item.dimensions || null,
-                  care_instructions: item.careInstructions || null,
-                  description: item.description || null,
-                })
-                .select('id')
-                .single();
-
-              if (insErr || !newProd) throw (insErr || new Error('Insert failed'));
-
-              if (item.primaryImageUrl) {
-                await (supabase as any).from('product_images').insert({
-                  product_id: newProd.id,
-                  image_url: item.primaryImageUrl,
-                  is_primary: true,
-                  alt_text: item.name,
-                  sort_order: 1,
-                });
-              }
-
-              await (supabase as any).from('product_variants').insert({
-                product_id: newProd.id,
-                sku: item.sku,
-                variant_name: 'Standard Free Size',
-                stock_quantity: item.stockQuantity,
-                color: item.color || null,
-                is_active: true,
-              });
-
-              imported++;
-            }
-          } catch (rowErr: any) {
-            failed++;
-            errors.push({
-              row: rowNumber,
-              sku: item.sku,
-              error: rowErr?.message || 'Row import failed',
-            });
-          }
-        }
-
-        setSummary({
-          total: payload.length,
-          imported,
-          updated,
-          failed,
-          errors,
-        });
-        setStatus('completed');
-      }
+      setSummary({
+        total: responseData.total || payload.length,
+        imported: responseData.imported || 0,
+        updated: responseData.updated || 0,
+        failed: responseData.failed || 0,
+        errors: responseData.errors || [],
+      });
+      setStatus('completed');
+      return;
     } catch (err: any) {
       console.error('Import execution error:', err);
       setGlobalError(err.message || 'Execution error during product import.');
@@ -398,101 +357,87 @@ export const AdminImport: React.FC = () => {
     }
   };
 
-  const downloadSampleTemplate = () => {
-    const templateData = [
-      {
-        SKU: 'VKV-SAR-001',
-        Name: 'Royal Emerald Banarasi Katan Silk Saree',
-        Category: 'Sarees',
-        Collection: 'Heritage Sarees',
-        Price: 18500,
-        MRP: 22000,
-        Stock: 10,
-        Fabric: '100% Pure Katan Silk',
-        Weave: 'Kadwa Brocade Handloom',
-        Origin: 'Varanasi, Uttar Pradesh',
-        Dimensions: '5.5 meters saree with 0.8m running blouse piece',
-        'Care Instructions': 'Dry clean only. Store in pure cotton muslin cloth.',
-        Description: 'Classical Banarasi saree handwoven using pure katan silk and antique zari floral jaal motifs across the body.',
-        'Primary Image': 'https://jyiegidgzrvszqjhyfus.supabase.co/storage/v1/object/public/store-assets/products/product_banarasi_saree_1791192143761.jpg',
-        Status: 'active',
-        Color: 'Emerald Green',
-      },
-      {
-        SKU: 'VKV-SAR-002',
-        Name: 'Crimson Temple Border Pure Kanjivaram Silk Saree',
-        Category: 'Sarees',
-        Collection: 'Heritage Sarees',
-        Price: 24500,
-        MRP: 28000,
-        Stock: 8,
-        Fabric: 'Pure Mulberry Silk',
-        Weave: 'Korvai Interlock Handloom',
-        Origin: 'Kanchipuram, Tamil Nadu',
-        Dimensions: '5.5 meters saree with 0.8m blouse piece',
-        'Care Instructions': 'Dry clean only. Air out occasionally in shade.',
-        Description: 'Bridal Kanjivaram silk saree featuring pure silver and gold zari korvai contrast borders with temple motifs.',
-        'Primary Image': 'https://jyiegidgzrvszqjhyfus.supabase.co/storage/v1/object/public/store-assets/products/hero_vastram_saree_1791192126882.jpg',
-        Status: 'active',
-        Color: 'Crimson Red',
-      },
-      {
-        SKU: 'VKV-SAR-003',
-        Name: 'Chanderi Silk Cotton Eknaliya Butti Saree',
-        Category: 'Sarees',
-        Collection: 'Seasonal Archive',
-        Price: 8900,
-        MRP: 11000,
-        Stock: 15,
-        Fabric: 'Silk Cotton Blend',
-        Weave: 'Chanderi Handloom',
-        Origin: 'Chanderi, Madhya Pradesh',
-        Dimensions: '5.5 meters saree with unstitched blouse',
-        'Care Instructions': 'Dry clean recommended or gentle cold hand wash.',
-        Description: 'Lightweight gossamer Chanderi drape adorned with delicate handwoven gold zari eknaliya floral butties.',
-        'Primary Image': 'https://jyiegidgzrvszqjhyfus.supabase.co/storage/v1/object/public/store-assets/products/craft_textile_detail_1791192181572.jpg',
-        Status: 'active',
-        Color: 'Pastel Peach',
-      },
-      {
-        SKU: 'VKV-SAR-004',
-        Name: 'Heritage Peacock Border Paithani Silk Saree',
-        Category: 'Sarees',
-        Collection: 'Heritage Sarees',
-        Price: 32000,
-        MRP: 36000,
-        Stock: 5,
-        Fabric: 'Pure Silk',
-        Weave: 'Tapestry Handloom',
-        Origin: 'Yeola, Maharashtra',
-        Dimensions: '5.5m saree + 0.8m blouse',
-        'Care Instructions': 'Dry clean only. Avoid spraying perfumes directly.',
-        Description: 'Regal Paithani saree with an ornate peacock and parrot motif pallu handwoven in kaleidoscopic jewel silk.',
-        'Primary Image': 'https://jyiegidgzrvszqjhyfus.supabase.co/storage/v1/object/public/store-assets/products/product_banarasi_saree_1791192143761.jpg',
-        Status: 'active',
-        Color: 'Royal Magenta',
-        'GST Rate (%)': 5,
-        'Additional Image URLs (comma-separated)': '',
-        'Image Alt Text': 'Royal Magenta Paithani saree',
-        'SEO Title': 'Heritage Peacock Border Paithani Silk Saree | VK VASTRAM',
-        'SEO Description': 'Handwoven Paithani silk saree from VK VASTRAM.',
-        'Featured (TRUE/FALSE)': true,
-        'Best Seller (TRUE/FALSE)': false,
-        'New Arrival (TRUE/FALSE)': true,
-        'Tags (comma-separated)': 'Paithani, Silk, Heritage',
-      },
+  const downloadSampleTemplate = async () => {
+    const headers = [
+      'Product Title', 'Master SKU', 'URL Slug', 'Category', 'Collection', 'Saree Type', 'Fabric', 'Weave / Technique',
+      'Weaving Origin', 'Dimensions / Sizing', 'Care Instructions', 'Description', 'Selling Price', 'MRP', 'GST Rate %',
+      'Stock Quantity', 'Primary Colour Name', 'Primary Colour Hex', 'Secondary Colour Name', 'Secondary Colour Hex',
+      'Primary Image URL', 'Additional Image URLs', 'Image Alt Text', 'Catalog Status', 'Featured', 'Best Seller', 'New Arrival',
+      'SEO Title', 'SEO Description', 'Tags',
     ];
+    let categoryNames = ['Sarees', 'Bedsheets', 'Home Textiles'];
+    let collectionNames = ['Heritage Sarees', 'Artisanal Bedsheets', 'Seasonal Archive'];
+    let sareeTypes = ['Chanderi', 'Malmal Cotton', 'Tissue Silk', 'Linen Cotton', 'Banarasi', 'Kanjivaram', 'Paithani'];
+    let fabrics = ['Malmal Cotton', 'Tissue Silk', 'Linen Cotton', 'Pure Silk', 'Katan Silk', 'Silk Cotton Blend', 'Cotton'];
+    try {
+      if (isSupabaseConfigured()) {
+        const [cats, cols, typesSetting, fabricsSetting] = await Promise.all([
+          (supabase as any).from('categories').select('name').eq('is_active', true).order('sort_order'),
+          (supabase as any).from('collections').select('name').eq('is_active', true).order('sort_order'),
+          (supabase as any).from('site_settings').select('value').eq('key', 'saree_types').maybeSingle(),
+          (supabase as any).from('site_settings').select('value').eq('key', 'fabric_types').maybeSingle(),
+        ]);
+        if (cats.data?.length) categoryNames = cats.data.map((x: any) => x.name);
+        if (cols.data?.length) collectionNames = cols.data.map((x: any) => x.name);
+        if (Array.isArray(typesSetting.data?.value?.types)) sareeTypes = typesSetting.data.value.types.filter((x: any) => x.active !== false).map((x: any) => x.name);
+        if (Array.isArray(fabricsSetting.data?.value?.types)) fabrics = fabricsSetting.data.value.types.filter((x: any) => x.active !== false).map((x: any) => x.name);
+      }
+    } catch (error) { console.warn('Could not load live import dropdown values; using safe examples.', error); }
 
+    const example = {
+      'Product Title': 'Sample Saree - delete this row', 'Master SKU': '', 'URL Slug': '', Category: categoryNames[0] || 'Sarees',
+      Collection: collectionNames[0] || '', 'Saree Type': sareeTypes[0] || '', Fabric: fabrics[0] || '', 'Weave / Technique': '',
+      'Weaving Origin': '', 'Dimensions / Sizing': '', 'Care Instructions': '', Description: '', 'Selling Price': 1, MRP: 1,
+      'GST Rate %': 5, 'Stock Quantity': 0, 'Primary Colour Name': 'Sample Colour', 'Primary Colour Hex': '#78281F',
+      'Secondary Colour Name': '', 'Secondary Colour Hex': '', 'Primary Image URL': 'https://example.com/replace-with-real-image.jpg',
+      'Additional Image URLs': '', 'Image Alt Text': 'Sample image - replace before import', 'Catalog Status': 'draft', Featured: false,
+      'Best Seller': false, 'New Arrival': false, 'SEO Title': '', 'SEO Description': '', Tags: '',
+    } as Record<string, any>;
     const wb = XLSX.utils.book_new();
-    const ws = XLSX.utils.json_to_sheet(templateData);
-
-    // Set auto column widths
-    const colWidths = Object.keys(templateData[0]).map((k) => ({
-      wch: Math.max(k.length + 4, 16),
-    }));
-    ws['!cols'] = colWidths;
-
-    XLSX.utils.book_append_sheet(wb, ws, 'PRODUCT_IMPORT');
+    const ws = XLSX.utils.json_to_sheet([example], { header: headers });
+    ws['!cols'] = headers.map((h) => ({ wch: Math.min(Math.max(h.length + 3, 16), 38) }));
+    // SheetJS Community Edition writes values and formula lists reliably; dropdowns are also
+    // documented in LISTS for spreadsheet editors that do not preserve imported validations.
+    XLSX.utils.book_append_sheet(wb, ws, 'PRODUCTS');
+    const instructions = headers.map((header) => ({ Column: header, Instructions: ({
+      'Product Title': 'Required. Unique product display name.', 'Master SKU': 'Optional; blank SKU is generated automatically.', 'URL Slug': 'Optional; generated from title if blank and must be unique.',
+      Category: 'Required. Choose a value from LISTS.', Collection: 'Optional. Choose a value from LISTS.', 'Saree Type': 'Required for sarees; choose a managed type.',
+      Fabric: 'Required for sarees; choose a managed fabric.', 'Weave / Technique': 'Optional descriptive text; not used as a filter.', 'Selling Price': 'Required GST-inclusive amount greater than zero.',
+      MRP: 'Optional; must be greater than or equal to Selling Price.', 'GST Rate %': 'Use 0, 5, 12 or 18 as confirmed by your accountant.', 'Stock Quantity': 'Required whole number, zero or greater.',
+      'Primary Colour Name': 'Required. Enter the customer-facing primary colour.', 'Primary Colour Hex': 'Required hex colour in #RRGGBB format.', 'Secondary Colour Name': 'Optional.',
+      'Secondary Colour Hex': 'Required only when a secondary colour name is entered.', 'Primary Image URL': 'Required for a product intended to be displayed.', 'Additional Image URLs': 'Optional comma-separated URLs.',
+      'Catalog Status': 'Choose active or draft.', Featured: 'TRUE/FALSE; controls Curated Heritage section.', 'Best Seller': 'TRUE/FALSE.', 'New Arrival': 'TRUE/FALSE.',
+      Tags: 'Optional comma-separated tags.',
+    } as Record<string, string>)[header] || 'Optional unless marked required.' }));
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(instructions), 'INSTRUCTIONS');
+    const lists = XLSX.utils.aoa_to_sheet([
+      ['Category', 'Collection', 'Saree Type', 'Fabric', 'Catalog Status', 'GST Rate %', 'Boolean'],
+      ...Array.from({ length: Math.max(categoryNames.length, collectionNames.length, sareeTypes.length, fabrics.length, 2, 4) }, (_, i) => [
+        categoryNames[i] || '', collectionNames[i] || '', sareeTypes[i] || '', fabrics[i] || '',
+        ['active', 'draft'][i] || '', [0, 5, 12, 18][i] ?? '', ['TRUE', 'FALSE'][i] || '',
+      ]),
+    ]);
+    XLSX.utils.book_append_sheet(wb, lists, 'LISTS');
+    // Named ranges are Excel-compatible references for list validation.
+    (wb as any).Workbook = (wb as any).Workbook || {};
+    (wb.Workbook as any).Names = [
+      { Name: 'CategoryOptions', Ref: `LISTS!$A$2:$A$${categoryNames.length + 1}` },
+      { Name: 'CollectionOptions', Ref: `LISTS!$B$2:$B$${collectionNames.length + 1}` },
+      { Name: 'SareeTypeOptions', Ref: `LISTS!$C$2:$C$${sareeTypes.length + 1}` },
+      { Name: 'FabricOptions', Ref: `LISTS!$D$2:$D$${fabrics.length + 1}` },
+      { Name: 'StatusOptions', Ref: 'LISTS!$E$2:$E$3' },
+      { Name: 'GstOptions', Ref: 'LISTS!$F$2:$F$5' },
+      { Name: 'BooleanOptions', Ref: 'LISTS!$G$2:$G$3' },
+    ];
+    (ws as any)['!dataValidation'] = [
+      { sqref: 'D2:D500', type: 'list', formula1: '=CategoryOptions' },
+      { sqref: 'E2:E500', type: 'list', formula1: '=CollectionOptions' },
+      { sqref: 'F2:F500', type: 'list', formula1: '=SareeTypeOptions' },
+      { sqref: 'G2:G500', type: 'list', formula1: '=FabricOptions' },
+      { sqref: 'X2:X500', type: 'list', formula1: '=StatusOptions' },
+      { sqref: 'O2:O500', type: 'list', formula1: '=GstOptions' },
+      { sqref: 'Y2:AA500', type: 'list', formula1: '=BooleanOptions' },
+    ];
     XLSX.writeFile(wb, 'VK_VASTRAM_PRODUCT_IMPORT_TEMPLATE.xlsx');
   };
 

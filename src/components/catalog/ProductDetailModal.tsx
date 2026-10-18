@@ -90,13 +90,33 @@ export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
   const variantImages = (activeVariant?.images || [])
     .map((image) => image.imageUrl)
     .filter((url): url is string => typeof url === 'string' && Boolean(url.trim()));
-  const productImages = [product.primaryImage, product.secondaryImage, ...(product.additionalImages || [])]
+  const generalRoleImages = (product.imagesWithRoles || [])
+    .filter((image) => !image.variantId && !image.variantSku)
+    .sort((a, b) => {
+      if (Boolean(a.isPrimary) !== Boolean(b.isPrimary)) return a.isPrimary ? -1 : 1;
+      return (Number(a.sortOrder) || 0) - (Number(b.sortOrder) || 0);
+    })
+    .map((image) => image.imageUrl)
     .filter((url): url is string => typeof url === 'string' && Boolean(url.trim()));
-  // A variant may carry an image record with an empty URL. Fall back to the product
-  // gallery so the main stage never stays blank while valid secondary images exist.
+  const hasVariantScopedImages = Boolean(
+    product.imagesWithRoles?.some((image) => image.variantId || image.variantSku) ||
+    product.variants?.some((variant) => (variant.images || []).some((image) => image.variantId || image.variantSku))
+  );
+  const legacyProductImages = [product.primaryImage, product.secondaryImage, ...(product.additionalImages || [])]
+    .filter((url): url is string => typeof url === 'string' && Boolean(url.trim()));
+  const productImages = generalRoleImages.length > 0
+    ? generalRoleImages
+    : (hasVariantScopedImages ? [] : legacyProductImages);
+  // Only use true product-level images as a fallback. A variant with no gallery
+  // must not inherit the first image of another color.
   const images = variantImages.length > 0 ? variantImages : productImages;
   const currentImage = (selectedImage && images.includes(selectedImage) ? selectedImage : '') || images[0] || '';
-  const currentImageFallback = product.imagesWithRoles?.find((image) => normalizeImageUrl(image.imageUrl) === normalizeImageUrl(currentImage))?.fallbackImageUrl || activeVariant?.images?.find((image) => normalizeImageUrl(image.imageUrl) === normalizeImageUrl(currentImage))?.fallbackImageUrl;
+  const currentImageFallback = activeVariant?.images?.find((image) => normalizeImageUrl(image.imageUrl) === normalizeImageUrl(currentImage))?.fallbackImageUrl ||
+    product.imagesWithRoles?.find((image) =>
+      normalizeImageUrl(image.imageUrl) === normalizeImageUrl(currentImage) &&
+      (!image.variantId || image.variantId === activeVariant?.id) &&
+      (!image.variantSku || image.variantSku === activeVariant?.sku)
+    )?.fallbackImageUrl;
 
   const handleAddToCart = async () => {
     if (isSoldOut || !onAddToCart) return;

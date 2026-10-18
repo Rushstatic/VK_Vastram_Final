@@ -10,7 +10,7 @@ interface WishlistPageProps {
   onNavigate: (page: PageView) => void;
   onRemoveFromWishlist: (productId: string) => void;
   onQuickView: (product: Product) => void;
-  onAddToCart: (product: Product) => void;
+  onAddToCart: (product: Product, quantity?: number, color?: string, size?: string, variantId?: string) => void;
 }
 
 export const WishlistPage: React.FC<WishlistPageProps> = ({

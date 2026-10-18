@@ -9,6 +9,7 @@ import { ProductFilterDrawer } from '../catalog/ProductFilterDrawer';
 import { getAvailableColorsFromProducts, resolveCanonicalColor } from '../../lib/colorSystem';
 import { getDiscoveryOrderedProducts } from '../../lib/discoveryOrder';
 import { Button } from '../ui/Button';
+import { useManagedFabrics } from '../../hooks/useManagedFabrics';
 
 interface CollectionPageProps {
   category: ProductCategory;
@@ -24,7 +25,7 @@ interface CollectionPageProps {
   wishlistIds: string[];
   onToggleWishlist: (product: Product) => void;
   onQuickView: (product: Product) => void;
-  onAddToCart: (product: Product) => void;
+  onAddToCart: (product: Product, quantity?: number, color?: string, size?: string, variantId?: string) => void;
   products?: Product[];
   categories?: CollectionCategory[];
 }
@@ -47,6 +48,7 @@ export const CollectionPage: React.FC<CollectionPageProps> = ({
   products = PRODUCTS,
   categories = CATEGORIES,
 }) => {
+  const managedFabrics = useManagedFabrics();
   const [isMobileFilterOpen, setIsMobileFilterOpen] = useState(false);
   const [selectedSort, setSelectedSort] = useState<'discovery' | 'price-asc' | 'price-desc' | 'newest'>('discovery');
 
@@ -108,29 +110,35 @@ export const CollectionPage: React.FC<CollectionPageProps> = ({
   };
 
   // Derived filter options based on real products in this category
+  // Derive options from actual catalog data first. Saree type is stored in
+  // metadata.sareeType by the admin form (older products may use subCategory),
+  // so reading subCategory alone silently hides valid filter options.
   const availableSubCategories = useMemo(() => {
-    const subs = new Set<string>();
-    categoryPool.forEach((p) => {
-      if (p.subCategory && !isMeaninglessValue(p.subCategory)) {
-        subs.add(p.subCategory.trim());
-      }
-    });
-    return Array.from(subs);
+    const values = new Map<string, string>();
+    for (const product of categoryPool) {
+      const metadata = (product as Product & { metadata?: Record<string, unknown> }).metadata;
+      const raw = String(metadata?.sareeType || product.subCategory || '').trim();
+      if (!isMeaninglessValue(raw)) values.set(raw.toLocaleLowerCase(), raw);
+    }
+    // Keep managed taxonomy labels when a product uses the same label with
+    // different casing/spacing, but never show unused placeholder options.
+    return [...values.values()].sort((a, b) => a.localeCompare(b));
   }, [categoryPool]);
 
   const availableFabrics = useMemo(() => {
-    const fabrics = new Set<string>();
-    categoryPool.forEach((p) => {
-      if (p.fabric && !isMeaninglessValue(p.fabric)) {
-        // extract primary fabric word/type
-        const cleanFabric = p.fabric.split('(')[0].trim();
-        if (!isMeaninglessValue(cleanFabric)) {
-          fabrics.add(cleanFabric);
-        }
-      }
-    });
-    return Array.from(fabrics).slice(0, 8);
-  }, [categoryPool]);
+    const values = new Map<string, string>();
+    for (const product of categoryPool) {
+      const raw = String(product.fabric || '').trim();
+      if (!isMeaninglessValue(raw)) values.set(raw.toLocaleLowerCase(), raw);
+    }
+    // Managed names are useful as canonical labels only when catalog products
+    // actually use that fabric; the product-derived set remains authoritative.
+    for (const managed of managedFabrics) {
+      const key = managed.name.trim().toLocaleLowerCase();
+      if (values.has(key)) values.set(key, managed.name.trim());
+    }
+    return [...values.values()].sort((a, b) => a.localeCompare(b));
+  }, [categoryPool, managedFabrics]);
 
   const availableColors = useMemo(() => {
     return getAvailableColorsFromProducts(categoryPool);
@@ -164,13 +172,17 @@ export const CollectionPage: React.FC<CollectionPageProps> = ({
 
     // 3. Subcategories / Weaves
     if (filters.selectedSubCategories.length > 0) {
-      list = list.filter((p) => p.subCategory && filters.selectedSubCategories.includes(p.subCategory));
+      list = list.filter((p) => {
+        const metadata = (p as Product & { metadata?: Record<string, unknown> }).metadata;
+        const value = String(metadata?.sareeType || p.subCategory || '').trim().toLocaleLowerCase();
+        return filters.selectedSubCategories.some((selected) => selected.trim().toLocaleLowerCase() === value);
+      });
     }
 
     // 4. Fabrics
     if (filters.selectedFabrics.length > 0) {
       list = list.filter((p) =>
-        filters.selectedFabrics.some((f) => p.fabric.toLowerCase().includes(f.toLowerCase()))
+        filters.selectedFabrics.some((f) => String(p.fabric || '').trim().toLocaleLowerCase() === f.trim().toLocaleLowerCase())
       );
     }
 
@@ -200,7 +212,7 @@ export const CollectionPage: React.FC<CollectionPageProps> = ({
     } else if (selectedSort === 'price-desc') {
       list.sort((a, b) => b.price - a.price);
     } else if (selectedSort === 'newest') {
-      list.sort((a, b) => (b.newArrival ? 1 : 0) - (a.newArrival ? 1 : 0));
+      list.sort((a: any, b: any) => new Date(b.createdAt || b.created_at || 0).getTime() - new Date(a.createdAt || a.created_at || 0).getTime());
     } else {
       // Default: Controlled Discovery Ordering (session-aware deterministic shuffle)
       list = getDiscoveryOrderedProducts(list);

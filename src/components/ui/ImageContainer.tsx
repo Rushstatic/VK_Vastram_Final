@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useLayoutEffect } from 'react';
 import { normalizeImageUrl } from '../../lib/imageHelper';
 
 export interface ImagePresentationProps {
@@ -54,7 +54,7 @@ export const ImageContainer: React.FC<ImageContainerProps> = ({
   const [hasError, setHasError] = useState(false);
 
   // When source URL changes, immediately invalidate loaded state to eliminate stale image flash
-  useEffect(() => {
+  useLayoutEffect(() => {
     setLoadedSrc(null);
     setActiveSrc(normalizedSrc || normalizedFallbackSrc);
     setHasError(false);

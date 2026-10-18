@@ -193,7 +193,7 @@ export const ProductFilterSidebar: React.FC<ProductFilterSidebarProps> = ({
       {cleanSubCategories.length > 0 && (
         <div className="space-y-2 pt-3 border-t border-[#1C1917]/10">
           <h4 className="text-[11px] uppercase tracking-wider font-semibold text-[#1C1917]">
-            Weave / Style
+            Saree Type
           </h4>
           <div className={`space-y-1.5 ${disableSectionScroll ? '' : 'max-h-48 overflow-y-auto pr-1'}`}>
             {cleanSubCategories.map((sub) => {

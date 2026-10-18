@@ -1,10 +1,11 @@
-import React, { useEffect, useState } from 'react';
+import React from 'react';
 import { ArrowUpRight } from 'lucide-react';
 import { Product, PageView } from '../../types';
 import { Container } from '../ui/Container';
 import { ScrollReveal } from '../ui/ScrollReveal';
 import { AnimatedSplitHeading } from '../ui/AnimatedSplitHeading';
-import { supabase, isSupabaseConfigured } from '../../lib/supabase';
+import { useSareeTypes } from '../../hooks/useSareeTypes';
+import { normalizeImageUrl } from '../../lib/imageHelper';
 
 interface SareeTraditionsProps {
   products: Product[];
@@ -12,55 +13,14 @@ interface SareeTraditionsProps {
 }
 
 export const SareeTraditions: React.FC<SareeTraditionsProps> = ({ products, onNavigate }) => {
-  const [cmsTypes, setCmsTypes] = useState<Array<{ name: string; imageUrl?: string }> | null>(null);
+  const cmsTypes = useSareeTypes();
   const sarees = products.filter((p) => p.category === 'sarees' && p.status !== 'draft' && p.status !== 'archived');
-
-  useEffect(() => {
-    let active = true;
-    const loadCmsTypes = async () => {
-      if (!isSupabaseConfigured()) return;
-      const { data, error } = await (supabase as any)
-        .from('site_settings')
-        .select('value')
-        .eq('key', 'saree_types')
-        .maybeSingle();
-      if (!active || error) return;
-      // Supabase JSONB normally returns an object, but tolerate serialized JSON too.
-      let settingValue: any = data?.value;
-      if (typeof settingValue === 'string') {
-        try { settingValue = JSON.parse(settingValue); } catch { settingValue = null; }
-      }
-      if (!Array.isArray(settingValue?.types)) {
-        setCmsTypes(null);
-        return;
-      }
-      setCmsTypes(settingValue.types
-        .filter((type: any) => type && type.active !== false && typeof type.name === 'string')
-        .map((type: any) => ({
-          name: type.name.trim(),
-          imageUrl: typeof type.imageUrl === 'string' ? type.imageUrl.trim() : '',
-        }))
-        .filter((type: any) => Boolean(type.name)));
-    };
-    void loadCmsTypes();
-    const refresh = () => { void loadCmsTypes(); };
-    const channel = (supabase as any).channel('public-saree-type-settings-sync')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'site_settings', filter: 'key=eq.saree_types' }, refresh)
-      .subscribe();
-    window.addEventListener('vk_saree_types_updated', refresh);
-    window.addEventListener('storage', refresh);
-    window.addEventListener('focus', refresh);
-    return () => { active = false; window.removeEventListener('vk_saree_types_updated', refresh); window.removeEventListener('storage', refresh); window.removeEventListener('focus', refresh); void (supabase as any).removeChannel(channel); };
-  }, []);
-
-  const availableTypes = cmsTypes ?? Array.from(
-    new Set(sarees.map((product) => product.subCategory?.trim()).filter((value): value is string => Boolean(value)))
-  ).map((name) => ({ name, imageUrl: '' }));
-  // CMS is the source of truth for active cards. A type can be featured before
-  // its first product is assigned; a matching product image is only the fallback.
+  const availableTypes = cmsTypes.length ? cmsTypes : [];
+  // Use only managed saree types; never infer a type from free-text weave values.
   const traditions = availableTypes
     .map((type) => ({
       ...type,
+      imageUrl: normalizeImageUrl(type.imageUrl),
       product: sarees.find((product) => product.subCategory?.trim().toLocaleLowerCase() === type.name.trim().toLocaleLowerCase()),
     }))
     .slice(0, 6);

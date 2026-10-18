@@ -10,7 +10,7 @@ interface ProductGridProps {
   onToggleWishlist?: (product: Product) => void;
   onSelectProduct?: (slug: string) => void;
   onQuickView?: (product: Product) => void;
-  onAddToCart?: (product: Product) => void;
+  onAddToCart?: (product: Product, quantity?: number, color?: string, size?: string, variantId?: string) => void;
   loading?: boolean;
   /** Use a swipeable horizontal rail on mobile while retaining the desktop grid. */
   mobileCarousel?: boolean;

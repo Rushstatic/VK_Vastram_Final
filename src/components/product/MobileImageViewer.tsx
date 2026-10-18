@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useLayoutEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { X, ChevronLeft, ChevronRight, ZoomIn, ZoomOut, RotateCcw } from 'lucide-react';
 import { normalizeImageUrl } from '../../lib/imageHelper';
 import { ProductVariantImage } from '../../types';
@@ -60,7 +61,7 @@ export const MobileImageViewer: React.FC<MobileImageViewerProps> = ({
       gsap.fromTo(
         modalRef.current,
         { opacity: 0, scale: 0.98 },
-        { opacity: 1, scale: 1, duration: 0.35, ease: 'power2.out' }
+        { opacity: 1, scale: 1, duration: 0.35, ease: 'power2.out', clearProps: 'transform' }
       );
     }
 
@@ -90,7 +91,7 @@ export const MobileImageViewer: React.FC<MobileImageViewerProps> = ({
     return () => window.clearTimeout(timeout);
   }, [activeImageUrl, isOpen, imageLoaded, imageLoadError]);
 
-  if (!isOpen || images.length === 0) return null;
+  if (!isOpen || images.length === 0 || typeof document === 'undefined') return null;
 
   const handleImageLoaded = (event: React.SyntheticEvent<HTMLImageElement>) => {
     setImageLoaded(true);
@@ -159,10 +160,13 @@ export const MobileImageViewer: React.FC<MobileImageViewerProps> = ({
     }
   };
 
-  return (
+  // Render on document.body: an ancestor with a CSS transform (the page-enter
+  // animation on <main>) would otherwise become the containing block for this
+  // fixed overlay and push its header/image far outside the visible screen.
+  return createPortal(
     <div
       ref={modalRef}
-      className="fixed inset-0 z-50 bg-[#1C1917]/95 backdrop-blur-md flex flex-col justify-between select-none"
+      className="fixed inset-0 z-[100] bg-[#1C1917]/95 backdrop-blur-md flex flex-col justify-between select-none"
       role="dialog"
       aria-modal="true"
       aria-label={`${productName} fullscreen gallery`}
@@ -204,7 +208,7 @@ export const MobileImageViewer: React.FC<MobileImageViewerProps> = ({
         onDoubleClick={handleDoubleTap}
         className="relative flex-1 flex items-center justify-center p-2 sm:p-6 overflow-hidden"
       >
-        {normalizedCurrentUrl && !imageLoadError && !imageLoaded && (
+        {activeImageUrl && !imageLoadError && !imageLoaded && (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-[#FAF8F5]/80" role="status" aria-live="polite">
             <span className="h-9 w-9 rounded-full border-2 border-white/20 border-t-[#B88E3E] animate-spin" aria-hidden="true" />
             <span className="font-serif italic text-sm">Unveiling the weave…</span>
@@ -230,11 +234,11 @@ export const MobileImageViewer: React.FC<MobileImageViewerProps> = ({
             loading="eager"
             decoding="async"
             className={`max-h-[85vh] max-w-[95vw] object-contain transition-opacity duration-200 cursor-grab active:cursor-grabbing ${imageLoaded ? 'opacity-100' : 'opacity-0'}`}
-            style={{ transform: zoomScale > 1 ? `scale(${zoomScale})` : undefined, visibility: imageLoaded ? 'visible' : 'hidden' }}
+            style={{ transform: zoomScale > 1 ? `scale(${zoomScale})` : undefined }}
             draggable={false}
           />
         ) : (
-          <div className="max-w-md text-center px-6 py-8 text-[#FAF8F5]" role="status">
+          <div className="max-w-md text-center px-6 py-8 text-[#FAF8F5]" role="status" aria-live="polite">
             <p className="font-serif text-lg">Image unavailable</p>
             <p className="mt-2 text-sm text-white/60">This product image could not be loaded. Check its public image URL in the product gallery and save it again.</p>
           </div>
@@ -345,6 +349,7 @@ export const MobileImageViewer: React.FC<MobileImageViewerProps> = ({
           </div>
         )}
       </div>
-    </div>
+    </div>,
+    document.body
   );
 };

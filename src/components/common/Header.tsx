@@ -4,8 +4,8 @@ import { Container } from '../ui/Container';
 import { PageView } from '../../types';
 import { useSiteSettings } from '../../hooks/useSiteSettings';
 import { adminService, CollectionAdminData } from '../../services/adminService';
-import DefaultLogo from '../../assets/images/vk_emblem_small_1791213158854.jpg';
 import { gsap } from '../../lib/gsap';
+import { useSareeTypes } from '../../hooks/useSareeTypes';
 
 interface HeaderProps {
   currentPage: PageView;
@@ -36,7 +36,8 @@ export const Header: React.FC<HeaderProps> = ({
   const progressBarRef = useRef<HTMLDivElement>(null);
   const drawerRef = useRef<HTMLDivElement>(null);
   const backdropRef = useRef<HTMLDivElement>(null);
-  const { settings, loading: settingsLoading } = useSiteSettings();
+  const { settings } = useSiteSettings();
+  const sareeTypes = useSareeTypes();
   const storeName = settings?.storeName || 'VK VASTRAM';
 
   // Smooth close helper that triggers exit animation before unmounting
@@ -123,16 +124,13 @@ export const Header: React.FC<HeaderProps> = ({
     setOpenAccordions((prev) => ({ ...prev, [key]: !prev[key] }));
   };
 
-  const dynamicCategoryLinks = (categories && categories.length > 0)
-    ? categories.map((cat) => ({
-        label: cat.title,
-        page: { type: 'collection', category: cat.category } as PageView,
-      }))
-    : [
-        { label: 'Sarees', page: { type: 'collection', category: 'sarees' } as PageView },
-        { label: 'Bedsheets', page: { type: 'collection', category: 'bedsheets' } as PageView },
-        { label: 'Home Textiles', page: { type: 'collection', category: 'home-textiles' } as PageView },
-      ];
+  // Navigation categories are CMS-driven. Do not silently reintroduce archived/demo categories.
+  const dynamicCategoryLinks = (categories || [])
+    .filter((cat) => cat && cat.isActive !== false && cat.is_active !== false && (cat.title || cat.name))
+    .map((cat) => ({
+      label: cat.title || cat.name,
+      page: { type: 'collection', category: cat.category || cat.slug || 'all' } as PageView,
+    }));
 
   const hasBedsheets = categories
     ? categories.some((c) => c.category === 'bedsheets' || c.slug === 'bedsheets')
@@ -208,7 +206,7 @@ export const Header: React.FC<HeaderProps> = ({
             </div>
 
             {/* Desktop Left: Navigation Links */}
-            <nav className="hidden xl:flex items-center gap-2 2xl:gap-4 text-[10px] 2xl:text-[11px] tracking-[0.07em] uppercase font-medium min-w-0">
+            <nav className="hidden lg:flex items-center gap-1.5 xl:gap-2 2xl:gap-4 text-[9px] xl:text-[10px] 2xl:text-[11px] tracking-[0.045em] uppercase font-medium min-w-0">
               {mainNavLinks.map((link, idx) => {
                 const active = isLinkActive(link.page);
                 return (
@@ -253,20 +251,14 @@ export const Header: React.FC<HeaderProps> = ({
   {settings?.logoUrl ? (
     <img
       src={settings.logoUrl}
-      alt="VK VASTRAM logo"
-      onError={(e) => {
-        (e.currentTarget as HTMLImageElement).src = DefaultLogo;
-      }}
+      alt={`${storeName} logo`}
+      onError={(e) => { e.currentTarget.style.display = 'none'; }}
       className="w-full h-full p-0.5 rounded-full object-contain transition-opacity duration-150"
     />
-  ) : settingsLoading ? (
-    <span aria-hidden="true" className="block w-full h-full rounded-full bg-[#F4EFE6]/70" />
   ) : (
-    <img
-      src={DefaultLogo}
-      alt="VK VASTRAM logo"
-      className="w-full h-full p-0.5 rounded-full object-contain"
-    />
+    <span className="flex h-full w-full items-center justify-center rounded-full border border-[#B88E3E]/50 font-serif text-sm text-[#78281F]" aria-label={`${storeName} monogram`}>
+      VK
+    </span>
   )}
 </div>
 
@@ -370,14 +362,23 @@ export const Header: React.FC<HeaderProps> = ({
               <div className="flex items-center gap-2.5">
                 <div className="relative w-7 h-7 flex items-center justify-center shrink-0">
                   <div className="absolute inset-0 border border-[#78281F]/30 rounded-full animate-spin-slow pointer-events-none" />
-                  <img
-                    src={settings?.logoUrl || DefaultLogo}
-                    alt="Store Logo"
-                    onError={(e) => {
-                      (e.currentTarget as HTMLImageElement).src = DefaultLogo;
-                    }}
-                    className="w-5.5 h-5.5 rounded-full object-cover"
-                  />
+                  {settings?.logoUrl ? (
+                    <img
+                      src={settings.logoUrl}
+                      alt={`${storeName} logo`}
+                      onError={(e) => {
+                        e.currentTarget.style.display = 'none';
+                      }}
+                      className="w-5 h-5 rounded-full object-contain"
+                    />
+                  ) : (
+                    <span
+                      className="flex h-5 w-5 items-center justify-center rounded-full border border-[#B88E3E]/50 font-serif text-[9px] text-[#78281F]"
+                      aria-label={`${storeName} monogram`}
+                    >
+                      VK
+                    </span>
+                  )}
                 </div>
                 <span className="font-serif text-xl sm:text-2xl lg:text-3xl font-medium tracking-[0.16em] text-[#78281F] uppercase">
                   {storeName}
@@ -449,34 +450,16 @@ export const Header: React.FC<HeaderProps> = ({
                         >
                           All Sarees
                         </button>
-                        <button
-                          type="button"
-                          onClick={() => handleNavClick({ type: 'collection', category: 'sarees', subCategory: 'Kadwa Brocade Handloom' })}
-                          className="block w-full text-left hover:text-[#1C1917] transition-all hover:translate-x-1 duration-150 cursor-pointer"
-                        >
-                          Banarasi & Brocade Handlooms
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleNavClick({ type: 'collection', category: 'sarees', subCategory: 'Korvai Interlock Handloom' })}
-                          className="block w-full text-left hover:text-[#1C1917] transition-all hover:translate-x-1 duration-150 cursor-pointer"
-                        >
-                          Kanjivaram Silk Sarees
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleNavClick({ type: 'collection', category: 'sarees', subCategory: 'Chanderi Handloom' })}
-                          className="block w-full text-left hover:text-[#1C1917] transition-all hover:translate-x-1 duration-150 cursor-pointer"
-                        >
-                          Chanderi & Delicate Silks
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleNavClick({ type: 'collection', category: 'sarees', subCategory: 'Korvai Interlock Handloom' })}
-                          className="block w-full text-left hover:text-[#1C1917] transition-all hover:translate-x-1 duration-150 cursor-pointer"
-                        >
-                          Korvai Interlock Silks
-                        </button>
+                        {sareeTypes.map((type) => (
+                          <button
+                            key={type.name}
+                            type="button"
+                            onClick={() => handleNavClick({ type: 'collection', category: 'sarees', subCategory: type.name })}
+                            className="block w-full text-left hover:text-[#1C1917] transition-all hover:translate-x-1 duration-150 cursor-pointer"
+                          >
+                            {type.name}
+                          </button>
+                        ))}
                       </div>
                     </div>
                   </div>

@@ -2,6 +2,7 @@ import { supabase, isSupabaseConfigured } from '../lib/supabase';
 import { CartItem, Product, ProductCategory } from '../types';
 import { normalizeImageUrl } from '../lib/imageHelper';
 import { sanitizeQuantity, MAX_CART_ITEM_QUANTITY } from '../lib/validation';
+import { reconcileCartItemVariant } from '../lib/cartVariantImage';
 
 const GUEST_CART_KEY = 'vk_guest_cart';
 
@@ -15,16 +16,32 @@ export const cartService = {
       if (!stored) return [];
       const parsed = JSON.parse(stored);
       if (Array.isArray(parsed)) {
-        return parsed
+        let needsPersistence = false;
+        const cleanItems = parsed
           .filter((item) => item && item.product && item.product.id)
           .map((item) => {
+            const aligned = reconcileCartItemVariant(item as CartItem);
+            // Migrate older guest cart rows that stored a color label but not the
+            // same selected variant ID/image. Save the repair so checkout and a
+            // subsequent refresh continue to use the same SKU/color.
+            if (
+              typeof item.selectedVariantImage !== 'string' ||
+              aligned.variantId !== item.variantId ||
+              aligned.selectedColor !== item.selectedColor ||
+              aligned.product.primaryImage !== item.product.primaryImage ||
+              aligned.id !== item.id
+            ) {
+              needsPersistence = true;
+            }
             const cleanQty = sanitizeQuantity(item.quantity, item.stockAvailable || MAX_CART_ITEM_QUANTITY);
             return {
-              ...item,
+              ...aligned,
               quantity: cleanQty,
             };
           })
           .filter((item) => item.quantity > 0);
+        if (needsPersistence) this.saveGuestCart(cleanItems);
+        return cleanItems;
       }
       return [];
     } catch {
@@ -124,6 +141,7 @@ export const cartService = {
             dimensions,
             stock_quantity,
             price_override,
+            attributes,
             product:products(
               id,
               slug,
@@ -131,7 +149,7 @@ export const cartService = {
               price,
               mrp,
               category:categories(name, slug),
-              images:product_images(image_url, is_primary)
+              images:product_images(image_url, storage_path, is_primary, variant_id, sort_order)
             )
           )
         `)
@@ -146,10 +164,30 @@ export const cartService = {
         .map((item: any) => {
           const v = item.variant;
           const p = v?.product;
-          const primaryImg =
-            p?.images?.find((i: any) => i.is_primary)?.image_url ||
-            p?.images?.[0]?.image_url ||
-            '/src/assets/images/hero_vastram_saree_1791192126882.jpg';
+          const images = Array.isArray(p?.images) ? p.images : [];
+          const imageUrl = (image: any) => image?.image_url || image?.storage_path || '';
+          const byPriority = (left: any, right: any) => {
+            if (Boolean(left?.is_primary) !== Boolean(right?.is_primary)) return left?.is_primary ? -1 : 1;
+            return (Number(left?.sort_order) || 0) - (Number(right?.sort_order) || 0);
+          };
+          // Variant-associated images are authoritative for the selected variant.
+          // Only fall back to shared product images (variant_id IS NULL); never use
+          // the first image from a different color's gallery.
+          const variantImages = images
+            .filter((image: any) => image?.variant_id === v?.id && Boolean(imageUrl(image)))
+            .sort(byPriority);
+          const generalImages = images
+            .filter((image: any) => !image?.variant_id && Boolean(imageUrl(image)))
+            .sort(byPriority);
+          const attributeImages = Array.isArray(v?.attributes?.images) ? v.attributes.images : [];
+          const attributeImage = attributeImages.find((image: any) =>
+            Boolean(typeof image === 'string' ? image.trim() : (image?.imageUrl || image?.image_url || image?.storage_path))
+          );
+          const attributeImageUrl = typeof attributeImage === 'string'
+            ? attributeImage
+            : attributeImage?.imageUrl || attributeImage?.image_url || attributeImage?.storage_path || '';
+          const primaryImg = imageUrl(variantImages[0]) || attributeImageUrl || imageUrl(generalImages[0]);
+          const normalizedVariantImage = normalizeImageUrl(primaryImg);
 
           const product: Product = {
             id: p?.id || v?.id || 'c0000000-0000-0000-0000-000000000001',
@@ -165,7 +203,7 @@ export const cartService = {
             origin: '',
             dimensions: v?.dimensions || '',
             care: '',
-            primaryImage: normalizeImageUrl(primaryImg),
+            primaryImage: normalizedVariantImage,
             inStock: (v?.stock_quantity || 0) > 0,
           };
 
@@ -173,6 +211,7 @@ export const cartService = {
             id: item.id,
             variantId: v?.id,
             product,
+            selectedVariantImage: normalizedVariantImage,
             quantity: sanitizeQuantity(item.quantity, v?.stock_quantity ?? MAX_CART_ITEM_QUANTITY),
             selectedColor: v?.color || undefined,
             selectedSize: v?.size || v?.bed_size || v?.dimensions || undefined,

@@ -9,7 +9,7 @@ interface SalePageProps {
   wishlistIds: string[];
   onToggleWishlist: (product: Product) => void;
   onQuickView: (product: Product) => void;
-  onAddToCart: (product: Product) => void;
+  onAddToCart: (product: Product, quantity?: number, color?: string, size?: string, variantId?: string) => void;
   products?: Product[];
 }
 

@@ -93,12 +93,13 @@ export const ProductDetailPage: React.FC<ProductDetailPageProps> = ({
       setSelectedVariantId((prev) => {
         const existingSelection = variants.find((v) => v.id === prev);
         if (existingSelection) return prev;
-        const firstAvailable = variants.find((v) =>
-          v.isActive !== false &&
-          Number(v.availableQuantity ?? v.stockQuantity ?? 0) > 0
-        );
+        const hasImages = (v: ProductVariant) => Boolean((v.images || []).some((img) => Boolean(img.imageUrl)) || (product?.imagesWithRoles || []).some((img) => (img.variantId === v.id || (img.variantSku && img.variantSku === v.sku)) && Boolean(img.imageUrl)));
+        const inStock = (v: ProductVariant) => v.isActive !== false && Number(v.availableQuantity ?? v.stockQuantity ?? 0) > 0;
+        const firstAvailableWithImages = variants.find((v) => inStock(v) && hasImages(v));
+        const firstAvailable = variants.find(inStock);
+        const firstActiveWithImages = variants.find((v) => v.isActive !== false && hasImages(v));
         const firstActive = variants.find((v) => v.isActive !== false);
-        return (firstAvailable || firstActive || variants[0]).id;
+        return (firstAvailableWithImages || firstAvailable || firstActiveWithImages || firstActive || variants[0]).id;
       });
     }
   }, [variants]);
@@ -122,12 +123,13 @@ export const ProductDetailPage: React.FC<ProductDetailPageProps> = ({
   useEffect(() => {
     if (product?.id) {
       if (variants.length > 0) {
-        const firstAvailable = variants.find((v) =>
-          v.isActive !== false &&
-          Number(v.availableQuantity ?? v.stockQuantity ?? 0) > 0
-        );
+        const hasImages = (v: ProductVariant) => Boolean((v.images || []).some((img) => Boolean(img.imageUrl)) || (product?.imagesWithRoles || []).some((img) => (img.variantId === v.id || (img.variantSku && img.variantSku === v.sku)) && Boolean(img.imageUrl)));
+        const inStock = (v: ProductVariant) => v.isActive !== false && Number(v.availableQuantity ?? v.stockQuantity ?? 0) > 0;
+        const firstAvailableWithImages = variants.find((v) => inStock(v) && hasImages(v));
+        const firstAvailable = variants.find(inStock);
+        const firstActiveWithImages = variants.find((v) => v.isActive !== false && hasImages(v));
         const firstActive = variants.find((v) => v.isActive !== false);
-        setSelectedVariantId((firstAvailable || firstActive || variants[0]).id);
+        setSelectedVariantId((firstAvailableWithImages || firstAvailable || firstActiveWithImages || firstActive || variants[0]).id);
       }
       setSelectedSize(product.sizes && product.sizes.length > 0 ? product.sizes[0] : '');
       setQuantity(1);
@@ -178,7 +180,19 @@ export const ProductDetailPage: React.FC<ProductDetailPageProps> = ({
       if (variantFiltered.length > 0) {
         return variantFiltered;
       }
+
+      // Every stored image belongs to a different variant. Never show one of
+      // those images as a generic fallback for the currently selected color.
+      const hasVariantScopedImages = product.imagesWithRoles.some((img) => img.variantId || img.variantSku);
+      if (hasVariantScopedImages) return [];
     }
+
+    // ProductVariant galleries can be the only place variant-scoped images live.
+    // If another variant has imagery but this one does not, do not leak it.
+    const hasVariantScopedGallery = (product.variants || []).some((variant) =>
+      variant.id !== currentVariant.id && (variant.images || []).some((img) => img.variantId || img.variantSku)
+    );
+    if (hasVariantScopedGallery && !(currentVariant.images || []).length) return [];
 
     const list = [product.primaryImage, product.secondaryImage, ...(product.additionalImages || [])].filter(
       Boolean
@@ -820,7 +834,7 @@ export const ProductDetailPage: React.FC<ProductDetailPageProps> = ({
             products={complementaryProducts}
             onSelectProduct={(targetSlug) => onNavigate({ type: 'product', slug: targetSlug })}
             onToggleWishlist={onToggleWishlist}
-            onAddToCart={(p) => onAddToCart(p, 1)}
+            onAddToCart={(p, qty, color, size, variantId) => onAddToCart(p, qty ?? 1, color, size, variantId)}
           />
         )}
 
@@ -837,7 +851,7 @@ export const ProductDetailPage: React.FC<ProductDetailPageProps> = ({
             products={recentlyViewed}
             onSelectProduct={(targetSlug) => onNavigate({ type: 'product', slug: targetSlug })}
             onToggleWishlist={onToggleWishlist}
-            onAddToCart={(p) => onAddToCart(p, 1)}
+            onAddToCart={(p, qty, color, size, variantId) => onAddToCart(p, qty ?? 1, color, size, variantId)}
             className="border-t border-[#1C1917]/10"
           />
         )}

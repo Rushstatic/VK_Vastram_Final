@@ -50,9 +50,20 @@ export function normalizeImageUrl(url?: string | null): string {
     if (driveId) return `https://drive.google.com/uc?export=view&id=${encodeURIComponent(driveId)}`;
   }
 
-  // 3. Already a full HTTP/HTTPS URL
+  // 3. Reject stale preview/local-development URLs saved into product records.
+  // URLs such as http://localhost:37857/123.png only exist inside the uploader's
+  // temporary dev session and always fail for real customers. Never request them.
   if (/^https?:\/\//i.test(trimmed)) {
-    return trimmed;
+    try {
+      const parsed = new URL(trimmed);
+      const hostname = parsed.hostname.toLowerCase();
+      if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '0.0.0.0' || hostname === '::1') {
+        return '';
+      }
+      return trimmed;
+    } catch {
+      return '';
+    }
   }
   if (trimmed.startsWith('//')) {
     return `https:${trimmed}`;

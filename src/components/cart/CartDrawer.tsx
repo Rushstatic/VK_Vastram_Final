@@ -4,6 +4,7 @@ import { CartItem } from '../../types';
 import { formatPrice } from '../ui/PriceDisplay';
 import { Button } from '../ui/Button';
 import { useSiteSettings } from '../../hooks/useSiteSettings';
+import { getCartItemImage } from '../../lib/cartVariantImage';
 
 interface CartDrawerProps {
   isOpen: boolean;
@@ -123,17 +124,23 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
                   key={item.id || `${item.product.id}-${item.selectedColor || 'std'}-${item.selectedSize || 'std'}`}
                   className="flex gap-4 pb-5 border-b border-[#1C1917]/10 last:border-b-0"
                 >
-                  <img
-                    src={item.product.primaryImage}
-                    alt={item.product.name}
-                    onClick={() => {
-                      if (onNavigateToProduct) {
-                        onNavigateToProduct(item.product.slug);
-                        onClose();
-                      }
-                    }}
-                    className="w-20 h-24 object-cover rounded-xs bg-[#F4EFE6] shrink-0 border border-[#1C1917]/5 cursor-pointer"
-                  />
+                  {getCartItemImage(item) ? (
+                    <img
+                      src={getCartItemImage(item)}
+                      alt={`${item.product.name}${item.selectedColor ? ` — ${item.selectedColor}` : ''}`}
+                      onClick={() => {
+                        if (onNavigateToProduct) {
+                          onNavigateToProduct(item.product.slug);
+                          onClose();
+                        }
+                      }}
+                      className="w-20 h-24 object-cover rounded-xs bg-[#F4EFE6] shrink-0 border border-[#1C1917]/5 cursor-pointer"
+                    />
+                  ) : (
+                    <div className="w-20 h-24 flex items-center justify-center rounded-xs bg-[#F4EFE6] shrink-0 border border-[#1C1917]/5 text-[#967029]" aria-label="No image available for this variant">
+                      <ShoppingBag className="w-6 h-6" />
+                    </div>
+                  )}
                   <div className="flex-1 flex flex-col justify-between">
                     <div>
                       <div className="flex items-start justify-between gap-2">

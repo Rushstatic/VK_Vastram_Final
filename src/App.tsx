@@ -58,12 +58,12 @@ import { orderService } from './services/orderService';
 import { customerService } from './services/customerService';
 import { supabase, isSupabaseConfigured } from './lib/supabase';
 import { Product, PageView, CartItem, AdminSubView } from './types';
-import { PRODUCTS } from './data/catalog';
 import { ArrowRight } from 'lucide-react';
 import { useSiteSettings } from './hooks/useSiteSettings';
 import { adminService, HomepageSectionData, CollectionAdminData } from './services/adminService';
 
 import { sanitizeQuantity, MAX_CART_ITEM_QUANTITY } from './lib/validation';
+import { resolveVariantCartImage } from './lib/cartVariantImage';
 
 // Client-side URL Path/SPA Routing helper maps
 const getPathFromPage = (page: PageView): string => {
@@ -162,7 +162,7 @@ const getPageFromPath = (path: string, search = ''): PageView => {
 
 export default function App() {
   const [currentPage, setCurrentPage] = useState<PageView>(() => getPageFromPath(window.location.pathname, window.location.search));
-  const [products, setProducts] = useState<Product[]>(() => isSupabaseConfigured() ? [] : PRODUCTS);
+  const [products, setProducts] = useState<Product[]>([]);
   const [categories, setCategories] = useState<any[]>([]);
 
   // Customer Auth state
@@ -450,6 +450,19 @@ export default function App() {
     animateBag = true
   ): Promise<boolean> => {
     const validAddQty = sanitizeQuantity(quantity, product.stockQuantity || MAX_CART_ITEM_QUANTITY);
+    // Resolve the variant once, then preserve its image together with its color
+    // selection. The cart should never infer the thumbnail from product.primaryImage
+    // because that may belong to the product's default/first color.
+    const resolvedVariantId = variantId ||
+      product.variants?.find((variant) => selectedColor && variant.color?.trim().toLowerCase() === selectedColor.trim().toLowerCase())?.id ||
+      product.variants?.find((variant) => variant.isActive !== false && Number(variant.availableQuantity ?? variant.stockQuantity ?? 0) > 0)?.id ||
+      (product.variants?.length === 1 ? product.variants[0].id : undefined);
+    const resolvedVariant = product.variants?.find((variant) => variant.id === resolvedVariantId);
+    // The variant ID is the source of truth. Never let a stale/missing color
+    // label disagree with the actual SKU that will be reserved at checkout.
+    const resolvedSelectedColor = resolvedVariant?.color || selectedColor || product.colors?.[0];
+    const resolvedSelectedSize = selectedSize || resolvedVariant?.size || resolvedVariant?.bedSize || resolvedVariant?.dimensions || product.sizes?.[0];
+    const selectedVariantImage = resolveVariantCartImage(product, resolvedVariantId, resolvedSelectedColor);
 
     // Start the visual response immediately on the user's tap, rather than waiting
     // for the authenticated cart API and follow-up cart refresh to finish.
@@ -461,10 +474,10 @@ export default function App() {
         await cartService.addItemToUserCart(
           customerUser.id,
           product.id,
-          variantId || (product.variants?.length === 1 ? product.variants[0].id : undefined),
+          resolvedVariantId,
           validAddQty,
-          selectedColor,
-          selectedSize,
+          resolvedSelectedColor,
+          resolvedSelectedSize,
           includeFallPico
         );
         const updated = await cartService.getUserCart(customerUser.id);
@@ -477,15 +490,14 @@ export default function App() {
     } else {
       console.log(`[CART_MUTATION] source=handleAddToCart (guest) product=${product.id} qty=${validAddQty}`);
       setCart((prev) => {
-        const resolvedVariantId = variantId || product.variants?.find((v) => v.isActive !== false && Number(v.availableQuantity ?? v.stockQuantity ?? 0) > 0)?.id || (product.variants?.length === 1 ? product.variants[0].id : undefined);
-        const itemKey = `guest-${product.id}-${resolvedVariantId || selectedColor || 'default'}-${selectedSize || 'default'}-${includeFallPico ? 'fallpico' : 'plain'}`;
+        const itemKey = `guest-${product.id}-${resolvedVariantId || resolvedSelectedColor || 'default'}-${resolvedSelectedSize || 'default'}-${includeFallPico ? 'fallpico' : 'plain'}`;
         const existing = prev.find(
           (item) =>
             item.id === itemKey ||
             ((item.product.id === product.id || item.product.slug === product.slug) &&
               (item.variantId || '') === (resolvedVariantId || '') &&
-              (item.selectedColor || '') === (selectedColor || '') &&
-              (item.selectedSize || '') === (selectedSize || '') &&
+              (item.selectedColor || '') === (resolvedSelectedColor || '') &&
+              (item.selectedSize || '') === (resolvedSelectedSize || '') &&
               Boolean(item.includeFallPico) === Boolean(includeFallPico))
         );
         let updated: CartItem[];
@@ -494,7 +506,14 @@ export default function App() {
           const newQty = sanitizeQuantity(currentQty + validAddQty, existing.stockAvailable || product.stockQuantity);
           updated = prev.map((item) =>
             item === existing
-              ? { ...item, quantity: newQty }
+              ? {
+                  ...item,
+                  quantity: newQty,
+                  selectedColor: resolvedSelectedColor,
+                  selectedSize: resolvedSelectedSize || item.selectedSize,
+                  selectedVariantImage,
+                  product: { ...product, primaryImage: selectedVariantImage || product.primaryImage },
+                }
               : item
           );
         } else {
@@ -503,10 +522,12 @@ export default function App() {
             {
               id: itemKey,
               variantId: resolvedVariantId,
-              product,
+              // Give each variant cart row its own product-image snapshot.
+              product: { ...product, primaryImage: selectedVariantImage || product.primaryImage },
               quantity: validAddQty,
-              selectedColor: selectedColor || (product.colors ? product.colors[0] : undefined),
-              selectedSize: selectedSize || (product.sizes ? product.sizes[0] : undefined),
+              selectedColor: resolvedSelectedColor,
+              selectedVariantImage,
+              selectedSize: resolvedSelectedSize,
               includeFallPico,
               stockAvailable: product.stockQuantity ?? MAX_CART_ITEM_QUANTITY,
             },
@@ -624,7 +645,12 @@ export default function App() {
 
   // Category partitions
   const activeProducts = products.filter((p) => p.status !== 'draft' && p.status !== 'archived');
-  const featuredSarees = activeProducts.filter((p) => p.category === 'sarees').slice(0, 3);
+  // The curated editorial row must be driven by the admin's Featured flag;
+  // category alone is not a curation rule and was causing every saree to appear.
+  const featuredSarees = activeProducts
+    .filter((p) => p.category === 'sarees' && p.featured === true)
+    .sort((a: any, b: any) => new Date(b.createdAt || b.created_at || 0).getTime() - new Date(a.createdAt || a.created_at || 0).getTime())
+    .slice(0, 4);
   const featuredBedsheets = activeProducts.filter((p) => p.category === 'bedsheets').slice(0, 3);
   const isSeasonalSaleCollection = (collection: CollectionAdminData) => {
     const slug = collection.slug?.trim().toLowerCase();
@@ -875,8 +901,45 @@ export default function App() {
             {isHomepageSectionActive('hero') && <HeroSection onNavigate={handleNavigate} />}
             {isHomepageSectionActive('categories') && <CategoryShowcase categories={categories} onNavigate={handleNavigate} />}
 
-            {/* Featured Sarees */}
-            <section className="py-10 sm:py-16 lg:py-20 bg-[#FAF8F5]">
+            {/* New Arrivals: sourced from the current active catalog, never from demo fixtures. */}
+            {activeProducts.length > 0 && (
+              <section className="py-9 sm:py-14 lg:py-16 bg-[#F4EFE6]/45 border-y border-[#1C1917]/10">
+                <Container>
+                  <ScrollReveal distance={16} duration={550}>
+                    <SectionHeading
+                      kicker="Just Arrived"
+                      title="New Arrivals"
+                      subtitle="The latest additions to our considered collection."
+                      action={
+                        <Button variant="ghost" size="sm"
+                          onClick={() => handleNavigate({ type: 'collection', category: 'all' })}
+                          rightIcon={<ArrowRight className="w-4 h-4" />}>
+                          Explore All
+                        </Button>
+                      }
+                    />
+                  </ScrollReveal>
+                  <ProductGrid
+                    products={[...activeProducts].sort((a: any, b: any) => {
+                      const dateA = new Date(a.createdAt || a.created_at || 0).getTime();
+                      const dateB = new Date(b.createdAt || b.created_at || 0).getTime();
+                      return (Number.isFinite(dateB) ? dateB : 0) - (Number.isFinite(dateA) ? dateA : 0);
+                    }).slice(0, 4).map((product) => ({ ...product, isNewArrival: true } as any))}
+                    wishlistIds={wishlistIds}
+                    columns={4}
+                    mobileCarousel
+                    onToggleWishlist={handleToggleWishlist}
+                    onSelectProduct={(slug) => handleNavigate({ type: 'product', slug })}
+                    onQuickView={(product) => setQuickViewProduct(product)}
+                    onAddToCart={(product, quantity, color, size, variantId) => handleAddToCart(product, quantity ?? 1, color, size, variantId)}
+                  />
+                </Container>
+              </section>
+            )}
+
+            {/* Curated Heritage is editorial, not the full saree catalogue.
+                Products appear here only when the admin marks them Featured. */}
+            {featuredSarees.length > 0 && <section className="py-10 sm:py-16 lg:py-20 bg-[#FAF8F5]">
               <Container>
                 <ScrollReveal distance={16} duration={550}>
                   <SectionHeading
@@ -904,10 +967,10 @@ export default function App() {
                   onToggleWishlist={handleToggleWishlist}
                   onSelectProduct={(slug) => handleNavigate({ type: 'product', slug })}
                   onQuickView={(p) => setQuickViewProduct(p)}
-                  onAddToCart={(p) => handleAddToCart(p, 1)}
+                  onAddToCart={(p, quantity, color, size, variantId) => handleAddToCart(p, quantity ?? 1, color, size, variantId)}
                 />
               </Container>
-            </section>
+            </section>}
 
             <BudgetDiscovery products={activeProducts} onNavigate={handleNavigate} />
             <SareeTraditions products={activeProducts} onNavigate={handleNavigate} />
@@ -942,7 +1005,7 @@ export default function App() {
                       onToggleWishlist={handleToggleWishlist}
                       onSelectProduct={(slug) => handleNavigate({ type: 'product', slug })}
                       onQuickView={(product) => setQuickViewProduct(product)}
-                      onAddToCart={(product) => handleAddToCart(product, 1)}
+                      onAddToCart={(product, quantity, color, size, variantId) => handleAddToCart(product, quantity ?? 1, color, size, variantId)}
                     />
                   ) : (
                     <div className="border border-[#1C1917]/10 bg-[#F4EFE6]/45 px-5 py-8 text-center">
@@ -984,7 +1047,7 @@ export default function App() {
                   onToggleWishlist={handleToggleWishlist}
                   onSelectProduct={(slug) => handleNavigate({ type: 'product', slug })}
                   onQuickView={(p) => setQuickViewProduct(p)}
-                  onAddToCart={(p) => handleAddToCart(p, 1)}
+                  onAddToCart={(p, quantity, color, size, variantId) => handleAddToCart(p, quantity ?? 1, color, size, variantId)}
                 />
               </Container>
             </section>}
@@ -998,7 +1061,7 @@ export default function App() {
                 onSelectProduct={(slug) => handleNavigate({ type: 'product', slug })}
                 onToggleWishlist={handleToggleWishlist}
                 onQuickView={(p) => setQuickViewProduct(p)}
-                onAddToCart={(p) => handleAddToCart(p, 1)}
+                onAddToCart={(p, quantity, color, size, variantId) => handleAddToCart(p, quantity ?? 1, color, size, variantId)}
                 className="bg-[#FAF8F5] border-t border-[#1C1917]/10"
               />
             )}
@@ -1026,7 +1089,7 @@ export default function App() {
               wishlistIds={wishlistIds}
               onToggleWishlist={handleToggleWishlist}
               onQuickView={(p) => setQuickViewProduct(p)}
-              onAddToCart={(p) => handleAddToCart(p, 1)}
+              onAddToCart={(p, quantity, color, size, variantId) => handleAddToCart(p, quantity ?? 1, color, size, variantId)}
               products={products}
               categories={categories}
             />
@@ -1053,7 +1116,7 @@ export default function App() {
             wishlistIds={wishlistIds}
             onToggleWishlist={handleToggleWishlist}
             onQuickView={(p) => setQuickViewProduct(p)}
-            onAddToCart={(p) => handleAddToCart(p, 1)}
+            onAddToCart={(p, quantity, color, size, variantId) => handleAddToCart(p, quantity ?? 1, color, size, variantId)}
             products={products}
           />
         )}
@@ -1078,7 +1141,7 @@ export default function App() {
               setWishlistIds((prev) => prev.filter((itemId) => itemId !== id))
             }
             onQuickView={(p) => setQuickViewProduct(p)}
-            onAddToCart={(p) => handleAddToCart(p, 1)}
+            onAddToCart={(p, quantity, color, size, variantId) => handleAddToCart(p, quantity ?? 1, color, size, variantId)}
           />
         )}
       </main>

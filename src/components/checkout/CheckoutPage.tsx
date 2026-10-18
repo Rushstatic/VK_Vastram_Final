@@ -30,6 +30,7 @@ import { validateIndianMobile, validateEmail, validateIndianPincode } from '../.
 import { formatPrice } from '../ui/PriceDisplay';
 import { Button } from '../ui/Button';
 import { Container } from '../ui/Container';
+import { getCartItemImage } from '../../lib/cartVariantImage';
 
 interface CheckoutPageProps {
   items: CartItem[];
@@ -328,6 +329,7 @@ export const CheckoutPage: React.FC<CheckoutPageProps> = ({
       const rzpOrder = await paymentService.createRazorpayOrder(orderId, guestAccessToken);
 
       if (!rzpOrder.success || !rzpOrder.razorpayOrderId) {
+        setActivePendingOrder({ id: orderId, orderNumber });
         setErrorMessage(
           rzpOrder.error || 'Unable to initiate payment with Razorpay. Please try again.'
         );
@@ -396,18 +398,34 @@ export const CheckoutPage: React.FC<CheckoutPageProps> = ({
             `Payment process was cancelled. Order #${orderNumber} is preserved in pending state. You may retry payment now or later.`
           );
         },
-        onError: (err) => {
+        onError: async (err) => {
           setSubmitting(false);
           console.warn('Razorpay error in checkout:', err);
+          // Keep the same internal order for retry; never create a replacement order
+          // just because an individual gateway attempt failed.
+          setActivePendingOrder({ id: orderId, orderNumber });
+          const recorded = await paymentService.recordPaymentFailure({
+            orderId,
+            razorpayOrderId: rzpOrder.razorpayOrderId,
+            code: err?.code || err?.reason,
+            description: err?.description || err?.reason || err?.metadata?.payment_id || 'Payment failed at Razorpay checkout.',
+            source: 'razorpay_checkout',
+            guestAccessToken,
+          });
           setErrorMessage(
-            err?.description ||
-              'Payment could not be completed. Your order has not been marked as paid.'
+            `Payment failed for order #${orderNumber}. Your order ID is unchanged. ${
+              recorded.success
+                ? 'You can retry payment using this same order.'
+                : 'The failure could not be synchronized right now; please retry or contact support with this order number.'
+            }`
           );
+          setInfoMessage('');
         },
       });
 
       if (!opened) {
-        setErrorMessage('Failed to initialize Razorpay checkout window. Please check your browser.');
+        setActivePendingOrder({ id: orderId, orderNumber });
+        setErrorMessage('Razorpay checkout could not connect. No payment was attempted and your order is preserved. Check your connection or retry shortly using the same order. If this keeps happening, contact support with this order number.');
         setSubmitting(false);
       }
     } catch (err: any) {
@@ -1063,11 +1081,17 @@ export const CheckoutPage: React.FC<CheckoutPageProps> = ({
                     {cartItems.map((item, idx) => (
                       <div key={idx} className="py-2.5 flex items-center justify-between gap-4">
                         <div className="flex items-center gap-3">
-                          <img
-                            src={item.product.primaryImage}
-                            alt={item.product.name}
-                            className="w-10 h-12 object-cover rounded-xs bg-[#EFE9DC]"
-                          />
+                          {getCartItemImage(item) ? (
+                            <img
+                              src={getCartItemImage(item)}
+                              alt={`${item.product.name}${item.selectedColor ? ` — ${item.selectedColor}` : ''}`}
+                              className="w-10 h-12 object-cover rounded-xs bg-[#EFE9DC]"
+                            />
+                          ) : (
+                            <div className="w-10 h-12 flex items-center justify-center rounded-xs bg-[#EFE9DC] text-[#967029]" aria-label="No image available for this variant">
+                              <ShoppingBag className="w-4 h-4" />
+                            </div>
+                          )}
                           <div>
                             <p className="font-medium text-[#1C1917]">{item.product.name}</p>
                             <p className="text-[11px] text-[#78716C]">

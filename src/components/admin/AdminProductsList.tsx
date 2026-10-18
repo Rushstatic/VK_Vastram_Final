@@ -19,6 +19,7 @@ import {
 import { adminService } from '../../services/adminService';
 import { Product, AdminSubView, PageView } from '../../types';
 import { formatPrice } from '../ui/PriceDisplay';
+import { supabase, isSupabaseConfigured } from '../../lib/supabase';
 
 interface AdminProductsListProps {
   onNavigateSubView: (view: AdminSubView, productId?: string) => void;
@@ -56,10 +57,60 @@ export const AdminProductsList: React.FC<AdminProductsListProps> = ({
     fetchProducts();
   }, [statusFilter, categoryFilter]);
 
-  const exportProductsExcel = () => {
-    const rows = products.map((p: any) => ({ 'Product ID': p.id, SKU: p.sku || '', Name: p.name || p.title || '', Category: p.category || '', 'Saree Type': p.sareeType || p.saree_type || '', Price: Number(p.price || 0), 'Compare At Price': Number(p.compareAtPrice || p.compare_at_price || 0), Status: p.status || '', Stock: p.stockQuantity ?? p.stock_quantity ?? p.stock ?? '', 'Created At': p.createdAt || p.created_at || '' }));
-    if (!rows.length) { alert('No products loaded to export.'); return; }
-    const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Products'); XLSX.writeFile(wb, `vk-vastram-products-${new Date().toISOString().slice(0,10)}.xlsx`);
+  const exportProductsExcel = async () => {
+    try {
+      let source: any[] = products as any[];
+      if (isSupabaseConfigured()) {
+        const { data, error } = await (supabase as any).from('products')
+          .select('*, category:categories(name,slug), collection:collections(name,slug), images:product_images(*), variants:product_variants(*)')
+          .order('created_at', { ascending: false });
+        if (error) throw error;
+        source = data || [];
+      }
+      if (!source.length) { alert('No products loaded to export.'); return; }
+      const productRows = source.map((p: any) => {
+        const meta = p.metadata && typeof p.metadata === 'object' ? p.metadata : {};
+        const imgs = Array.isArray(p.images) ? p.images : (p.additionalImages || []);
+        const vars = Array.isArray(p.variants) ? p.variants : [];
+        const primary = imgs.find((img: any) => img.is_primary || img.isPrimary) || imgs[0];
+        return {
+          'Product ID': p.id || '', 'Master SKU': p.sku || '', 'Product Title': p.name || p.title || '', 'URL Slug': p.slug || '',
+          Category: p.category?.name || p.category || '', Collection: p.collection?.name || p.collectionName || '',
+          'Saree Type': meta.sareeType || p.sareeType || p.subCategory || '', Fabric: p.fabric || '', 'Weave / Technique': p.weave || '',
+          'Weaving Origin': p.origin || '', 'Dimensions / Sizing': p.dimensions || '', 'Care Instructions': p.care_instructions || p.care || '',
+          'Short Description': p.short_description || '', Description: p.description || '', 'Selling Price': Number(p.price || 0), MRP: p.mrp ?? '',
+          'Discount Percentage': p.discount_percentage ?? '', 'GST Rate %': p.gst_rate ?? p.gstRate ?? '',
+          'Total Physical Stock': vars.filter((v: any) => v.is_active !== false).reduce((n: number, v: any) => n + Number(v.stock_quantity || 0), 0),
+          'Total Reserved Stock': vars.filter((v: any) => v.is_active !== false).reduce((n: number, v: any) => n + Number(v.reserved_quantity || 0), 0),
+          'Total Available Stock': vars.filter((v: any) => v.is_active !== false).reduce((n: number, v: any) => n + Math.max(0, Number(v.stock_quantity || 0) - Number(v.reserved_quantity || 0)), 0),
+          'Primary Colour Name': meta.primaryColourName || meta.primary_colour_name || p.color || '',
+          'Legacy Colour Field': p.color || '', 'Metadata JSON': JSON.stringify(meta),
+          'Primary Colour Hex': meta.primaryColourHex || meta.primary_colour_hex || '',
+          'Secondary Colour Name': meta.secondaryColourName || meta.secondary_colour_name || '',
+          'Secondary Colour Hex': meta.secondaryColourHex || meta.secondary_colour_hex || '',
+          'Primary Image URL': primary?.image_url || primary?.imageUrl || p.primaryImage || '',
+          'Additional Image URLs': imgs.filter((img: any) => img !== primary).map((img: any) => img.image_url || img.imageUrl || '').filter(Boolean).join(', '),
+          'Image Alt Text': primary?.alt_text || primary?.altText || '', 'Catalog Status': p.status || '',
+          Featured: Boolean(p.featured), 'Best Seller': Boolean(p.bestseller ?? p.bestSeller), 'New Arrival': Boolean(p.new_arrival ?? p.newArrival),
+          'SEO Title': p.seo_title || p.seoTitle || '', 'SEO Description': p.seo_description || p.seoDescription || '',
+          Tags: Array.isArray(meta.tags) ? meta.tags.join(', ') : (meta.tags || ''),
+          'Created At': p.created_at || p.createdAt || '', 'Updated At': p.updated_at || p.updatedAt || '',
+        };
+      });
+      const variantRows = source.flatMap((p: any) => (Array.isArray(p.variants) ? p.variants : (Array.isArray(p.variants) ? p.variants : [])).map((v: any) => {
+        const attrs = v.attributes && typeof v.attributes === 'object' ? v.attributes : {};
+        return { 'Product ID': p.id || '', 'Product SKU': p.sku || '', 'Product Title': p.name || '', 'Variant ID': v.id || '', 'Variant SKU': v.sku || '', 'Variant Name': v.variant_name || v.variantName || '', 'Colour Name': v.color || '', 'Colour HEX': attrs.colorHexPrimary || '', Size: v.size || '', 'Bed Size': v.bed_size || '', Dimensions: v.dimensions || '', 'Price Override': v.price_override ?? '', 'MRP Override': v.mrp_override ?? '', 'Physical Stock': Number(v.stock_quantity ?? v.stockQuantity ?? 0), 'Reserved Stock': Number(v.reserved_quantity ?? v.reservedQuantity ?? 0), 'Available Stock': Math.max(0, Number(v.stock_quantity ?? v.stockQuantity ?? 0) - Number(v.reserved_quantity ?? v.reservedQuantity ?? 0)), Active: v.is_active !== false, 'Variant Attributes JSON': JSON.stringify(attrs), 'Created At': v.created_at || '', 'Updated At': v.updated_at || '' };
+      }));
+      const wb = XLSX.utils.book_new();
+      const productsSheet = XLSX.utils.json_to_sheet(productRows);
+      productsSheet['!cols'] = Object.keys(productRows[0] || {}).map((key) => ({ wch: Math.min(Math.max(key.length + 3, 16), 42) }));
+      XLSX.utils.book_append_sheet(wb, productsSheet, 'Products');
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(variantRows), 'Variants');
+      XLSX.writeFile(wb, `vk-vastram-products-${new Date().toISOString().slice(0,10)}.xlsx`);
+    } catch (error: any) {
+      console.error('Product export failed:', error);
+      alert(`Could not export the complete product catalogue: ${error?.message || 'Unknown error'}`);
+    }
   };
 
   const handleSearchSubmit = (e: React.FormEvent) => {

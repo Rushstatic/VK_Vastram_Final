@@ -374,7 +374,10 @@ export const orderService = {
     // 1. Try server-side lookup first (works seamlessly for guests and patrons)
     try {
       let token = '';
-      if (isSupabaseConfigured() && userId) {
+      if (isSupabaseConfigured()) {
+        // The confirmation page can call this without a userId even when the
+        // customer is signed in. Always attach the current session token when
+        // available; otherwise valid customer orders incorrectly return 401.
         const { data } = await supabase.auth.getSession();
         token = data.session?.access_token || '';
       }
@@ -558,7 +561,10 @@ export const orderService = {
   ): Promise<{ success: boolean; message?: string; error?: string }> {
     try {
       let token = '';
-      if (isSupabaseConfigured() && userId) {
+      if (isSupabaseConfigured()) {
+        // The confirmation page can call this without a userId even when the
+        // customer is signed in. Always attach the current session token when
+        // available; otherwise valid customer orders incorrectly return 401.
         const { data } = await supabase.auth.getSession();
         token = data.session?.access_token || '';
       }

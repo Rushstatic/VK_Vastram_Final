@@ -19,57 +19,57 @@ export const paymentService = {
    */
   loadRazorpayScript(): Promise<boolean> {
     return new Promise((resolve) => {
-      if (typeof window === 'undefined') {
-        resolve(false);
-        return;
+      if (typeof window === 'undefined') { resolve(false); return; }
+      if ((window as any).Razorpay) { resolve(true); return; }
+
+      const scriptId = 'razorpay-checkout-script';
+      const scriptUrl = 'https://checkout.razorpay.com/v1/checkout.js';
+      let existing = document.getElementById(scriptId) as HTMLScriptElement | null;
+
+      // A previous failed <script> stays in the DOM and otherwise poisons every retry.
+      if (existing && existing.dataset.loadState === 'failed') {
+        existing.remove();
+        existing = null;
       }
 
-      if ((window as any).Razorpay) {
-        resolve(true);
-        return;
-      }
-
-      const existingScript = document.getElementById('razorpay-checkout-script') as HTMLScriptElement | null;
-      if (existingScript) {
-        if ((window as any).Razorpay) {
-          resolve(true);
-          return;
-        }
-        existingScript.addEventListener('load', () => resolve(Boolean((window as any).Razorpay)));
-        existingScript.addEventListener('error', () => resolve(false));
-
-        // Polling fallback in case load event already fired before listener attached
-        let attempts = 0;
-        const checkInterval = setInterval(() => {
-          attempts++;
-          if ((window as any).Razorpay) {
-            clearInterval(checkInterval);
+      const attach = (script: HTMLScriptElement) => {
+        let settled = false;
+        const finish = (loaded: boolean) => {
+          if (settled) return;
+          settled = true;
+          window.clearTimeout(timeout);
+          script.removeEventListener('load', onLoad);
+          script.removeEventListener('error', onError);
+          if (loaded && (window as any).Razorpay) {
+            script.dataset.loadState = 'loaded';
             resolve(true);
-          } else if (attempts > 30) {
-            clearInterval(checkInterval);
+          } else {
+            script.dataset.loadState = 'failed';
+            script.remove();
             resolve(false);
           }
-        }, 100);
+        };
+        const onLoad = () => finish(Boolean((window as any).Razorpay));
+        const onError = () => finish(false);
+        script.addEventListener('load', onLoad, { once: true });
+        script.addEventListener('error', onError, { once: true });
+        const timeout = window.setTimeout(() => finish(Boolean((window as any).Razorpay)), 10000);
+        // Covers a script that completed just before listeners were attached.
+        if ((window as any).Razorpay) finish(true);
+      };
+
+      if (existing) {
+        attach(existing);
         return;
       }
 
       const script = document.createElement('script');
-      script.id = 'razorpay-checkout-script';
-      script.src = 'https://checkout.razorpay.com/v1/checkout.js';
+      script.id = scriptId;
+      script.src = scriptUrl;
       script.async = true;
-      script.onload = () => resolve(Boolean((window as any).Razorpay));
-      script.onerror = () => {
-        console.error('Failed to load Razorpay Checkout SDK');
-        resolve(false);
-      };
-      document.body.appendChild(script);
-
-      // Timeout fallback
-      setTimeout(() => {
-        if ((window as any).Razorpay) {
-          resolve(true);
-        }
-      }, 3000);
+      script.dataset.loadState = 'loading';
+      attach(script);
+      document.head.appendChild(script);
     });
   },
 
@@ -192,6 +192,42 @@ export const paymentService = {
   },
 
   /**
+   * Persist a gateway-reported failure against the existing internal order.
+   * The server verifies ownership and the Razorpay order association.
+   */
+  async recordPaymentFailure(params: {
+    orderId: string;
+    razorpayOrderId: string;
+    code?: string;
+    description?: string;
+    source?: string;
+    guestAccessToken?: string;
+  }): Promise<{ success: boolean; error?: string }> {
+    try {
+      let token = '';
+      if (isSupabaseConfigured()) {
+        const { data } = await supabase.auth.getSession();
+        token = data.session?.access_token || '';
+      }
+      const guestToken = params.guestAccessToken ||
+        (typeof window !== 'undefined' ? window.sessionStorage?.getItem(`vk_guest_token_${params.orderId}`) || '' : '');
+      const response = await fetch('/api/payment/failure', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          ...(guestToken ? { 'x-guest-token': guestToken } : {}),
+        },
+        body: JSON.stringify({ ...params, ...(guestToken ? { guestAccessToken: guestToken } : {}) }),
+      });
+      const data = await response.json();
+      return data;
+    } catch (err: any) {
+      return { success: false, error: err?.message || 'Could not record payment failure.' };
+    }
+  },
+
+  /**
    * Open the official Razorpay Checkout modal
    */
   async openRazorpayCheckout(options: {
@@ -211,7 +247,9 @@ export const paymentService = {
   }): Promise<boolean> {
     const isLoaded = await this.loadRazorpayScript();
     if (!isLoaded || !window.Razorpay) {
-      options.onError?.(new Error('Razorpay Checkout SDK could not be loaded.'));
+      // No checkout was opened, so this is an SDK/network initialization failure,
+      // not a gateway-declined payment. Keep the existing order pending for retry.
+      console.error('Razorpay Checkout SDK could not be loaded; preserving pending order.');
       return false;
     }
 
@@ -256,8 +294,7 @@ export const paymentService = {
       razorpayInstance.open();
       return true;
     } catch (err) {
-      console.error('Error opening Razorpay checkout:', err);
-      options.onError?.(err);
+      console.error('Error initializing Razorpay checkout; preserving pending order:', err);
       return false;
     }
   },

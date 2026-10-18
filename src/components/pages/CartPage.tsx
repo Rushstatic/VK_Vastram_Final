@@ -7,6 +7,7 @@ import { Container } from '../ui/Container';
 import { useSiteSettings } from '../../hooks/useSiteSettings';
 import { calculateShippingAmount } from '../../lib/shipping';
 import { INDIAN_STATES } from '../../lib/indianStates';
+import { getCartItemImage } from '../../lib/cartVariantImage';
 
 interface CartPageProps {
   items: CartItem[];
@@ -93,11 +94,17 @@ export const CartPage: React.FC<CartPageProps> = ({
               <div key={item.id || `${item.product.id}-${item.selectedColor || 'std'}-${item.selectedSize || 'std'}`} className="p-6 flex flex-col sm:flex-row gap-5 items-start sm:items-center justify-between">
                 {/* Product details */}
                 <div className="flex items-center gap-4 min-w-0">
-                  <img
-                    src={item.product.primaryImage}
-                    alt={item.product.name}
-                    className="w-20 h-24 sm:w-24 sm:h-28 object-cover rounded-xs bg-[#EFE9DC] shrink-0 border border-[#1C1917]/5"
-                  />
+                  {getCartItemImage(item) ? (
+                    <img
+                      src={getCartItemImage(item)}
+                      alt={`${item.product.name}${item.selectedColor ? ` — ${item.selectedColor}` : ''}`}
+                      className="w-20 h-24 sm:w-24 sm:h-28 object-cover rounded-xs bg-[#EFE9DC] shrink-0 border border-[#1C1917]/5"
+                    />
+                  ) : (
+                    <div className="w-20 h-24 sm:w-24 sm:h-28 flex items-center justify-center rounded-xs bg-[#EFE9DC] shrink-0 border border-[#1C1917]/5 text-[#967029]" aria-label="No image available for this variant">
+                      <ShoppingBag className="w-6 h-6" />
+                    </div>
+                  )}
                   <div className="space-y-1 min-w-0">
                     <span className="text-[10px] uppercase tracking-wider font-semibold text-[#967029]">
                       {item.product.categoryLabel}

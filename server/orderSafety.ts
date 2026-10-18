@@ -62,7 +62,7 @@ export function requireRpcSuccess(data: any, error: any, operation: string): any
     if (detail?.error) {
       const code = detail.error;
       const statusCode = code === 'ORDER_NOT_FOUND' ? 404 :
-        ['ALREADY_SOLD', 'INSUFFICIENT_STOCK', 'VARIANT_NOT_FOUND', 'PRODUCT_UNAVAILABLE', 'INVALID_PRICE'].includes(code) ? 409 : 503;
+        ['ALREADY_SOLD', 'INSUFFICIENT_STOCK', 'VARIANT_NOT_FOUND', 'PRODUCT_UNAVAILABLE', 'INVALID_PRICE', 'COUPON_INVALID', 'COUPON_USAGE_LIMIT', 'COUPON_CUSTOMER_LIMIT', 'COUPON_MINIMUM_NOT_MET'].includes(code) ? 409 : 503;
       throw new OrderSafetyError(detail.message || `${operation} could not be completed.`, statusCode, code);
     }
     if (error.code === '22023') {
@@ -73,7 +73,7 @@ export function requireRpcSuccess(data: any, error: any, operation: string): any
   if (!data || data.success !== true) {
     const code = data?.error || 'RPC_FAILED';
     const statusCode = code === 'ORDER_NOT_FOUND' ? 404 :
-      ['INSUFFICIENT_STOCK', 'VARIANT_NOT_FOUND', 'PRODUCT_UNAVAILABLE', 'INVALID_VARIANT', 'INVALID_QUANTITY', 'INVALID_PRICE', 'ALREADY_SOLD', 'CANNOT_CANCEL_AFTER_DISPATCH', 'NOT_A_COD_ORDER', 'INVALID_COD_STATUS', 'INVALID_COD_PAYMENT_TRANSITION', 'COD_COLLECTION_REQUIRES_DELIVERY', 'REFUND_NOT_APPLICABLE', 'INVALID_REFUND_TRANSITION'].includes(code) ? 409 : 503;
+      ['INSUFFICIENT_STOCK', 'VARIANT_NOT_FOUND', 'PRODUCT_UNAVAILABLE', 'INVALID_VARIANT', 'INVALID_QUANTITY', 'INVALID_PRICE', 'ALREADY_SOLD', 'CANNOT_CANCEL_AFTER_DISPATCH', 'NOT_A_COD_ORDER', 'INVALID_COD_STATUS', 'INVALID_COD_PAYMENT_TRANSITION', 'COD_COLLECTION_REQUIRES_DELIVERY', 'REFUND_NOT_APPLICABLE', 'INVALID_REFUND_TRANSITION', 'COUPON_INVALID', 'COUPON_USAGE_LIMIT', 'COUPON_CUSTOMER_LIMIT', 'COUPON_MINIMUM_NOT_MET'].includes(code) ? 409 : 503;
     throw new OrderSafetyError(data?.message || `${operation} could not be completed.`, statusCode, code);
   }
   return data;

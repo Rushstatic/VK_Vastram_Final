@@ -1,10 +1,11 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useState } from 'react';
 import { Heart, ShoppingBag, Eye, Check } from 'lucide-react';
 import { Product } from '../../types';
-import { PriceDisplay, formatPrice } from '../ui/PriceDisplay';
+import { PriceDisplay } from '../ui/PriceDisplay';
 import { ImageContainer } from '../ui/ImageContainer';
 import { ColorSwatch } from '../ui/ColorSwatch';
 import { ProductRatingBadge } from './ProductRatingBadge';
+import { resolveVariantCartImage } from '../../lib/cartVariantImage';
 
 interface ProductCardProps {
   product: Product;
@@ -12,7 +13,7 @@ interface ProductCardProps {
   onToggleWishlist?: (product: Product) => void;
   onSelectProduct?: (slug: string) => void;
   onQuickView?: (product: Product) => void;
-  onAddToCart?: (product: Product) => void;
+  onAddToCart?: (product: Product, quantity?: number, color?: string, size?: string, variantId?: string) => void;
 }
 
 export const ProductCard: React.FC<ProductCardProps> = ({
@@ -26,13 +27,10 @@ export const ProductCard: React.FC<ProductCardProps> = ({
   const [isHovered, setIsHovered] = useState(false);
   const [justAdded, setJustAdded] = useState(false);
   const [selectedColorIndex, setSelectedColorIndex] = useState(0);
-  const [isImageFlipped, setIsImageFlipped] = useState(false);
-  const [hasViewedDetails, setHasViewedDetails] = useState(false);
-  const flipTimeoutRef = useRef<number | null>(null);
 
-  useEffect(() => () => {
-    if (flipTimeoutRef.current !== null) window.clearTimeout(flipTimeoutRef.current);
-  }, []);
+  // New is a merchandising decision, not an age heuristic: only explicitly
+  // tagged products (or cards intentionally placed in the New Arrivals rail) get it.
+  const isNewArrival = Boolean((product as any).isNewArrival || product.newArrival);
 
   const colors = product.colors && product.colors.length > 0 ? product.colors : [];
   const selectedColor = colors[selectedColorIndex];
@@ -56,24 +54,12 @@ export const ProductCard: React.FC<ProductCardProps> = ({
     if (onSelectProduct) onSelectProduct(product.slug);
   };
 
-  const revealDetailsBriefly = () => {
-    setHasViewedDetails(true);
-    setIsImageFlipped(true);
-    if (flipTimeoutRef.current !== null) window.clearTimeout(flipTimeoutRef.current);
-    // Briefly reveal the product details, then return to the image. The next tap opens the PDP.
-    flipTimeoutRef.current = window.setTimeout(() => {
-      setIsImageFlipped(false);
-      flipTimeoutRef.current = null;
-    }, 1500);
-  };
-
+  // A single click/tap on the product image opens the product detail page.
+  // Do not insert a transient flip/second-tap interaction here: it made the
+  // image feel unresponsive and blocked normal product discovery on touch devices.
   const handleImageStageClick = (e: React.MouseEvent<HTMLDivElement>) => {
     e.stopPropagation();
-    if (isImageFlipped || hasViewedDetails) {
-      handleCardClick();
-      return;
-    }
-    revealDetailsBriefly();
+    handleCardClick();
   };
 
   const handleImageStageKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
@@ -81,14 +67,12 @@ export const ProductCard: React.FC<ProductCardProps> = ({
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
       e.stopPropagation();
-      if (isImageFlipped || hasViewedDetails) handleCardClick();
-      else revealDetailsBriefly();
+      handleCardClick();
     }
-    if (e.key === 'Escape') setIsImageFlipped(false);
   };
 
   const handleTiltMove = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (window.matchMedia('(hover: none)').matches || isImageFlipped) return;
+    if (window.matchMedia('(hover: none)').matches) return;
     const rect = e.currentTarget.getBoundingClientRect();
     const x = (e.clientX - rect.left) / rect.width;
     const y = (e.clientY - rect.top) / rect.height;
@@ -116,14 +100,22 @@ export const ProductCard: React.FC<ProductCardProps> = ({
       return;
     }
     if (onAddToCart) {
+      // Keep the selected variant identity and color together. Passing only the
+      // product used to make App.tsx silently choose the first available variant,
+      // while the cart displayed the first color label — causing image/color drift.
+      const selectedProduct = activeVariant
+        ? {
+            ...product,
+            price: activeVariant.price ?? product.price,
+            sku: activeVariant.sku || product.sku,
+          }
+        : product;
       onAddToCart(
-        activeVariant
-          ? {
-              ...product,
-              price: activeVariant.price ?? product.price,
-              sku: activeVariant.sku || product.sku,
-            }
-          : product
+        selectedProduct,
+        1,
+        activeVariant?.color || selectedColor,
+        activeVariant?.size || activeVariant?.bedSize || activeVariant?.dimensions,
+        activeVariant?.id
       );
       setJustAdded(true);
       setTimeout(() => setJustAdded(false), 1800);
@@ -145,12 +137,14 @@ export const ProductCard: React.FC<ProductCardProps> = ({
   };
 
   // Variant-specific image if selected, otherwise hover or primary image
-  const variantImage = activeVariant?.images?.[0]?.imageUrl;
-  const displayImage =
-    variantImage ||
-    (isHovered && product.secondaryImage
-      ? product.secondaryImage
-      : product.primaryImage);
+  const variantImage = resolveVariantCartImage(product, activeVariant?.id, selectedColor);
+  const hasScopedVariantImages = Boolean(
+    product.imagesWithRoles?.some((image) => image.variantId || image.variantSku) ||
+    product.variants?.some((variant) => (variant.images || []).some((image) => image.variantId || image.variantSku))
+  );
+  const displayImage = variantImage || (!hasScopedVariantImages && isHovered && product.secondaryImage
+    ? product.secondaryImage
+    : (!hasScopedVariantImages ? product.primaryImage : ''));
 
   const displayPrice = activeVariant?.price ?? product.price;
   const displayMrp = activeVariant?.mrpOverride ?? product.mrp;
@@ -164,9 +158,9 @@ export const ProductCard: React.FC<ProductCardProps> = ({
     >
       {/* Product Image Stage — fixed 3:4; restrained TiltedCard-inspired interaction */}
       <div
-        role="group"
+        role="button"
         tabIndex={0}
-        aria-label={`${isImageFlipped ? 'Close details for' : 'Show details for'} ${product.name}`}
+        aria-label={`View details for ${product.name}`}
         onClick={handleImageStageClick}
         onKeyDown={handleImageStageKeyDown}
         onMouseMove={handleTiltMove}
@@ -180,26 +174,19 @@ export const ProductCard: React.FC<ProductCardProps> = ({
           imageClassName="transition-transform duration-500 ease-out group-hover:scale-[1.03]"
         />
 
-        {/* Minimal Text Tag / Kicker on Image */}
-        {isSoldOut ? (
-          <div className="absolute top-3 left-3 z-10">
-            <span className="inline-block bg-[#1C1917]/90 backdrop-blur-xs text-[#FAF8F5] text-[10px] uppercase tracking-wider font-medium px-2 py-0.5 border border-white/10">
-              Sold Out
-            </span>
-          </div>
-        ) : product.onSale ? (
-          <div className="absolute top-3 left-3 z-10">
-            <span className="inline-block bg-[#78281F] text-[#FAF8F5] text-[10px] uppercase tracking-wider font-medium px-2 py-0.5">
-              Sale
-            </span>
-          </div>
-        ) : product.tag ? (
-          <div className="absolute top-3 left-3 z-10">
-            <span className="inline-block bg-[#FAF8F5]/90 backdrop-blur-xs text-[#1C1917] border border-[#1C1917]/10 text-[10px] uppercase tracking-wider font-medium px-2 py-0.5">
-              {product.tag}
-            </span>
-          </div>
-        ) : null}
+        {/* Editorial tags: sale and newness are independent, so a new sale item
+            can show both. The New marker gently pulses on the latest-arrivals row. */}
+        <div className="absolute top-3 left-3 z-10 flex flex-col items-start gap-1.5">
+          {isSoldOut ? (
+            <span className="inline-block bg-[#1C1917]/90 backdrop-blur-xs text-[#FAF8F5] text-[10px] uppercase tracking-wider font-medium px-2 py-0.5 border border-white/10">Sold Out</span>
+          ) : (
+            <>
+              {product.onSale && <span className="inline-block bg-[#78281F] text-[#FAF8F5] text-[10px] uppercase tracking-wider font-medium px-2 py-0.5">Sale</span>}
+              {isNewArrival && <span className="inline-block bg-[#B88E3E] text-[#1C1917] text-[10px] uppercase tracking-wider font-semibold px-2 py-0.5 animate-pulse">New</span>}
+              {!product.onSale && !isNewArrival && product.tag && <span className="inline-block bg-[#FAF8F5]/90 backdrop-blur-xs text-[#1C1917] border border-[#1C1917]/10 text-[10px] uppercase tracking-wider font-medium px-2 py-0.5">{product.tag}</span>}
+            </>
+          )}
+        </div>
 
         {/* Wishlist Button */}
         <button
@@ -257,22 +244,6 @@ export const ProductCard: React.FC<ProductCardProps> = ({
           </button>
         </div>
 
-        {/* Flip-back details: a deliberate first tap, with an explicit path to the PDP. */}
-        <div className={`absolute inset-0 z-20 flex flex-col gap-3 p-3 sm:p-4 bg-[#FAF8F5]/97 backdrop-blur-sm border border-[#B88E3E]/50 transition-all duration-300 [backface-visibility:hidden] motion-reduce:transition-none ${isImageFlipped ? 'opacity-100 [transform:rotateY(0deg)] pointer-events-auto ring-1 ring-inset ring-[#B88E3E]/45 shadow-[inset_0_0_18px_rgba(184,142,62,0.10)]' : 'opacity-0 [transform:rotateY(90deg)] pointer-events-none'}`} aria-hidden={!isImageFlipped}>
-          <div className="min-h-0">
-            <span className="text-[8px] sm:text-[9px] uppercase tracking-[0.18em] text-[#967029]">Saree details</span>
-            <h4 className="font-serif text-sm sm:text-base text-[#1C1917] leading-snug mt-1.5 line-clamp-3 break-words">{product.name}</h4>
-          </div>
-          <div className="min-h-0 flex-1 flex flex-col justify-center gap-2 text-[10px] sm:text-xs text-[#57534E]">
-            <p className="leading-snug line-clamp-2"><span className="text-[#967029]">Fabric</span> · {product.fabric || 'See product details'}</p>
-            <p className="leading-snug line-clamp-2"><span className="text-[#967029]">Weave</span> · {product.weave || product.subCategory || 'Traditional textile'}</p>
-            <p className="font-medium text-sm sm:text-base text-[#1C1917]">{formatPrice(displayPrice)}</p>
-          </div>
-          <button type="button" tabIndex={isImageFlipped ? 0 : -1} onClick={(e) => { e.stopPropagation(); handleCardClick(); }} className="shrink-0 w-full bg-[#78281F] hover:bg-[#642019] text-[#FAF8F5] py-2 sm:py-2.5 px-2 flex items-center justify-center gap-2 text-[10px] sm:text-[11px] uppercase tracking-[0.1em] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#B88E3E]">
-            View Saree <Eye className="w-3.5 h-3.5" />
-          </button>
-          <span className="shrink-0 text-center text-[9px] text-[#78716C]">Details return to image automatically</span>
-        </div>
       </div>
 
       {/* Product Metadata */}
@@ -303,6 +274,9 @@ export const ProductCard: React.FC<ProductCardProps> = ({
               const matchedVar = product.variants?.find(
                 (v) => v.color && v.color.toLowerCase() === col.toLowerCase()
               );
+              const productMetadata = (product as any).metadata || {};
+              const isPrimaryMetadataColor = String(productMetadata.primaryColourName || '').toLowerCase() === col.toLowerCase();
+              const isSecondaryMetadataColor = String(productMetadata.secondaryColourName || '').toLowerCase() === col.toLowerCase();
               const isColSoldOut = matchedVar
                 ? (matchedVar.availableQuantity ?? matchedVar.stockQuantity) <= 0 || matchedVar.isActive === false
                 : false;
@@ -311,7 +285,7 @@ export const ProductCard: React.FC<ProductCardProps> = ({
                 <ColorSwatch
                   key={col}
                   colorName={col}
-                  hexPrimary={matchedVar?.colorHexPrimary}
+                  hexPrimary={matchedVar?.colorHexPrimary || (isPrimaryMetadataColor ? productMetadata.primaryColourHex : undefined) || (isSecondaryMetadataColor ? productMetadata.secondaryColourHex : undefined)}
                   hexSecondary={matchedVar?.colorHexSecondary}
                   swatchImageUrl={matchedVar?.colorSwatchUrl}
                   size="sm"

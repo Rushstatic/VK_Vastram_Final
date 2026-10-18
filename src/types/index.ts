@@ -105,6 +105,8 @@ export interface CartItem {
   product: Product;
   quantity: number;
   selectedColor?: string;
+  /** Image resolved for the exact selected variant; persisted for stable cart/checkout thumbnails. */
+  selectedVariantImage?: string;
   selectedSize?: string;
   includeFallPico?: boolean;
   stockAvailable?: number;

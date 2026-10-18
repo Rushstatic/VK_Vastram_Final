@@ -133,9 +133,7 @@ export const AdminLogin: React.FC<AdminLoginProps> = ({ onSuccess, onBackToStore
               ) : import.meta.env.PROD ? (
                 <p>Administrator sign-in is disabled until production Supabase configuration is provided.</p>
               ) : (
-                <p>
-                  Local test mode: Use <span className="font-semibold text-[#1C1917]">admin@vkvastram.com</span> / <span className="font-semibold text-[#1C1917]">vastram2026</span>
-                </p>
+                <p>Administrator sign-in requires Supabase configuration. No built-in test credentials are enabled.</p>
               )}
             </div>
           </div>

@@ -24,7 +24,7 @@ import { supabase, isSupabaseConfigured } from '../../lib/supabase';
 import { Product, AdminSubView, ProductCategory, ProductImageRole } from '../../types';
 import { Button } from '../ui/Button';
 import { useSiteSettings } from '../../hooks/useSiteSettings';
-import { CANONICAL_COLOR_DICTIONARY } from '../../lib/colorSystem';
+import { useManagedFabrics } from '../../hooks/useManagedFabrics';
 import { formatVariantSku, parseNextVariantIndex } from '../../lib/skuHelper';
 import { ImageAdjustmentControl } from './ImageAdjustmentControl';
 
@@ -59,6 +59,7 @@ interface VariantItem {
   priceOverride?: number;
   mrpOverride?: number;
   stockQuantity: number;
+  reservedQuantity?: number;
   isActive?: boolean;
   colorHexPrimary?: string;
   colorHexSecondary?: string;
@@ -71,6 +72,7 @@ export const AdminProductForm: React.FC<AdminProductFormProps> = ({
 }) => {
   const isEditing = Boolean(productId);
   const { settings } = useSiteSettings();
+  const managedFabrics = useManagedFabrics();
   const storeName = settings?.storeName || 'VK VASTRAM';
 
   // Categories & Collections
@@ -102,10 +104,6 @@ export const AdminProductForm: React.FC<AdminProductFormProps> = ({
   const [color, setColor] = useState('');
   const [sareeType, setSareeType] = useState('');
   const [managedSareeTypes, setManagedSareeTypes] = useState<string[]>(['Chanderi', 'Malmal Cotton', 'Tissue Silk', 'Linen Cotton', 'Banarasi', 'Kanjivaram', 'Paithani', 'Other']);
-  const [primaryColourName, setPrimaryColourName] = useState('');
-  const [primaryColourHex, setPrimaryColourHex] = useState('#78281F');
-  const [secondaryColourName, setSecondaryColourName] = useState('');
-  const [secondaryColourHex, setSecondaryColourHex] = useState('#B88E3E');
   const [pattern, setPattern] = useState('');
   const [occasion, setOccasion] = useState('');
   const [blousePiece, setBlousePiece] = useState('0.8m Running Blouse Piece Included');
@@ -120,6 +118,7 @@ export const AdminProductForm: React.FC<AdminProductFormProps> = ({
   const [images, setImages] = useState<ImageItem[]>([]);
   const [imageUrlInput, setImageUrlInput] = useState('');
   const [variants, setVariants] = useState<VariantItem[]>([]);
+  const [archivedVariants, setArchivedVariants] = useState<VariantItem[]>([]);
   const [variantsEnabled, setVariantsEnabled] = useState(false);
   const [singleProductStock, setSingleProductStock] = useState(0);
   const [singleProductVariantId, setSingleProductVariantId] = useState<string | undefined>(undefined);
@@ -133,6 +132,7 @@ export const AdminProductForm: React.FC<AdminProductFormProps> = ({
   const [loading, setLoading] = useState(false);
   const [fetching, setFetching] = useState(isEditing);
   const [uploadingImages, setUploadingImages] = useState(false);
+  const [isProductImageDragActive, setIsProductImageDragActive] = useState(false);
   const [imageUploadStatus, setImageUploadStatus] = useState('');
   const [errorMessage, setErrorMessage] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
@@ -169,8 +169,16 @@ export const AdminProductForm: React.FC<AdminProductFormProps> = ({
       setCategories(cats);
       setCollections(cols);
       if (isSupabaseConfigured()) {
-        const { data: typeSetting } = await (supabase as any).from('site_settings').select('value').eq('key', 'saree_types').maybeSingle();
+        const [{ data: typeSetting }, { data: fabricSetting }] = await Promise.all([
+          (supabase as any).from('site_settings').select('value').eq('key', 'saree_types').maybeSingle(),
+          (supabase as any).from('site_settings').select('value').eq('key', 'fabric_types').maybeSingle(),
+        ]);
         const savedTypes = typeSetting?.value?.types;
+        const savedFabrics = fabricSetting?.value?.types;
+        if (Array.isArray(savedFabrics)) {
+          const names = savedFabrics.filter((t: any) => t && t.active !== false && typeof t.name === 'string' && t.name.trim()).map((t: any) => t.name.trim());
+          if (names.length) setFabric(names.includes(fabric) ? fabric : names[0]);
+        }
         if (Array.isArray(savedTypes)) {
           const activeNames = savedTypes.filter((t: any) => t && t.active !== false && typeof t.name === 'string' && t.name.trim()).map((t: any) => t.name.trim());
           if (activeNames.length) setManagedSareeTypes(activeNames);
@@ -221,10 +229,7 @@ export const AdminProductForm: React.FC<AdminProductFormProps> = ({
         setCare(p.care || '');
         const productMetadata = (p as any).metadata || {};
         setSareeType(productMetadata.sareeType || '');
-        setPrimaryColourName(productMetadata.primaryColourName || '');
-        setPrimaryColourHex(productMetadata.primaryColourHex || '#78281F');
-        setSecondaryColourName(productMetadata.secondaryColourName || '');
-        setSecondaryColourHex(productMetadata.secondaryColourHex || '#B88E3E');
+        setColor((p as any).color || '');
         setSeoTitle(p.seoTitle || '');
         setSeoDescription(p.seoDescription || '');
 
@@ -235,7 +240,8 @@ export const AdminProductForm: React.FC<AdminProductFormProps> = ({
         }
 
         if (data.variants && data.variants.length > 0) {
-          const hasExplicitVariants = data.variants.length > 1 || data.variants.some((v: any) => {
+          const activeVariantRows = data.variants.filter((v: any) => v.is_active !== false);
+          const hasExplicitVariants = activeVariantRows.length > 1 || activeVariantRows.some((v: any) => {
             const attrs = v.attributes || {};
             return Boolean(
               (v.variant_name && !['Standard', 'Standard Free Size'].includes(v.variant_name)) ||
@@ -245,13 +251,14 @@ export const AdminProductForm: React.FC<AdminProductFormProps> = ({
             );
           });
           setVariantsEnabled(hasExplicitVariants);
-          if (data.variants.length === 1) {
-            setSingleProductStock(Number(data.variants[0].stock_quantity || 0));
-            setSingleProductVariantId(data.variants[0].id || undefined);
-            setSingleProductVariantSku(data.variants[0].sku || undefined);
+          setArchivedVariants([]);
+          if (activeVariantRows.length === 1) {
+            setSingleProductStock(Number(activeVariantRows[0].stock_quantity || 0));
+            setSingleProductVariantId(activeVariantRows[0].id || undefined);
+            setSingleProductVariantSku(activeVariantRows[0].sku || undefined);
           }
           setVariants(
-            hasExplicitVariants ? data.variants.map((v: any) => ({
+            hasExplicitVariants ? activeVariantRows.map((v: any) => ({
               id: v.id,
               sku: v.sku,
               variantName: v.variant_name || 'Standard',
@@ -260,6 +267,7 @@ export const AdminProductForm: React.FC<AdminProductFormProps> = ({
               bedSize: v.bed_size || '',
               dimensions: v.dimensions || '',
               stockQuantity: v.stock_quantity || 0,
+              reservedQuantity: Number(v.reserved_quantity || 0),
               priceOverride: v.price_override ? Number(v.price_override) : undefined,
               mrpOverride: v.mrp_override ? Number(v.mrp_override) : undefined,
               isActive: v.is_active !== false,
@@ -309,21 +317,37 @@ export const AdminProductForm: React.FC<AdminProductFormProps> = ({
     setIsDirty(true);
   };
 
-  // Upload local image file
-  const handleImageFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (!files || files.length === 0) return;
+  // Shared upload pipeline for file-picker selection and drag-and-drop.
+  // Both paths use the same image optimization, storage, and variant assignment logic.
+  const uploadProductImageFiles = async (incomingFiles: File[]) => {
+    if (uploadingImages || incomingFiles.length === 0) return;
+
+    const validFiles = incomingFiles.filter((file) =>
+      ['image/jpeg', 'image/png', 'image/webp'].includes(file.type.toLowerCase()) ||
+      /\.(jpe?g|png|webp)$/i.test(file.name)
+    );
+    if (validFiles.length === 0) {
+      setErrorMessage('Please add JPEG, PNG, or WebP image files.');
+      return;
+    }
+    if (validFiles.length !== incomingFiles.length) {
+      setErrorMessage('Some files were skipped. Only JPEG, PNG, and WebP images are supported.');
+    } else {
+      setErrorMessage('');
+    }
 
     setUploadingImages(true);
-    setErrorMessage('');
-    const total = files.length;
+    const total = validFiles.length;
     const targetSku = newImageTargetVariant !== 'all' ? newImageTargetVariant : undefined;
     const targetVarObj = variants.find((v) => v.sku === targetSku);
 
     try {
       for (let i = 0; i < total; i++) {
-        const file = files[i];
-        setImageUploadStatus(`Optimizing to WebP (1200x1600) & uploading image ${i + 1} of ${total} (${file.name})...`);
+        const file = validFiles[i];
+        if (file.size > 20 * 1024 * 1024) {
+          throw new Error(`${file.name} exceeds the 20 MB source limit. Please use a smaller image.`);
+        }
+        setImageUploadStatus(`Optimizing to WebP (1200×1600) & uploading image ${i + 1} of ${total} (${file.name})...`);
         const uploaded = await adminService.uploadImage(file, 'products');
         setImages((prev) => [
           ...prev,
@@ -349,9 +373,34 @@ export const AdminProductForm: React.FC<AdminProductFormProps> = ({
     } finally {
       setUploadingImages(false);
       setImageUploadStatus('');
-      // Reset input
-      e.target.value = '';
     }
+  };
+
+  const handleImageFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const input = e.currentTarget;
+    await uploadProductImageFiles(Array.from(input.files || []));
+    input.value = '';
+  };
+
+  const handleProductImageDragOver = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    if (!uploadingImages && Array.from(e.dataTransfer.types).includes('Files')) {
+      setIsProductImageDragActive(true);
+    }
+  };
+
+  const handleProductImageDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
+    if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
+      setIsProductImageDragActive(false);
+    }
+  };
+
+  const handleProductImageDrop = async (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setIsProductImageDragActive(false);
+    if (uploadingImages) return;
+    const files = Array.from(e.dataTransfer.files || []);
+    await uploadProductImageFiles(files);
   };
 
   const handleSetPrimaryImage = (index: number) => {
@@ -464,7 +513,18 @@ export const AdminProductForm: React.FC<AdminProductFormProps> = ({
   };
 
   const handleRemoveVariant = (index: number) => {
-    setVariants(variants.filter((_, i) => i !== index));
+    const target = variants[index];
+    if (!target) return;
+    if (Number(target.reservedQuantity || 0) > 0) {
+      setErrorMessage(`Cannot remove ${target.variantName}: ${target.reservedQuantity} unit(s) are currently reserved by orders. Cancel or complete those orders first.`);
+      return;
+    }
+    // Existing variants are archived on save rather than hard-deleted, preserving
+    // order and inventory audit history. Unsaved variants can simply be discarded.
+    if (target.id && !String(target.id).startsWith('new-')) {
+      setArchivedVariants((current) => [...current.filter((v) => v.id !== target.id), { ...target, isActive: false }]);
+    }
+    setVariants((current) => current.filter((_, i) => i !== index));
     setIsDirty(true);
   };
 
@@ -482,6 +542,18 @@ export const AdminProductForm: React.FC<AdminProductFormProps> = ({
       setErrorMessage('Product slug is required.');
       return;
     }
+    if (isSupabaseConfigured()) {
+      const { data: duplicateSlug, error: slugCheckError } = await (supabase as any)
+        .from('products').select('id').eq('slug', slug.trim()).maybeSingle();
+      if (slugCheckError) {
+        setErrorMessage('Could not verify slug uniqueness. Please retry before saving.');
+        return;
+      }
+      if (duplicateSlug && duplicateSlug.id !== productId) {
+        setErrorMessage(`The URL slug “${slug.trim()}” is already used by another product. Choose a unique slug.`);
+        return;
+      }
+    }
     if (price < 0) {
       setErrorMessage('Price cannot be negative.');
       return;
@@ -490,7 +562,7 @@ export const AdminProductForm: React.FC<AdminProductFormProps> = ({
       setErrorMessage('An active product must have a selling price greater than ₹0. Keep unfinished products in Draft.');
       return;
     }
-    if (status === 'active' && (gstRate === '' || !Number.isFinite(Number(gstRate)) || Number(gstRate) < 0 || Number(gstRate) > 100)) {
+    if (status === 'active' && (gstRate ==='' || !Number.isFinite(Number(gstRate)) || Number(gstRate) < 0 || Number(gstRate) > 100)) {
       setErrorMessage('Enter the accountant-confirmed GST rate for this active product before saving. Variants cannot be saved until the product tax setting is valid.');
       return;
     }
@@ -520,7 +592,11 @@ export const AdminProductForm: React.FC<AdminProductFormProps> = ({
       // attributes that are not directly editable in this row.
       return Boolean(v.id) || hasColorName || hasColorHex || hasSize || hasCustomTitle;
     });
-    if (variantsEnabled && !hasConfiguredVariant) {
+    if (variantsEnabled && variants.length === 0) {
+      setErrorMessage('Create at least one active variant before saving, or switch to single-item stock.');
+      return;
+    }
+    if (variantsEnabled && variants.length > 0 && !hasConfiguredVariant) {
       setErrorMessage('Add at least one variant title, colour name, size, or valid colour HEX before saving.');
       return;
     }
@@ -529,8 +605,8 @@ export const AdminProductForm: React.FC<AdminProductFormProps> = ({
       return;
     }
     const validHex = (value?: string) => !value?.trim() || /^#[0-9A-Fa-f]{6}$/.test(value.trim());
-    if (variantsEnabled && variants.some((v) => !validHex(v.colorHexPrimary) || !validHex(v.colorHexSecondary))) {
-      setErrorMessage('Enter each primary/secondary colour as a complete HEX value such as #78281F, or clear the field.');
+    if (variantsEnabled && variants.some((v) => !validHex(v.colorHexPrimary) || !validHex(v.colorHexSecondary) || (v.color?.trim() && !/^#[0-9A-Fa-f]{6}$/.test(v.colorHexPrimary || '')))) {
+      setErrorMessage('Enter a valid colour HEX such as #78281F for each named variant.');
       return;
     }
 
@@ -558,10 +634,6 @@ export const AdminProductForm: React.FC<AdminProductFormProps> = ({
       care: care.trim() || undefined,
       metadata: {
         sareeType: category === 'sarees' ? sareeType.trim() || null : null,
-        primaryColourName: primaryColourName.trim() || null,
-        primaryColourHex: /^#[0-9A-Fa-f]{6}$/.test(primaryColourHex) ? primaryColourHex.toUpperCase() : null,
-        secondaryColourName: secondaryColourName.trim() || null,
-        secondaryColourHex: /^#[0-9A-Fa-f]{6}$/.test(secondaryColourHex) ? secondaryColourHex.toUpperCase() : null,
       },
       seoTitle: seoTitle || `${name} | ${storeName}`,
       seoDescription: seoDescription || description.slice(0, 150),
@@ -617,7 +689,7 @@ export const AdminProductForm: React.FC<AdminProductFormProps> = ({
       altText: img.altText || `${name}`,
     }));
 
-    const variantPayload = rawVariants.map((v) => {
+    const variantPayload = [...rawVariants, ...archivedVariants].map((v) => {
       // Find images assigned specifically to this variant SKU or assigned to 'all'
       const assignedImages = images.filter(
         (img) => !img.variantSku || img.variantSku === 'all' || img.variantSku === v.sku
@@ -775,8 +847,8 @@ export const AdminProductForm: React.FC<AdminProductFormProps> = ({
               </select>
             </div>
             
-            {/* Colour (Simplified) */}
-            <div>
+            {/* Bedsheets may still use a simple colour label here. Saree colour is managed once in the specifications block below. */}
+            {category === 'bedsheets' && <div>
               <label className="block font-semibold text-[#1C1917] mb-1.5">
                 Primary Colour
               </label>
@@ -790,7 +862,7 @@ export const AdminProductForm: React.FC<AdminProductFormProps> = ({
                 placeholder="e.g., Emerald Green"
                 className="w-full bg-[#F4EFE6] border border-[#1C1917]/15 p-2.5 rounded-xs text-[#1C1917] focus:outline-none focus:border-[#B88E3E]"
               />
-            </div>
+            </div>}
 
             {/* Selling Price */}
             <div>
@@ -799,10 +871,11 @@ export const AdminProductForm: React.FC<AdminProductFormProps> = ({
               </label>
               <input
                 type="number"
-                min="0"
+                min="1"
                 step="1"
                 required
-                value={price}
+                placeholder="Enter selling price"
+                value={price || ''}
                 onChange={(e) => {
                   setPrice(Number(e.target.value));
                   setIsDirty(true);
@@ -876,6 +949,21 @@ export const AdminProductForm: React.FC<AdminProductFormProps> = ({
             </div>
           </div>
         </div>
+
+        {/* Inventory summary is intentionally near the top; per-variant allocations remain below. */}
+        <section className="bg-[#FAF8F5] p-5 rounded-xs border border-[#1C1917]/10 shadow-2xs">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+            <div>
+              <h2 className="font-serif text-base text-[#1C1917] font-medium">Inventory & Stock</h2>
+              <p className="text-xs text-[#78716C] mt-1">Stock is managed per variant when variants are enabled.</p>
+            </div>
+            {variantsEnabled ? (
+              <div className="sm:text-right"><div className="text-[10px] uppercase tracking-wider text-[#78716C]">Total physical stock</div><div className="text-2xl font-semibold tabular-nums text-[#1C1917]">{variants.filter((v) => v.isActive !== false).reduce((sum, v) => sum + Math.max(0, Number(v.stockQuantity) || 0), 0)}</div><div className="text-[10px] text-[#78716C]">Sum of active variants</div></div>
+            ) : (
+              <div className="w-full sm:max-w-xs"><label className="block text-[10px] uppercase tracking-wider font-semibold text-[#78716C] mb-1">Available stock (units)</label><input type="number" min="0" step="1" value={singleProductStock} onChange={(e) => { setSingleProductStock(Math.max(0, Math.floor(Number(e.target.value) || 0))); setIsDirty(true); }} className="w-full bg-[#F4EFE6] p-2.5 border border-[#1C1917]/15 rounded-xs" /></div>
+            )}
+          </div>
+        </section>
 
         {/* Section 2: Advanced Settings (Collapsible) */}
         <details className="bg-[#FAF8F5] p-6 rounded-xs border border-[#1C1917]/10 shadow-2xs group">
@@ -1007,12 +1095,15 @@ export const AdminProductForm: React.FC<AdminProductFormProps> = ({
                 {/* Fabric */}
                 <div>
                   <label className="block font-semibold text-[#1C1917] mb-1.5">Fabric Composition</label>
-                  <input
-                    type="text"
+                  <select
                     value={fabric}
                     onChange={(e) => { setFabric(e.target.value); setIsDirty(true); }}
                     className="w-full bg-[#F4EFE6] border border-[#1C1917]/15 p-2.5 rounded-xs text-[#1C1917]"
-                  />
+                  >
+                    <option value="">Select fabric</option>
+                    {managedFabrics.map((item) => <option key={item.name} value={item.name}>{item.name}</option>)}
+                    {fabric && !managedFabrics.some((item) => item.name.toLowerCase() === fabric.toLowerCase()) && <option value={fabric}>{fabric} (legacy)</option>}
+                  </select>
                 </div>
                 {/* Origin */}
                 <div>
@@ -1044,16 +1135,7 @@ export const AdminProductForm: React.FC<AdminProductFormProps> = ({
                     </select>
                   </div>
                 )}
-                <div>
-                  <label className="block font-semibold text-[#1C1917] mb-1.5">Primary Colour Name</label>
-                  <input value={primaryColourName} onChange={(e) => { setPrimaryColourName(e.target.value); setIsDirty(true); }} placeholder="e.g. Pearl Beige" className="w-full bg-[#F4EFE6] border border-[#1C1917]/15 p-2.5 rounded-xs text-[#1C1917]" />
-                  <div className="flex items-center gap-2 mt-2"><input type="color" value={/^#[0-9A-Fa-f]{6}$/.test(primaryColourHex) ? primaryColourHex : '#78281F'} onChange={(e) => { setPrimaryColourHex(e.target.value.toUpperCase()); setIsDirty(true); }} className="h-8 w-10 bg-transparent" /><input value={primaryColourHex} onChange={(e) => { setPrimaryColourHex(e.target.value); setIsDirty(true); }} pattern="^#[0-9A-Fa-f]{6}$" aria-label="Primary colour HEX" className="min-w-0 flex-1 bg-[#F4EFE6] border border-[#1C1917]/15 p-2 rounded-xs font-mono" /></div>
-                </div>
-                <div>
-                  <label className="block font-semibold text-[#1C1917] mb-1.5">Secondary Colour Name</label>
-                  <input value={secondaryColourName} onChange={(e) => { setSecondaryColourName(e.target.value); setIsDirty(true); }} placeholder="e.g. Teal Border" className="w-full bg-[#F4EFE6] border border-[#1C1917]/15 p-2.5 rounded-xs text-[#1C1917]" />
-                  <div className="flex items-center gap-2 mt-2"><input type="color" value={/^#[0-9A-Fa-f]{6}$/.test(secondaryColourHex) ? secondaryColourHex : '#B88E3E'} onChange={(e) => { setSecondaryColourHex(e.target.value.toUpperCase()); setIsDirty(true); }} className="h-8 w-10 bg-transparent" /><input value={secondaryColourHex} onChange={(e) => { setSecondaryColourHex(e.target.value); setIsDirty(true); }} pattern="^#[0-9A-Fa-f]{6}$" aria-label="Secondary colour HEX" className="min-w-0 flex-1 bg-[#F4EFE6] border border-[#1C1917]/15 p-2 rounded-xs font-mono" /></div>
-                </div>
+                {category === 'sarees' && <p className="md:col-span-2 text-xs text-[#78716C]">Colour name and HEX are configured once per stock variant below. Add another variant only when the saree is available in another colour/edition.</p>}
               </div>
             </div>
           </div>
@@ -1140,20 +1222,37 @@ export const AdminProductForm: React.FC<AdminProductFormProps> = ({
             </div>
 
             <div className="md:col-span-4">
-              <label className={`w-full flex items-center justify-center gap-2 p-2.5 bg-[#F4EFE6] hover:bg-[#EFE9DC] border border-dashed border-[#1C1917]/25 rounded-xs cursor-pointer text-[#1C1917] font-medium transition-colors ${
-                uploadingImages ? 'opacity-60 pointer-events-none' : ''
-              }`}>
-                <Upload className="w-4 h-4 text-[#967029]" />
-                <span>{uploadingImages ? 'Optimizing & Uploading...' : 'Upload Image File(s)'}</span>
-                <input
-                  type="file"
-                  multiple
-                  accept="image/jpeg,image/png,image/webp"
-                  onChange={handleImageFileUpload}
-                  disabled={uploadingImages}
-                  className="hidden"
-                />
-              </label>
+              <div
+                onDragOver={handleProductImageDragOver}
+                onDragEnter={handleProductImageDragOver}
+                onDragLeave={handleProductImageDragLeave}
+                onDrop={handleProductImageDrop}
+                aria-label="Product image upload drop zone"
+                className={`w-full rounded-xs border border-dashed p-3 text-center transition-colors ${
+                  isProductImageDragActive
+                    ? 'border-[#B88E3E] bg-[#EDE6D8] ring-2 ring-[#B88E3E]/25'
+                    : 'border-[#1C1917]/25 bg-[#F4EFE6]'
+                } ${uploadingImages ? 'opacity-60' : ''}`}
+              >
+                <label className={`inline-flex items-center justify-center gap-2 px-3 py-2 bg-white hover:bg-[#EFE9DC] border border-[#1C1917]/15 rounded-xs cursor-pointer text-[#1C1917] text-xs font-medium transition-colors ${
+                  uploadingImages ? 'opacity-60 pointer-events-none' : ''
+                }`}>
+                  <Upload className="w-4 h-4 text-[#967029]" />
+                  <span>{uploadingImages ? 'Optimizing & Uploading...' : 'Choose Product Images'}</span>
+                  <input
+                    type="file"
+                    multiple
+                    accept="image/jpeg,image/png,image/webp"
+                    onChange={handleImageFileUpload}
+                    disabled={uploadingImages}
+                    className="hidden"
+                  />
+                </label>
+                <p className="mt-2 text-[11px] text-[#78716C]" aria-live="polite">
+                  {isProductImageDragActive ? 'Drop images to upload' : 'or drag & drop images here'}
+                </p>
+                <p className="mt-1 text-[10px] text-[#A8A29E]">JPEG, PNG or WebP · up to 20 MB each · multiple files supported</p>
+              </div>
             </div>
           </div>
 
@@ -1473,137 +1572,45 @@ export const AdminProductForm: React.FC<AdminProductFormProps> = ({
                 Configure distinct color/size variants and starting stock allocations.
               </p>
             </div>
-            <button
-              type="button"
-              onClick={handleAddVariant}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-[#F4EFE6] hover:bg-[#EFE9DC] text-[#1C1917] text-xs font-medium rounded-xs border border-[#1C1917]/15 cursor-pointer"
-            >
-              <Plus className="w-3.5 h-3.5" />
-              <span>{variantsEnabled ? 'Add Variant' : 'Add Variants'}</span>
-            </button>
+
           </div>
 
           {!variantsEnabled ? (
             <div className="p-4 bg-[#F4EFE6]/50 rounded-xs text-xs text-[#57534E] space-y-3">
               <p>This is a single-item product. No colour/size variants will be shown to customers. Inventory is stored in its internal standard SKU.</p>
-              <div className="max-w-xs">
-                <label className="block text-[10px] uppercase tracking-wider font-semibold text-[#78716C] mb-1">Available stock</label>
-                <input type="number" min="0" step="1" value={singleProductStock} onChange={(e) => { setSingleProductStock(Math.max(0, Math.floor(Number(e.target.value) || 0))); setIsDirty(true); }} className="w-full bg-[#FAF8F5] p-2 border border-[#1C1917]/15 rounded-xs" />
-              </div>
-              <button type="button" onClick={() => { setVariantsEnabled(true); if (variants.length === 0) handleAddVariant(); }} className="px-3 py-2 border border-[#967029]/50 text-[#785A18] rounded-xs font-medium">Enable colour/size variants</button>
+              <p>Use the stock control in Product Essentials above. Create a variant below only if this product needs separate colour-level inventory.</p>
             </div>
           ) : (
             <div className="space-y-3">
               {variants.length === 0 && <p className="text-xs text-[#78716C]">Add the first variant below. Variant prices inherit the main product price; each variant gets its own colour, generated SKU, stock and images.</p>}
               {variants.map((v, idx) => {
-                const canonicalColorsList = Object.values(CANONICAL_COLOR_DICTIONARY);
-                const isCustomColor = Boolean(v.color && !canonicalColorsList.some((c) => c.displayName.toLowerCase() === v.color?.toLowerCase()));
-
                 return (
                   <div
                     key={idx}
                     className="p-3 bg-[#F4EFE6] rounded-xs border border-[#1C1917]/10 space-y-3 text-xs"
                   >
-                    <div className="grid grid-cols-1 sm:grid-cols-12 gap-3 items-center">
-                      {/* Variant Title */}
-                      <div className="sm:col-span-2">
-                        <label className="block text-[10px] uppercase tracking-wider font-semibold text-[#78716C] mb-1">
-                          Variant Title
-                        </label>
-                        <input
-                          type="text"
-                          value={v.variantName || ''}
-                          onChange={(e) => {
-                            const copy = [...variants];
-                            copy[idx].variantName = e.target.value;
-                            setVariants(copy);
-                            setIsDirty(true);
-                          }}
-                          placeholder="e.g. Antique Gold Edition"
-                          aria-label={`Variant title ${idx + 1}`}
-                          className="w-full bg-[#FAF8F5] p-1.5 border border-[#1C1917]/15 rounded-xs text-[#1C1917]"
-                        />
-                      </div>
-
-                      {/* Variant SKU */}
-                      <div className="sm:col-span-2">
-                        <label className="block text-[10px] uppercase tracking-wider font-semibold text-[#78716C] mb-1">
-                          Variant SKU
-                        </label>
-                        <input
-                          type="text"
-                          value={v.sku}
-                          readOnly
-                          title="Generated automatically from the parent product SKU"
-                          className="w-full bg-[#EFE9DC] p-1.5 border border-[#1C1917]/15 rounded-xs font-mono text-[11px] text-[#57534E]"
-                        />
-                      </div>
-
-                      {/* Free-form colour name: no canonical attribute dependency */}
+                    <div className="grid grid-cols-1 sm:grid-cols-12 gap-3 items-end">
                       <div className="sm:col-span-3">
-                        <label className="block text-[10px] uppercase tracking-wider font-semibold text-[#78716C] mb-1">
-                          Colour Name
-                        </label>
-                        <input
-                          type="text"
-                          value={v.color || ''}
-                          onChange={(e) => {
-                            const copy = [...variants];
-                            copy[idx].color = e.target.value;
-                            setVariants(copy);
-                            setIsDirty(true);
-                          }}
-                          placeholder="e.g. Maroon with Antique Gold Zari"
-                          aria-label={`Colour name for variant ${idx + 1}`}
-                          className="w-full bg-[#FAF8F5] p-1.5 border border-[#1C1917]/15 rounded-xs text-[#1C1917]"
-                        />
+                        <label className="block text-[10px] uppercase tracking-wider font-semibold text-[#78716C] mb-1">Variant Name *</label>
+                        <input type="text" required value={v.variantName || ''} onChange={(e) => { const copy = [...variants]; copy[idx].variantName = e.target.value; setVariants(copy); setIsDirty(true); }} placeholder="e.g. Royal Emerald" className="w-full bg-[#FAF8F5] p-2 border border-[#1C1917]/15 rounded-xs" />
                       </div>
-
+                      <div className="sm:col-span-3">
+                        <label className="block text-[10px] uppercase tracking-wider font-semibold text-[#78716C] mb-1">Colour Name *</label>
+                        <input type="text" required value={v.color || ''} onChange={(e) => { const copy = [...variants]; copy[idx].color = e.target.value; setVariants(copy); setIsDirty(true); }} placeholder="e.g. Emerald Green" className="w-full bg-[#FAF8F5] p-2 border border-[#1C1917]/15 rounded-xs" />
+                      </div>
+                      <div className="sm:col-span-3">
+                        <label className="block text-[10px] uppercase tracking-wider font-semibold text-[#78716C] mb-1">Colour HEX *</label>
+                        <div className="flex items-center gap-2">
+                          <input type="color" value={/^#[0-9A-Fa-f]{6}$/.test(v.colorHexPrimary || '') ? v.colorHexPrimary! : '#78281F'} onChange={(e) => { const copy = [...variants]; copy[idx].colorHexPrimary = e.target.value.toUpperCase(); setVariants(copy); setIsDirty(true); }} className="w-9 h-9 bg-transparent" aria-label={`Colour picker for ${v.variantName || v.sku}`} />
+                          <input value={v.colorHexPrimary || ''} onChange={(e) => { const copy = [...variants]; copy[idx].colorHexPrimary = e.target.value.toUpperCase(); setVariants(copy); setIsDirty(true); }} placeholder="#78281F" pattern="^#[0-9A-Fa-f]{6}$" className="min-w-0 flex-1 bg-[#FAF8F5] p-2 border border-[#1C1917]/15 rounded-xs font-mono" />
+                        </div>
+                      </div>
                       <div className="sm:col-span-2">
-                        <label className="block text-[10px] uppercase tracking-wider font-semibold text-[#78716C] mb-1">Primary / Secondary Colour HEX</label>
-                        <div className="flex items-center gap-1.5">
-                          <span className="w-[4.25rem] shrink-0 text-[10px] text-[#57534E]">Primary</span>
-                          <input type="color" value={/^#[0-9A-Fa-f]{6}$/.test(v.colorHexPrimary || '') ? v.colorHexPrimary! : '#78281F'} onChange={(e) => { const copy = [...variants]; copy[idx].colorHexPrimary = e.target.value.toUpperCase(); setVariants(copy); setIsDirty(true); }} className="w-8 h-8 bg-transparent" aria-label="Variant primary colour" />
-                          <input value={v.colorHexPrimary || ''} onChange={(e) => { const copy = [...variants]; copy[idx].colorHexPrimary = e.target.value; setVariants(copy); setIsDirty(true); }} placeholder="#78281F" className="min-w-0 w-full bg-[#FAF8F5] p-1.5 border border-[#1C1917]/15 rounded-xs font-mono" aria-label="Primary colour HEX" />
-                        </div>
-                        <div className="flex items-center gap-1.5 mt-1">
-                          <span className="w-[4.25rem] shrink-0 text-[10px] text-[#57534E]">Secondary</span>
-                          <input type="color" value={/^#[0-9A-Fa-f]{6}$/.test(v.colorHexSecondary || '') ? v.colorHexSecondary! : '#B88E3E'} onChange={(e) => { const copy = [...variants]; copy[idx].colorHexSecondary = e.target.value.toUpperCase(); setVariants(copy); setIsDirty(true); }} className="w-8 h-8 bg-transparent" aria-label="Variant secondary colour" />
-                          <input value={v.colorHexSecondary || ''} onChange={(e) => { const copy = [...variants]; copy[idx].colorHexSecondary = e.target.value; setVariants(copy); setIsDirty(true); }} placeholder="#B88E3E" className="min-w-0 w-full bg-[#FAF8F5] p-1.5 border border-[#1C1917]/15 rounded-xs font-mono" aria-label="Secondary colour HEX" />
-                        </div>
+                        <label className="block text-[10px] uppercase tracking-wider font-semibold text-[#78716C] mb-1">Stock *</label>
+                        <input type="number" min="0" step="1" required value={v.stockQuantity ?? 0} onChange={(e) => { const raw = e.target.value; const parsed = raw === '' ? 0 : Number(raw); const copy = [...variants]; copy[idx].stockQuantity = Number.isFinite(parsed) ? Math.max(0, Math.floor(parsed)) : 0; setVariants(copy); setIsDirty(true); }} className="w-full bg-[#FAF8F5] p-2 border border-[#1C1917]/15 rounded-xs tabular-nums font-semibold" />
                       </div>
-
-                      {/* Stock Units */}
-                      <div className="sm:col-span-1">
-                        <label className="block text-[10px] uppercase tracking-wider font-semibold text-[#78716C] mb-1">
-                          Stock (units)
-                        </label>
-                        <input
-                          type="number"
-                          min="0"
-                          step="1"
-                          required
-                          inputMode="numeric"
-                          value={v.stockQuantity ?? 0}
-                          onChange={(e) => {
-                            const raw = e.target.value;
-                            const parsed = raw === '' ? 0 : Number(raw);
-                            const copy = [...variants];
-                            copy[idx].stockQuantity = Number.isFinite(parsed) ? Math.max(0, Math.floor(parsed)) : 0;
-                            setVariants(copy);
-                            setIsDirty(true);
-                          }}
-                          aria-label={`Stock units for ${v.variantName || v.sku}`}
-                          title="Physical stock units. Must not be less than reserved units."
-                          className="w-full bg-[#FAF8F5] p-1.5 border border-[#1C1917]/15 rounded-xs tabular-nums font-semibold"
-                        />
-                        <p className="mt-1 text-[10px] text-[#78716C]">Physical units</p>
-                      </div>
-
-                      {/* Variant pricing inherits the parent product price by design. */}
-                      <div className="sm:col-span-1">
-                        <label className="block text-[10px] uppercase tracking-wider font-semibold text-[#78716C] mb-1">Price</label>
-                        <div className="w-full bg-[#EFE9DC] p-1.5 border border-[#1C1917]/10 rounded-xs text-[11px] text-[#78716C]">Inherits ₹{Number(price || 0).toLocaleString('en-IN')}</div>
+                      <div className="sm:col-span-1 flex justify-end">
+                        <button type="button" onClick={() => handleRemoveVariant(idx)} title={`Remove ${v.variantName || 'variant'}`} aria-label={`Remove ${v.variantName || 'variant'}`} className="p-2 border border-red-200 text-red-700 hover:bg-red-50 rounded-xs"><Trash2 className="w-4 h-4" /></button>
                       </div>
                     </div>
 
@@ -1613,6 +1620,11 @@ export const AdminProductForm: React.FC<AdminProductFormProps> = ({
               })}
             </div>
           )}
+          <div className="flex justify-end border-t border-[#1C1917]/10 pt-3">
+            <button type="button" onClick={() => { if (!variantsEnabled) setVariantsEnabled(true); handleAddVariant(); }} className="inline-flex items-center gap-2 px-4 py-2 bg-[#1C1917] text-[#FAF8F5] hover:bg-[#332C27] text-xs font-medium rounded-xs">
+              <Plus className="w-4 h-4" /> {variantsEnabled ? 'Create another variant' : 'Create variant'}
+            </button>
+          </div>
         </div>
 
         {/* Action Button Strip */}

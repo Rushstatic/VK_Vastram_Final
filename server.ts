@@ -50,7 +50,7 @@ const supabaseAdmin: SupabaseClient | null =
 const db = useSupabase ? supabaseAdmin : null;
 
 /** Admin-only best-effort push + email. Delivery failures never roll back an order commit. */
-async function dispatchAdminOrderAlert(orderId: string, eventType: 'new_order' | 'status_update', status?: string): Promise<void> {
+async function dispatchAdminOrderAlert(orderId: string, eventType: 'new_order' | 'status_update' | 'refund_required', status?: string): Promise<void> {
   if (!db) return;
   try {
     const { data: order, error } = await db.from('orders').select('id,order_number,total_amount,currency,payment_status,order_status,customer_name,customer_email').eq('id', orderId).maybeSingle();
@@ -62,8 +62,9 @@ async function dispatchAdminOrderAlert(orderId: string, eventType: 'new_order' |
       const { data: payment } = await db.from('payments').select('provider,method').eq('order_id', orderId).order('created_at', { ascending: false }).limit(1).maybeSingle();
       paymentMethod = String(payment?.method || payment?.provider || 'ORDER').toUpperCase();
     }
-    const title = isNew ? 'New VK VASTRAM order' : 'VK VASTRAM order updated';
-    const body = isNew ? `${orderNumber} Â· â‚¹${Number(order.total_amount || 0).toLocaleString('en-IN')} Â· ${paymentMethod}` : `${orderNumber} Â· ${String(status || order.order_status || 'status updated').replace(/_/g, ' ')}`;
+    const isRefundAlert = eventType === 'refund_required';
+    const title = isRefundAlert ? 'ACTION REQUIRED: VK VASTRAM refund review' : (isNew ? 'New VK VASTRAM order' : 'VK VASTRAM order updated');
+    const body = isNew ? `${orderNumber} · ₹${Number(order.total_amount || 0).toLocaleString('en-IN')} · ${paymentMethod}` : `${orderNumber} · ${String(status || order.order_status || 'status updated').replace(/_/g, ' ')}`;
     const payload = JSON.stringify({ title, body, url: '/admin', tag: `vkv-${order.id}-${eventType}-${status || ''}` });
     if (process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY) {
       try {
@@ -75,7 +76,7 @@ async function dispatchAdminOrderAlert(orderId: string, eventType: 'new_order' |
         }
       } catch { console.warn('[admin-notifications] push delivery attempt failed'); }
     }
-    const to = eventType === 'new_order' ? String(process.env.ADMIN_NOTIFICATION_EMAIL || '').trim() : '';
+    const to = (eventType === 'new_order' || isRefundAlert) ? String(process.env.ADMIN_NOTIFICATION_EMAIL || '').trim() : '';
     if (to && process.env.RESEND_API_KEY && process.env.RESEND_FROM_EMAIL) {
       const safe = (v: unknown) => String(v ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c] || c));
       try {
@@ -133,7 +134,7 @@ async function dispatchReadyBackInStockEmails(variantId: string): Promise<void> 
             from: process.env.RESEND_FROM_EMAIL,
             to: [subscription.email],
             subject: `${productName} is back in stock | VK VASTRAM`,
-            html: `<div style="font-family:Georgia,serif;color:#1c1917;max-width:600px;margin:24px auto;line-height:1.6"><h1 style="color:#78281f;font-weight:normal">A drape you loved is available again.</h1><p><strong>${productName.replace(/[&<>"']/g, (c: string) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c] || c))}</strong>${variant.variant_name ? ` Ã¢â‚¬â€ ${String(variant.variant_name).replace(/[&<>"']/g, '')}` : ''} is back in stock.</p>${productUrl ? `<p><a href="${productUrl}" style="display:inline-block;background:#1c1917;color:#fff;padding:12px 18px;text-decoration:none">View product</a></p>` : ''}<p style="font-size:12px;color:#78716c">You received this because you requested a restock notification from VK VASTRAM.</p></div>`
+            html: `<div style="font-family:Georgia,serif;color:#1c1917;max-width:600px;margin:24px auto;line-height:1.6"><h1 style="color:#78281f;font-weight:normal">A drape you loved is available again.</h1><p><strong>${productName.replace(/[&<>"']/g, (c: string) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c] || c))}</strong>${variant.variant_name ? ` — ${String(variant.variant_name).replace(/[&<>"']/g, '')}` : ''} is back in stock.</p>${productUrl ? `<p><a href="${productUrl}" style="display:inline-block;background:#1c1917;color:#fff;padding:12px 18px;text-decoration:none">View product</a></p>` : ''}<p style="font-size:12px;color:#78716c">You received this because you requested a restock notification from VK VASTRAM.</p></div>`
           })
         });
         if (!response.ok) continue;
@@ -445,11 +446,11 @@ async function optionalAuthenticateUser(req: AuthenticatedRequest, res: Response
 // (Render) or configure TRUST_PROXY_HOPS explicitly. Webhooks are intentionally excluded.
 type LimitBucket = { count: number; resetAt: number };
 const rateLimitBuckets = new Map<string, LimitBucket>();
-function rateLimit(options: { windowMs: number; max: number; key?: (req: Request) => string; message?: string }) {
+function rateLimit(options: { windowMs: number; max: number; key?: (req: Request) => string; message?: string; bucketName?: string }) {
   return (req: Request, res: Response, next: () => void) => {
     const now = Date.now();
     const identity = options.key ? options.key(req) : req.ip || req.socket.remoteAddress || 'unknown';
-    const key = `${options.windowMs}:${options.max}:${identity}`;
+    const key = `${options.bucketName || 'default'}:${options.windowMs}:${options.max}:${identity}`;
     let bucket = rateLimitBuckets.get(key);
     if (!bucket || bucket.resetAt <= now) {
       bucket = { count: 0, resetAt: now + options.windowMs };
@@ -530,13 +531,14 @@ async function startServer() {
 
   // Route families: payment/order/coupon endpoints get tighter limits; admin routes
   // are additionally bounded. Razorpay webhook retries are deliberately not limited.
-  app.use('/api/orders/create', rateLimit({ windowMs: 60_000, max: 12 }));
-  app.use('/api/orders', rateLimit({ windowMs: 60_000, max: 45 }));
-  app.use('/api/payment/create-order', rateLimit({ windowMs: 60_000, max: 8 }));
-  app.use('/api/payment/verify', rateLimit({ windowMs: 60_000, max: 12 }));
-  app.use('/api/coupons/validate', rateLimit({ windowMs: 60_000, max: 20 }));
-  app.use('/api/admin', rateLimit({ windowMs: 60_000, max: 120 }));
-  app.use('/api/auth', rateLimit({ windowMs: 60_000, max: 10 }));
+  app.use('/api/orders/create', rateLimit({ windowMs: 60_000, max: 12 , bucketName: 'orders-create' }));
+  app.use('/api/orders', rateLimit({ windowMs: 60_000, max: 45 , bucketName: 'orders' }));
+  app.use('/api/payment/create-order', rateLimit({ windowMs: 60_000, max: 8 , bucketName: 'payment-create' }));
+  app.use('/api/payment/verify', rateLimit({ windowMs: 60_000, max: 12 , bucketName: 'payment-verify' }));
+  app.use('/api/payment/failure', rateLimit({ windowMs: 60_000, max: 12 , bucketName: 'payment-failure' }));
+  app.use('/api/coupons/validate', rateLimit({ windowMs: 60_000, max: 20 , bucketName: 'coupon-validate' }));
+  app.use('/api/admin', rateLimit({ windowMs: 60_000, max: 120 , bucketName: 'admin' }));
+  app.use('/api/auth', rateLimit({ windowMs: 60_000, max: 10 , bucketName: 'auth' }));
 
   // -------------------------------------------------------------------
   // 1. Health Check Endpoint
@@ -965,7 +967,9 @@ async function startServer() {
           }
 
           if (reconciliationResult.refund_required === true) {
-            console.error(`[PAYMENT RECONCILIATION REQUIRED] Razorpay captured payment for cancelled order ${orderId}; order remains cancelled and inventory was not confirmed. Refund/manual review required.`);
+            await supabaseAdmin.from('orders').update({ refund_status: 'pending', updated_at: new Date().toISOString() }).eq('id', orderId).neq('refund_status', 'completed');
+            void dispatchAdminOrderAlert(orderId, 'refund_required', 'pending');
+            console.error(`[PAYMENT RECONCILIATION REQUIRED] Razorpay captured payment for order ${orderId}; refund/manual review required.`);
             res.status(409).json({
               success: false,
               verified: false,
@@ -994,6 +998,83 @@ async function startServer() {
       }
     }
   );
+
+  // -------------------------------------------------------------------
+  // 4b. POST /api/payment/failure (RECORD FAILED ATTEMPT ON SAME ORDER)
+  // -------------------------------------------------------------------
+  app.post('/api/payment/failure', optionalAuthenticateUser, async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const { orderId, razorpayOrderId, code, description } = req.body || {};
+      if (!orderId || !razorpayOrderId) {
+        res.status(400).json({ success: false, error: 'Order and payment attempt identifiers are required.' });
+        return;
+      }
+      if (!supabaseAdmin || !db || (isProduction && !SUPABASE_SERVICE_ROLE_KEY)) {
+        res.status(503).json({ success: false, error: 'Persistent payment storage is unavailable.' });
+        return;
+      }
+      const { data: order, error: orderError } = await supabaseAdmin
+        .from('orders')
+        .select('id,order_number,user_id,payment_status,guest_access_token_hash')
+        .eq('id', orderId).maybeSingle();
+      if (orderError) throw orderError;
+      if (!order) { res.status(404).json({ success: false, error: 'Order not found.' }); return; }
+      let isAdmin = false;
+      if (req.user) {
+        const { data: profile } = await supabaseAdmin.from('profiles').select('role').eq('id', req.user.id).maybeSingle();
+        isAdmin = profile?.role === 'admin';
+      }
+      const access = verifyOrderAccess(order, req, isAdmin);
+      if (!access.authorized) { res.status(access.statusCode).json({ success: false, error: access.error }); return; }
+      const { data: payment, error: paymentError } = await supabaseAdmin
+        .from('payments').select('id,status,provider_order_id').eq('order_id', orderId)
+        .eq('provider_order_id', razorpayOrderId).maybeSingle();
+      if (paymentError) throw paymentError;
+      if (!payment) { res.status(400).json({ success: false, error: 'Payment attempt does not belong to this order.' }); return; }
+      // Never downgrade a successful/captured payment because of a stale failure callback.
+      if (['captured', 'paid', 'succeeded'].includes(String(payment.status || '').toLowerCase()) ||
+          ['paid', 'captured'].includes(String(order.payment_status || '').toLowerCase())) {
+        res.json({ success: true, unchanged: true, orderId, orderNumber: order.order_number });
+        return;
+      }
+      const now = new Date().toISOString();
+      const safeReason = String(description || code || 'Payment was declined or failed at the payment gateway').slice(0, 500);
+      // Update the specific attempt. Some older deployments may not yet have the
+      // optional error_reason migration; if so, retry the update without that column.
+      let paymentUpdate = await supabaseAdmin.from('payments').update({
+        status: 'failed', error_reason: safeReason, updated_at: now,
+      }).eq('id', payment.id).select('id').maybeSingle();
+      if (paymentUpdate.error && /error_reason|column .* does not exist|schema cache/i.test(paymentUpdate.error.message || '')) {
+        console.warn('[payment/failure] error_reason column unavailable; recording status without optional detail.');
+        paymentUpdate = await supabaseAdmin.from('payments').update({
+          status: 'failed', updated_at: now,
+        }).eq('id', payment.id).select('id').maybeSingle();
+      }
+      if (paymentUpdate.error) throw paymentUpdate.error;
+      if (!paymentUpdate.data) {
+        // Idempotent retry: a prior request may already have updated the attempt.
+        const { data: latestPayment, error: latestPaymentError } = await supabaseAdmin
+          .from('payments').select('id,status').eq('id', payment.id).maybeSingle();
+        if (latestPaymentError) throw latestPaymentError;
+        if (!latestPayment || !['failed', 'captured', 'paid', 'succeeded'].includes(String(latestPayment.status || '').toLowerCase())) {
+          throw new Error('Payment attempt status could not be confirmed after update.');
+        }
+      }
+      // Do not use a PostgREST `in` filter here: compare the authoritative status
+      // already read above, then update only non-successful orders. Captured orders
+      // are protected against late failure callbacks.
+      if (!['paid', 'captured'].includes(String(order.payment_status || '').toLowerCase())) {
+        const { error: updateOrderError } = await supabaseAdmin.from('orders').update({
+          payment_status: 'failed', updated_at: now,
+        }).eq('id', orderId).not('payment_status', 'eq', 'captured').not('payment_status', 'eq', 'paid');
+        if (updateOrderError) throw updateOrderError;
+      }
+      res.json({ success: true, orderId, orderNumber: order.order_number, paymentStatus: 'failed' });
+    } catch (err: any) {
+      console.error('Unable to persist payment failure:', err);
+      res.status(500).json({ success: false, error: 'Could not update payment status. Please retry or contact support with your existing order number.' });
+    }
+  });
 
   // -------------------------------------------------------------------
   // 5. POST /api/orders/create (SERVER-AUTHORITATIVE ORDER CREATION)
@@ -1602,9 +1683,10 @@ const orderPayload = {
             throw new Error(reconciliationResult?.error || 'Atomic webhook payment reconciliation failed');
           }
           if (reconciliationResult.refund_required === true) {
-            // The capture is persisted, but cancellation remains authoritative. Acknowledge
-            // the verified event and leave refund/manual review as an explicit exception.
-            console.error(`[PAYMENT RECONCILIATION REQUIRED] Razorpay captured payment for cancelled order ${internalOrderId}; order remains cancelled and inventory was not confirmed. Refund/manual review required.`);
+            // Capture is persisted, but the order is flagged for admin refund review.
+            await supabaseAdmin.from('orders').update({ refund_status: 'pending', updated_at: now }).eq('id', internalOrderId).neq('refund_status', 'completed');
+            void dispatchAdminOrderAlert(internalOrderId, 'refund_required', 'pending');
+            console.error(`[PAYMENT RECONCILIATION REQUIRED] Razorpay captured payment for order ${internalOrderId}; refund/manual review required.`);
           }
         } else if (eventType === 'payment.failed') {
           let paymentQuery = supabaseAdmin.from('payments').update({
@@ -3520,7 +3602,7 @@ const orderPayload = {
   // -------------------------------------------------------------------
   // COUPONS: PUBLIC VALIDATION + ADMIN MANAGEMENT / USAGE HISTORY
   // -------------------------------------------------------------------
-  app.post('/api/coupons/validate', async (req: Request, res: Response) => {
+  app.post('/api/coupons/validate', optionalAuthenticateUser, async (req: AuthenticatedRequest, res: Response) => {
     try {
       if (!db) { res.status(503).json({ success: false, error: 'Coupon service unavailable.' }); return; }
       const code = String(req.body?.code || '').trim().toUpperCase();
@@ -3537,6 +3619,11 @@ const orderPayload = {
         if (countError) throw countError;
         if ((count || 0) >= Number(coupon.usage_limit)) { res.status(400).json({ success: false, error: 'This coupon has reached its usage limit.' }); return; }
       }
+      if (req.user?.id && coupon.per_user_limit != null) {
+        const { count: userCount, error: userCountError } = await db.from('coupon_usage').select('id', { count: 'exact', head: true }).eq('coupon_id', coupon.id).eq('user_id', req.user.id);
+        if (userCountError) throw userCountError;
+        if ((userCount || 0) >= Number(coupon.per_user_limit)) { res.status(400).json({ success: false, error: 'You have already used this coupon the maximum number of times.' }); return; }
+      }
       const variantIds = items.map((i: any) => String(i.variant_id || '')).filter(Boolean);
       if (variantIds.length !== items.length) { res.status(400).json({ success: false, error: 'A cart item is missing its selected variant.' }); return; }
       const { data: variants, error: variantsError } = await db.from('product_variants').select('id, product_id, price_override, stock_quantity, is_active, products!inner(price,status)').in('id', variantIds);
@@ -3551,7 +3638,7 @@ const orderPayload = {
         }
         subtotal += Number(v.price_override ?? v.products.price) * quantity;
       }
-      if (subtotal < Number(coupon.minimum_order_value || 0)) { res.status(400).json({ success: false, error: `Minimum cart value for this coupon is Ã¢â€šÂ¹${Number(coupon.minimum_order_value || 0).toLocaleString('en-IN')}.` }); return; }
+      if (subtotal < Number(coupon.minimum_order_value || 0)) { res.status(400).json({ success: false, error: `Minimum cart value for this coupon is ₹${Number(coupon.minimum_order_value || 0).toLocaleString('en-IN')}.` }); return; }
       let discountAmount = coupon.discount_type === 'percentage' ? subtotal * Number(coupon.discount_value) / 100 : Number(coupon.discount_value);
       if (coupon.maximum_discount != null) discountAmount = Math.min(discountAmount, Number(coupon.maximum_discount));
       discountAmount = Math.max(0, Math.min(subtotal, Math.round(discountAmount * 100) / 100));
@@ -4041,6 +4128,25 @@ const orderPayload = {
           }
         }
 
+        // Variants removed in the editor are sent back with isActive=false. Keep their
+        // rows and stock history for orders/auditability; the storefront ignores inactive variants.
+        if (Array.isArray(variants) && variants.length > 0) {
+          const submittedIds = new Set(variants.map((v: any) => String(v.id || '')).filter(Boolean));
+          const submittedSkus = new Set(variants.map((v: any) => String(v.sku || '')).filter(Boolean));
+          const { data: currentVariantRows, error: currentVariantRowsError } = await db
+            .from('product_variants').select('id, sku, reserved_quantity').eq('product_id', id);
+          if (currentVariantRowsError) throw currentVariantRowsError;
+          for (const currentVariant of currentVariantRows || []) {
+            if (submittedIds.has(String(currentVariant.id)) || submittedSkus.has(String(currentVariant.sku))) continue;
+            if (Number(currentVariant.reserved_quantity || 0) > 0) {
+              throw new Error(`Variant ${currentVariant.sku} has reserved inventory and cannot be removed until its orders are resolved.`);
+            }
+            const { error: archiveError } = await db.from('product_variants')
+              .update({ is_active: false, updated_at: new Date().toISOString() }).eq('id', currentVariant.id);
+            if (archiveError) throw archiveError;
+          }
+        }
+
         // 4. Sync Images with variant association, role, and presentation adjustment
         if (Array.isArray(images) && images.length > 0) {
           const imageRows = images.map((img: any, idx: number) => {
@@ -4111,6 +4217,15 @@ const orderPayload = {
         // Cache categories and collections for fast taxonomy lookup
         const { data: categories } = await db.from('categories').select('id, name, slug');
         const { data: collections } = await db.from('collections').select('id, name, slug');
+        const { data: taxonomySettings, error: taxonomyError } = await db.from('site_settings').select('key, value').in('key', ['saree_types', 'fabric_types']);
+        if (taxonomyError) throw new Error(`Could not validate managed Saree Types and Fabrics: ${taxonomyError.message}`);
+        const managedNames = (key: string): Set<string> => {
+          const setting = (taxonomySettings || []).find((row: any) => row.key === key)?.value;
+          const parsed = typeof setting === 'string' ? (() => { try { return JSON.parse(setting); } catch { return null; } })() : setting;
+          return new Set<string>((Array.isArray(parsed?.types) ? parsed.types : []).filter((x: any) => x && x.active !== false && x.name).map((x: any) => String(x.name).trim().toLowerCase()));
+        };
+        const managedSareeTypes = managedNames('saree_types');
+        const managedFabrics = managedNames('fabric_types');
 
         const catMap = new Map<string, string>();
         categories?.forEach((c: any) => {
@@ -4141,9 +4256,14 @@ const orderPayload = {
             }
 
             const price = Number(item.price);
-            if (isNaN(price) || price < 0) {
-              throw new Error(`Invalid price "${item.price}". Must be a non-negative number.`);
+            if (!Number.isFinite(price) || price < 0 || ((item.status || 'active') === 'active' && price <= 0)) {
+              throw new Error(`Invalid price "${item.price}". Active products require a price greater than zero.`);
             }
+            const primaryHex = String(item.primaryColourHex || '').trim();
+            const secondaryName = String(item.secondaryColourName || '').trim();
+            const secondaryHex = String(item.secondaryColourHex || '').trim();
+            if (primaryHex && !/^#[0-9a-f]{6}$/i.test(primaryHex)) throw new Error('Primary Colour Hex must use #RRGGBB format.');
+            if (secondaryName && !/^#[0-9a-f]{6}$/i.test(secondaryHex)) throw new Error('Secondary Colour Hex must use #RRGGBB format when a secondary colour name is provided.');
 
             const mrp = item.mrp ? Number(item.mrp) : null;
             if (mrp !== null && !isNaN(mrp) && mrp < price) {
@@ -4153,22 +4273,22 @@ const orderPayload = {
             const cleanSku = (item.sku || `VKV-SAR-${Date.now().toString().slice(-6)}-${idx + 1}`).trim().toUpperCase();
             const cleanSlug = (item.slug || item.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')).trim();
 
-            // Find category
-            let categoryId = defaultCategoryId;
-            if (item.category) {
-              const catKey = String(item.category).toLowerCase().trim();
-              if (catMap.has(catKey)) {
-                categoryId = catMap.get(catKey)!;
-              }
-            }
+            // Taxonomy values must map to real managed records; never silently assign the default category.
+            const catKey = String(item.category || '').toLowerCase().trim();
+            if (!catKey || !catMap.has(catKey)) throw new Error(`Unknown Category: ${item.category || '(blank)'}. Choose a category from the downloaded LISTS sheet.`);
+            const categoryId = catMap.get(catKey)!;
 
-            // Find collection
             let collectionId: string | null = null;
             if (item.collection) {
               const colKey = String(item.collection).toLowerCase().trim();
-              if (colMap.has(colKey)) {
-                collectionId = colMap.get(colKey)!;
-              }
+              if (!colMap.has(colKey)) throw new Error(`Unknown Collection: ${item.collection}. Choose a collection from the downloaded LISTS sheet.`);
+              collectionId = colMap.get(colKey)!;
+            }
+            const categoryName = categories?.find((c: any) => c.id === categoryId)?.name || '';
+            if (categoryName.toLowerCase().includes('saree')) {
+              if (!item.sareeType || (managedSareeTypes.size && !managedSareeTypes.has(String(item.sareeType).trim().toLowerCase()))) throw new Error(`Unknown or missing Saree Type: ${item.sareeType || '(blank)'}. Add/select a managed Saree Type first.`);
+              if (!item.fabric || (managedFabrics.size && !managedFabrics.has(String(item.fabric).trim().toLowerCase()))) throw new Error(`Unknown or missing Fabric: ${item.fabric || '(blank)'}. Add/select a managed Fabric first.`);
+              if ((item.status || 'active') === 'active' && (!String(item.color || '').trim() || !/^#[0-9a-f]{6}$/i.test(primaryHex))) throw new Error('Active sarees require a Primary Colour Name and a valid Primary Colour Hex (#RRGGBB).');
             }
 
             const rawStock = item.stockQuantity ?? item.stock;
@@ -4183,7 +4303,7 @@ const orderPayload = {
             // Check if product with this SKU already exists
             const { data: existingProduct } = await db
               .from('products')
-              .select('id, slug, sku')
+              .select('id, slug, sku, metadata')
               .eq('sku', cleanSku)
               .maybeSingle();
 
@@ -4193,6 +4313,7 @@ const orderPayload = {
                 .from('products')
                 .update({
                   name: item.name.trim(),
+                  slug: cleanSlug,
                   price,
                   gst_rate: item.gstRate === undefined || item.gstRate === '' ? null : Number(item.gstRate),
                   mrp: mrp && !isNaN(mrp) ? mrp : null,
@@ -4205,6 +4326,20 @@ const orderPayload = {
                   dimensions: item.dimensions || null,
                   care_instructions: item.careInstructions || item.care || null,
                   description: item.description || null,
+                  featured: Boolean(item.featured),
+                  bestseller: Boolean(item.bestSeller),
+                  new_arrival: Boolean(item.newArrival),
+                  seo_title: item.seoTitle || null,
+                  seo_description: item.seoDescription || null,
+                  metadata: {
+                    ...(existingProduct.metadata && typeof existingProduct.metadata === 'object' ? existingProduct.metadata : {}),
+                    ...(item.sareeType ? { sareeType: item.sareeType } : {}),
+                    ...(item.color ? { primaryColourName: item.color } : {}),
+                    ...(item.primaryColourHex ? { primaryColourHex: item.primaryColourHex } : {}),
+                    ...(item.secondaryColourName ? { secondaryColourName: item.secondaryColourName } : {}),
+                    ...(item.secondaryColourHex ? { secondaryColourHex: item.secondaryColourHex } : {}),
+                    ...(Array.isArray(item.tags) ? { tags: item.tags } : {}),
+                  },
                   updated_at: new Date().toISOString(),
                 })
                 .eq('id', existingProduct.id);
@@ -4223,7 +4358,7 @@ const orderPayload = {
                 if (existingImg) {
                   await db
                     .from('product_images')
-                    .update({ image_url: item.primaryImageUrl })
+                    .update({ image_url: item.primaryImageUrl, alt_text: item.imageAltText || item.name.trim() })
                     .eq('id', existingImg.id);
                 } else {
                   await db.from('product_images').insert({
@@ -4236,26 +4371,63 @@ const orderPayload = {
                 }
               }
 
+              if (Array.isArray(item.additionalImageUrls)) {
+                for (let imageIndex = 0; imageIndex < item.additionalImageUrls.length; imageIndex++) {
+                  const imageUrl = String(item.additionalImageUrls[imageIndex] || '').trim();
+                  if (!/^https?:\/\//i.test(imageUrl)) continue;
+                  const { data: alreadyThere } = await db.from('product_images').select('id').eq('product_id', existingProduct.id).eq('image_url', imageUrl).maybeSingle();
+                  if (!alreadyThere) await db.from('product_images').insert({ product_id: existingProduct.id, image_url: imageUrl, alt_text: item.imageAltText || item.name.trim(), is_primary: false, sort_order: imageIndex + 2 });
+                }
+              }
+
               // Match only a variant belonging to this product. Importing metadata
               // must not reset stock on an existing variant; use Inventory Control Center
               // for explicit stock movements.
-              const { data: existingVariant, error: variantLookupError } = await db
+              const { data: exactVariant, error: variantLookupError } = await db
                 .from('product_variants')
-                .select('id, product_id')
+                .select('id, product_id, stock_quantity, reserved_quantity, sku')
                 .eq('product_id', existingProduct.id)
                 .eq('sku', cleanSku)
                 .maybeSingle();
               if (variantLookupError) throw variantLookupError;
+              let existingVariant = exactVariant;
+              if (!existingVariant) {
+                const { data: productVariants, error: variantsLookupError } = await db.from('product_variants')
+                  .select('id, product_id, stock_quantity, reserved_quantity, sku').eq('product_id', existingProduct.id).eq('is_active', true).limit(2);
+                if (variantsLookupError) throw variantsLookupError;
+                if ((productVariants || []).length === 1) existingVariant = productVariants![0];
+                else if ((productVariants || []).length > 1) throw new Error('This product has multiple active variants. A single product row cannot safely distribute Stock Quantity across them; update stock in Inventory or use variant-level inventory rows.');
+              }
 
               if (existingVariant) {
-                const { error: variantUpdateError } = await db
-                  .from('product_variants')
-                  .update({
-                    color: item.color || null,
-                    updated_at: new Date().toISOString(),
-                  })
-                  .eq('id', existingVariant.id);
-                if (variantUpdateError) throw variantUpdateError;
+                const currentStock = Number(existingVariant.stock_quantity || 0);
+                const reservedStock = Number(existingVariant.reserved_quantity || 0);
+                if (!Number.isSafeInteger(stockQuantity) || stockQuantity < reservedStock) {
+                  throw new Error(`Imported stock for ${cleanSku} cannot be below the ${reservedStock} unit(s) reserved by orders.`);
+                }
+                if (stockQuantity !== currentStock) {
+                  // Import stock as an audited inventory adjustment. Optimistic stock
+                  // matching prevents overwriting a concurrent checkout's inventory update.
+                  const { data: stockUpdate, error: stockUpdateError } = await db.from('product_variants')
+                    .update({ stock_quantity: stockQuantity, color: item.color || null, updated_at: new Date().toISOString() })
+                    .eq('id', existingVariant.id).eq('stock_quantity', currentStock).select('id').maybeSingle();
+                  if (stockUpdateError) throw stockUpdateError;
+                  if (!stockUpdate) throw new Error(`Stock for ${cleanSku} changed during import. Refresh the catalogue and retry this row.`);
+                  const delta = stockQuantity - currentStock;
+                  const { error: movementError } = await db.from('inventory_movements').insert({
+                    product_variant_id: existingVariant.id, movement_type: 'adjustment', quantity: delta,
+                    notes: `Stock synchronized by product Excel import (${cleanSku})`,
+                    created_by: req.user?.id || null, created_at: new Date().toISOString(),
+                  });
+                  if (movementError) {
+                    await db.from('product_variants').update({ stock_quantity: currentStock }).eq('id', existingVariant.id).eq('stock_quantity', stockQuantity);
+                    throw new Error(`Stock was not imported because the inventory audit entry failed: ${movementError.message}`);
+                  }
+                } else {
+                  const { error: variantUpdateError } = await db.from('product_variants')
+                    .update({ color: item.color || null, updated_at: new Date().toISOString() }).eq('id', existingVariant.id);
+                  if (variantUpdateError) throw variantUpdateError;
+                }
               } else {
                 const { error: variantInsertError } = await db.from('product_variants').insert({
                   product_id: existingProduct.id,
@@ -4300,6 +4472,19 @@ const orderPayload = {
                   dimensions: item.dimensions || null,
                   care_instructions: item.careInstructions || item.care || null,
                   description: item.description || null,
+                  featured: Boolean(item.featured),
+                  bestseller: Boolean(item.bestSeller),
+                  new_arrival: Boolean(item.newArrival),
+                  seo_title: item.seoTitle || null,
+                  seo_description: item.seoDescription || null,
+                  metadata: {
+                    ...(item.sareeType ? { sareeType: item.sareeType } : {}),
+                    ...(item.color ? { primaryColourName: item.color } : {}),
+                    ...(item.primaryColourHex ? { primaryColourHex: item.primaryColourHex } : {}),
+                    ...(item.secondaryColourName ? { secondaryColourName: item.secondaryColourName } : {}),
+                    ...(item.secondaryColourHex ? { secondaryColourHex: item.secondaryColourHex } : {}),
+                    ...(Array.isArray(item.tags) ? { tags: item.tags } : {}),
+                  },
                 })
                 .select('id')
                 .single();
@@ -4316,6 +4501,14 @@ const orderPayload = {
                   sort_order: 1,
                 });
                 if (imageInsertError) throw imageInsertError;
+              }
+
+              if (Array.isArray(item.additionalImageUrls)) {
+                for (let imageIndex = 0; imageIndex < item.additionalImageUrls.length; imageIndex++) {
+                  const imageUrl = String(item.additionalImageUrls[imageIndex] || '').trim();
+                  if (!/^https?:\/\//i.test(imageUrl)) continue;
+                  await db.from('product_images').insert({ product_id: newProd.id, image_url: imageUrl, alt_text: item.imageAltText || item.name.trim(), is_primary: false, sort_order: imageIndex + 2 });
+                }
               }
 
               // Variant

@@ -86,20 +86,9 @@ export const authService = {
       if (import.meta.env.PROD) {
         return { success: false, error: 'Administrator sign-in is unavailable because Supabase is not configured.' };
       }
-      // Local development test mode
-      if (email.trim().toLowerCase() === 'admin@vkvastram.com' && password === 'vastram2026') {
-        const mockUser: AdminUser = {
-          id: 'dev-admin-id',
-          email: 'admin@vkvastram.com',
-          fullName: 'Store Administrator',
-          role: 'admin',
-        };
-        localStorage.setItem('vk_local_admin', JSON.stringify(mockUser));
-        return { success: true, user: mockUser };
-      }
       return {
         success: false,
-        error: 'Invalid credentials for local test mode.',
+        error: 'Administrator sign-in requires a configured Supabase project and an authorized admin account.',
       };
     }
 

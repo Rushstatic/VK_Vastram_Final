@@ -99,17 +99,18 @@ export const productService = {
       const mapped: Product[] = data.map((item: any) => {
         // Prioritize general product primary image, or fallback to first primary image
         const rawImages = item.images || [];
+        // Prefer a usable public URL; stale localhost image_url values must not mask
+        // a valid Supabase storage_path stored alongside the row.
+        const resolveStoredImage = (img: any) => normalizeImageUrl(img?.image_url) || normalizeImageUrl(img?.storage_path) || '';
         const primaryImg =
-          rawImages.find((img: any) => img.is_primary && !img.variant_id)?.image_url ||
-          (rawImages.find((img: any) => img.is_primary)?.image_url || rawImages.find((img: any) => img.is_primary)?.storage_path) ||
-          (rawImages[0]?.image_url || rawImages[0]?.storage_path) ||
-          '';
+          resolveStoredImage(rawImages.find((img: any) => img.is_primary && !img.variant_id)) ||
+          resolveStoredImage(rawImages.find((img: any) => img.is_primary)) ||
+          resolveStoredImage(rawImages[0]) || '';
 
         const secondaryImg =
-          (rawImages.find((img: any) => !img.is_primary && !img.variant_id)?.image_url || rawImages.find((img: any) => !img.is_primary && !img.variant_id)?.storage_path) ||
-          (rawImages.find((img: any) => !img.is_primary)?.image_url || rawImages.find((img: any) => !img.is_primary)?.storage_path) ||
-          (rawImages[1]?.image_url || rawImages[1]?.storage_path) ||
-          primaryImg;
+          resolveStoredImage(rawImages.find((img: any) => !img.is_primary && !img.variant_id)) ||
+          resolveStoredImage(rawImages.find((img: any) => !img.is_primary)) ||
+          resolveStoredImage(rawImages[1]) || primaryImg;
 
         const isCleanColor = (c: any) => {
           if (!c || typeof c !== 'string') return false;
@@ -117,13 +118,9 @@ export const productService = {
           return clean !== '' && clean !== 'null' && clean !== 'undefined' && clean !== '—' && clean !== '-' && clean !== 'n/a' && clean !== 'none';
         };
 
-        const colors = Array.from(
-          new Set(
-            item.variants
-              ?.map((v: any) => v.color)
-              .filter(isCleanColor) as string[]
-          )
-        );
+        const metadataColors = [item.metadata?.primaryColourName, item.metadata?.secondaryColourName].filter(isCleanColor) as string[];
+        const variantColors = (item.variants?.map((v: any) => v.color).filter(isCleanColor) || []) as string[];
+        const colors = Array.from(new Set([...metadataColors, ...variantColors]));
 
         const sizes = Array.from(
           new Set(
@@ -150,7 +147,7 @@ export const productService = {
 
           return {
             id: img.id,
-            imageUrl: normalizeImageUrl(img.image_url || img.storage_path),
+            imageUrl: normalizeImageUrl(img.image_url) || normalizeImageUrl(img.storage_path),
             fallbackImageUrl: img.storage_path && img.image_url && img.storage_path !== img.image_url ? normalizeImageUrl(img.storage_path) : undefined,
             role,
             isPrimary: Boolean(img.is_primary),
@@ -177,7 +174,7 @@ export const productService = {
           if (Array.isArray(vAttrs.images) && vAttrs.images.length > 0) {
             attrVariantImages = vAttrs.images.map((vi: any, viIdx: number) => ({
               id: vi.id,
-              imageUrl: normalizeImageUrl(typeof vi === 'string' ? vi : (vi.imageUrl || vi.image_url || vi.storage_path)),
+              imageUrl: normalizeImageUrl(typeof vi === 'string' ? vi : (vi.imageUrl || vi.image_url)) || normalizeImageUrl(typeof vi === 'string' ? vi : vi.storage_path),
               fallbackImageUrl: typeof vi === 'object' && vi.storage_path && (vi.imageUrl || vi.image_url) && vi.storage_path !== (vi.imageUrl || vi.image_url) ? normalizeImageUrl(vi.storage_path) : undefined,
               role: (typeof vi === 'object' && vi.role ? vi.role : viIdx === 0 ? 'hero' : 'gallery') as ProductImageRole,
               isPrimary: Boolean(vi.isPrimary),
@@ -209,8 +206,10 @@ export const productService = {
               return (a.sortOrder || 0) - (b.sortOrder || 0);
             });
           } else {
-            // No variant-specific images: use general product images (excluding images belonging to other variants)
-            finalVariantImages = generalProductImages.length > 0 ? generalProductImages : imagesWithRoles;
+            // No images for this variant: only share truly product-level images.
+            // Do not fall back to imagesWithRoles when it contains other variant
+            // galleries, or a color can display another color's photos.
+            finalVariantImages = generalProductImages;
           }
 
           const avail = Math.max(0, (v.stock_quantity || 0) - (v.reserved_quantity || 0));
@@ -250,12 +249,15 @@ export const productService = {
 
         return {
           id: item.id,
+          // Preserve the database creation timestamp; homepage New Arrivals and
+          // the card's New badge rely on this rather than API row order.
+          createdAt: item.created_at || item.inserted_at || undefined,
           slug: item.slug,
           name: item.name,
           category: (item.category?.slug || item.category_slug || item.category) as ProductCategory || 'sarees',
           categoryId: item.category_id,
           collectionId: item.collection_id,
-          subCategory: item.metadata?.sareeType || item.metadata?.subCategory || item.weave || undefined,
+          subCategory: item.metadata?.sareeType || undefined,
           metadata: item.metadata || {},
           categoryLabel: item.category?.name || 'Sarees',
           tag: item.metadata?.tag || (item.new_arrival ? 'New Arrival' : undefined),

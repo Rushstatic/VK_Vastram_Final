@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { overlayHistory } from './lib/overlayHistory';
 import { AnnouncementBar } from './components/common/AnnouncementBar';
 import { Header } from './components/common/Header';
 import { Footer } from './components/common/Footer';
@@ -377,6 +378,10 @@ export default function App() {
     }
   }, [wishlistIds]);
 
+  // Scroll position memory: each history entry remembers how far down the page the user was,
+  // so Back returns to the same product section instead of the top of the page.
+  const pendingScrollRestoreRef = useRef<number | null>(null);
+
   // Configure manual scroll restoration to prevent footer anchor stickiness
   useEffect(() => {
     if (typeof window !== 'undefined' && 'scrollRestoration' in window.history) {
@@ -386,7 +391,15 @@ export default function App() {
 
   // Sync browser back/forward buttons with App page state
   useEffect(() => {
-    const handlePopState = () => {
+    const handlePopState = (event: PopStateEvent) => {
+      // Back pressed while an overlay (e.g. fullscreen product image) is open: close the
+      // overlay only. Do not change page and do not touch the scroll position.
+      if (overlayHistory.handlePopState()) return;
+
+      // Returning to an earlier page: restore the scroll position saved when the user left it.
+      const savedY = (event.state && typeof event.state.vkScrollY === 'number') ? event.state.vkScrollY : null;
+      pendingScrollRestoreRef.current = savedY;
+
       const page = getPageFromPath(window.location.pathname, window.location.search);
       setCurrentPage(page);
       if (page.type === 'admin' && page.subView) {
@@ -400,12 +413,27 @@ export default function App() {
 
   // Recalculate GSAP ScrollTrigger positions and scroll top on page transitions
   useEffect(() => {
-    window.scrollTo({ top: 0, left: 0, behavior: 'instant' as ScrollBehavior });
-    
-    // Backup requestAnimationFrame to ensure scroll top after DOM repaint
-    requestAnimationFrame(() => {
-      window.scrollTo(0, 0);
-    });
+    const restoreY = pendingScrollRestoreRef.current;
+    pendingScrollRestoreRef.current = null;
+
+    if (restoreY !== null && restoreY > 0) {
+      // Back/forward: return to the saved position. The page content may still be rendering,
+      // so retry for a short while until the position can actually be reached.
+      let attempts = 0;
+      const step = () => {
+        window.scrollTo({ top: restoreY, left: 0, behavior: 'instant' as ScrollBehavior });
+        attempts += 1;
+        if (Math.abs(window.scrollY - restoreY) > 4 && attempts < 40) requestAnimationFrame(step);
+      };
+      requestAnimationFrame(step);
+    } else {
+      window.scrollTo({ top: 0, left: 0, behavior: 'instant' as ScrollBehavior });
+
+      // Backup requestAnimationFrame to ensure scroll top after DOM repaint
+      requestAnimationFrame(() => {
+        window.scrollTo(0, 0);
+      });
+    }
 
     const timer = setTimeout(() => {
       ScrollTrigger.refresh();
@@ -415,6 +443,9 @@ export default function App() {
 
   // Navigation dispatcher
   const handleNavigate = (page: PageView) => {
+    // Capture the scroll position BEFORE scrolling to top for the new page.
+    const scrollBeforeNavigate = window.scrollY;
+    pendingScrollRestoreRef.current = null;
     setCurrentPage(page);
     window.scrollTo({ top: 0, left: 0, behavior: 'instant' as ScrollBehavior });
 
@@ -426,7 +457,14 @@ export default function App() {
     // Sync URL in browser address bar without hard reloading
     const newPath = getPathFromPage(page);
     if (`${window.location.pathname}${window.location.search}` !== newPath) {
-      window.history.pushState(null, '', newPath);
+      // Remember where the user was on the page they are leaving (so Back can return there),
+      // then add the new entry (it starts at the top).
+      try {
+        window.history.replaceState({ ...(window.history.state || {}), vkScrollY: scrollBeforeNavigate }, '');
+      } catch {
+        // ignore
+      }
+      window.history.pushState({ vkScrollY: 0, vkFrom: currentPage.type }, '', newPath);
     }
   };
 

@@ -27,6 +27,9 @@ export const ProductGallery: React.FC<ProductGalleryProps> = ({
   const mainStageRef = useRef<HTMLDivElement>(null);
   const thumbnailRailRef = useRef<HTMLDivElement>(null);
   const prevVariantRef = useRef<string | undefined>(variantKey);
+  // Swipe support for the main image (touch devices)
+  const touchStartRef = useRef<{ x: number; y: number } | null>(null);
+  const swipedRef = useRef(false);
   const [prefersReducedMotion, setPrefersReducedMotion] = useState(false);
 
   // Check prefers-reduced-motion per Section 32
@@ -79,7 +82,11 @@ export const ProductGallery: React.FC<ProductGalleryProps> = ({
     }
   }, [variantKey, prefersReducedMotion]);
 
-  // Secondary image cards enter after 1.5 seconds with a restrained grow/turn reveal.
+  // Stable signature of the gallery: the parent rebuilds the images array whenever the product
+  // object refreshes, which used to hide and re-animate the thumbnails over and over.
+  const imagesKey = React.useMemo(() => normalizedImages.map((image) => image.imageUrl).join('|'), [normalizedImages]);
+
+  // Secondary image cards enter shortly after the main image with a restrained grow/turn reveal.
   // Hide them at effect setup (not at animation start) to avoid a visible jump.
   // Reduced-motion users see them immediately; GSAP contexts are reverted on changes/unmount.
   useEffect(() => {
@@ -96,15 +103,15 @@ export const ProductGallery: React.FC<ProductGalleryProps> = ({
         autoAlpha: 1,
         scale: 1,
         rotationY: 0,
-        delay: 1.5,
-        duration: 0.55,
+        delay: 0.25,
+        duration: 0.45,
         stagger: 0.08,
         ease: 'power2.out',
         clearProps: 'transform',
       });
     }, rail);
     return () => context.revert();
-  }, [normalizedImages, prefersReducedMotion]);
+  }, [imagesKey, prefersReducedMotion]);
 
   // Handle thumbnail click with subtle GSAP transition
   const handleThumbnailSelect = (index: number) => {
@@ -122,6 +129,33 @@ export const ProductGallery: React.FC<ProductGalleryProps> = ({
     }, mainStageRef);
 
     return () => ctx.revert();
+  };
+
+  // Move to the next / previous image (wraps around). Used by swipe gestures.
+  const goToRelative = (delta: number) => {
+    const total = normalizedImages.length;
+    if (total < 2) return;
+    handleThumbnailSelect((activeIndex + delta + total) % total);
+  };
+
+  const handleStageTouchStart = (event: React.TouchEvent) => {
+    if (event.touches.length !== 1) { touchStartRef.current = null; return; }
+    touchStartRef.current = { x: event.touches[0].clientX, y: event.touches[0].clientY };
+  };
+
+  const handleStageTouchEnd = (event: React.TouchEvent) => {
+    const start = touchStartRef.current;
+    touchStartRef.current = null;
+    if (!start || normalizedImages.length < 2) return;
+    const touch = event.changedTouches[0];
+    const dx = touch.clientX - start.x;
+    const dy = touch.clientY - start.y;
+    // A deliberate, mostly-horizontal swipe changes the image; vertical drags still scroll the page.
+    if (Math.abs(dx) > 40 && Math.abs(dx) > Math.abs(dy) * 1.2) {
+      swipedRef.current = true;
+      window.setTimeout(() => { swipedRef.current = false; }, 400);
+      goToRelative(dx < 0 ? 1 : -1);
+    }
   };
 
   const activeImage = normalizedImages[activeIndex] || normalizedImages[0] || { imageUrl: '' };
@@ -205,7 +239,20 @@ export const ProductGallery: React.FC<ProductGalleryProps> = ({
 
       {/* 2. Main Large Image Stage with Desktop Magnifier */}
       <div className="flex-1 relative">
-        <div ref={mainStageRef} className="w-full">
+        <div
+          ref={mainStageRef}
+          className="w-full touch-pan-y"
+          onTouchStart={handleStageTouchStart}
+          onTouchEnd={handleStageTouchEnd}
+          onClickCapture={(event) => {
+            // A swipe must not also count as a tap that opens the fullscreen viewer.
+            if (swipedRef.current) {
+              event.preventDefault();
+              event.stopPropagation();
+              swipedRef.current = false;
+            }
+          }}
+        >
           <ProductImageMagnifier
             key={activeImage.imageUrl}
             src={activeImage.imageUrl}
@@ -237,6 +284,18 @@ export const ProductGallery: React.FC<ProductGalleryProps> = ({
             {tag}
           </span>
         ) : null}
+
+        {/* Mobile: position dots + hint that the image can be swiped */}
+        {normalizedImages.length > 1 && (
+          <div className="absolute bottom-3 inset-x-0 z-20 flex justify-center items-center gap-1.5 md:hidden pointer-events-none" aria-hidden="true">
+            {normalizedImages.map((_, idx) => (
+              <span
+                key={idx}
+                className={`h-1.5 rounded-full transition-all duration-200 ${idx === activeIndex ? 'w-4 bg-[#B88E3E]' : 'w-1.5 bg-[#FAF8F5]/80 shadow-xs'}`}
+              />
+            ))}
+          </div>
+        )}
       </div>
 
       {/* 3. Fullscreen / Mobile Pinch-to-Zoom Viewer */}

@@ -262,7 +262,7 @@ export const Header: React.FC<HeaderProps> = ({
   )}
 </div>
 
-                <span className={`font-serif font-semibold text-[#78281F] uppercase transition-all duration-300 group-hover:text-[#967029] whitespace-nowrap ${scrolled ? 'text-xs sm:text-xl xl:text-2xl 2xl:text-3xl tracking-[0.08em] sm:tracking-[0.16em] xl:tracking-[0.18em]' : 'text-sm sm:text-2xl md:text-3xl xl:text-3xl 2xl:text-4xl tracking-[0.1em] sm:tracking-[0.18em] xl:tracking-[0.2em]'}`}>
+                <span className={`font-serif font-semibold text-[#78281F] uppercase transition-all duration-300 group-hover:text-[#967029] whitespace-nowrap ${scrolled ? 'text-[15px] max-[359px]:text-sm min-[400px]:text-lg sm:text-xl xl:text-2xl 2xl:text-3xl tracking-[0.05em] sm:tracking-[0.16em] xl:tracking-[0.18em]' : 'text-[17px] max-[359px]:text-[15px] min-[400px]:text-xl sm:text-2xl md:text-3xl xl:text-3xl 2xl:text-4xl tracking-[0.06em] sm:tracking-[0.18em] xl:tracking-[0.2em]'}`}>
                   {storeName}
                 </span>
               </button>

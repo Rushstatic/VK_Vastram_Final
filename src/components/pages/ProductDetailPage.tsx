@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import { getPreviousPageType } from '../../lib/overlayHistory';
 import { Container } from '../ui/Container';
 import { Button } from '../ui/Button';
 import { PriceDisplay } from '../ui/PriceDisplay';
@@ -335,7 +336,12 @@ export const ProductDetailPage: React.FC<ProductDetailPageProps> = ({
         {/* Back Link */}
         <div className="mb-6">
           <button
-            onClick={() => onNavigate({ type: 'collection', category: product.category })}
+            onClick={() => {
+              // Came from a product listing: use the real Back so the listing reopens at the
+              // same scroll position (the product section), not at the top of the page.
+              if (getPreviousPageType() === 'collection') window.history.back();
+              else onNavigate({ type: 'collection', category: product.category });
+            }}
             className="inline-flex items-center gap-1.5 text-xs text-[#78716C] hover:text-[#1C1917] transition-colors cursor-pointer"
           >
             <ArrowLeft className="w-3.5 h-3.5" />

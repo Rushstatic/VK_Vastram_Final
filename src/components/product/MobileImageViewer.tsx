@@ -4,6 +4,7 @@ import { X, ChevronLeft, ChevronRight, ZoomIn, ZoomOut, RotateCcw } from 'lucide
 import { normalizeImageUrl } from '../../lib/imageHelper';
 import { ProductVariantImage } from '../../types';
 import gsap from 'gsap';
+import { useOverlayBackButton } from '../../lib/overlayHistory';
 
 interface MobileImageViewerProps {
   isOpen: boolean;
@@ -28,9 +29,15 @@ export const MobileImageViewer: React.FC<MobileImageViewerProps> = ({
   const modalRef = useRef<HTMLDivElement>(null);
   const imageContainerRef = useRef<HTMLDivElement>(null);
 
+  // Back button (phone/browser) closes the viewer instead of leaving the product page.
+  // X button / Escape go through requestClose() so every way of closing behaves the same.
+  const requestClose = useOverlayBackButton(isOpen, onClose);
+
   // Touch tracking for swiping
   const touchStartXRef = useRef<number | null>(null);
   const touchEndXRef = useRef<number | null>(null);
+  const touchStartYRef = useRef<number | null>(null);
+  const touchEndYRef = useRef<number | null>(null);
 
   // Sync initialIndex
   useEffect(() => {
@@ -49,7 +56,7 @@ export const MobileImageViewer: React.FC<MobileImageViewerProps> = ({
     document.body.style.overflow = 'hidden';
 
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
+      if (e.key === 'Escape') requestClose();
       if (e.key === 'ArrowRight') handleNext();
       if (e.key === 'ArrowLeft') handlePrev();
     };
@@ -120,26 +127,33 @@ export const MobileImageViewer: React.FC<MobileImageViewerProps> = ({
   const handleTouchStart = (e: React.TouchEvent) => {
     if (zoomScale > 1) return; // Don't swipe while zoomed in
     touchStartXRef.current = e.touches[0].clientX;
+    touchStartYRef.current = e.touches[0].clientY;
+    touchEndXRef.current = null;
+    touchEndYRef.current = null;
   };
 
   const handleTouchMove = (e: React.TouchEvent) => {
     if (zoomScale > 1) return;
     touchEndXRef.current = e.touches[0].clientX;
+    touchEndYRef.current = e.touches[0].clientY;
   };
 
   const handleTouchEnd = () => {
     if (zoomScale > 1 || touchStartXRef.current === null || touchEndXRef.current === null) return;
     const distance = touchStartXRef.current - touchEndXRef.current;
-    const minSwipeDistance = 50;
+    const verticalDistance = Math.abs((touchStartYRef.current ?? 0) - (touchEndYRef.current ?? 0));
+    const minSwipeDistance = 40;
 
-    if (distance > minSwipeDistance) {
-      handleNext();
-    } else if (distance < -minSwipeDistance) {
-      handlePrev();
+    // Only a mostly-horizontal swipe changes the image (ignore vertical drags).
+    if (Math.abs(distance) > minSwipeDistance && Math.abs(distance) > verticalDistance * 1.2) {
+      if (distance > 0) handleNext();
+      else handlePrev();
     }
 
     touchStartXRef.current = null;
     touchEndXRef.current = null;
+    touchStartYRef.current = null;
+    touchEndYRef.current = null;
   };
 
   const handleDoubleTap = () => {
@@ -153,16 +167,15 @@ export const MobileImageViewer: React.FC<MobileImageViewerProps> = ({
         scale: 0.98,
         duration: 0.25,
         ease: 'power2.in',
-        onComplete: onClose,
+        onComplete: requestClose,
       });
     } else {
-      onClose();
+      requestClose();
     }
   };
 
-  // Render on document.body: an ancestor with a CSS transform (the page-enter
-  // animation on <main>) would otherwise become the containing block for this
-  // fixed overlay and push its header/image far outside the visible screen.
+  // Render on document.body so no parent element (transform, filter, overflow) can displace
+  // this fixed overlay off the visible screen.
   return createPortal(
     <div
       ref={modalRef}
@@ -206,7 +219,7 @@ export const MobileImageViewer: React.FC<MobileImageViewerProps> = ({
         onTouchMove={handleTouchMove}
         onTouchEnd={handleTouchEnd}
         onDoubleClick={handleDoubleTap}
-        className="relative flex-1 flex items-center justify-center p-2 sm:p-6 overflow-hidden"
+        className="relative flex-1 flex items-center justify-center p-2 sm:p-6 overflow-hidden touch-pan-y"
       >
         {activeImageUrl && !imageLoadError && !imageLoaded && (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-[#FAF8F5]/80" role="status" aria-live="polite">

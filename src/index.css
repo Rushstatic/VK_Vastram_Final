@@ -104,10 +104,14 @@
   }
   100% {
     opacity: 1;
-    transform: translateY(0);
+    transform: none;
   }
 }
 
+/* IMPORTANT: no "forwards" fill and no leftover transform. A transform that stays on <main>
+   makes it the containing block of every position:fixed overlay inside it (fullscreen image
+   viewer, quick view, modals), pushing them far off-screen: a dark blank screen that cannot
+   be swiped or closed. */
 .animate-page-enter {
   animation: pageEnter 250ms cubic-bezier(0.215, 0.61, 0.355, 1);
 }
@@ -373,9 +377,10 @@
   animation: vk-product-modal-panel-in 300ms cubic-bezier(0.2, 0.75, 0.25, 1) both;
 }
 
+/* Same animation as above (this later definition wins): it must also end with transform: none. */
 @keyframes pageEnter {
   0% { opacity: 0; transform: translate3d(0, 10px, 0) scale(0.998); }
-  100% { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
+  100% { opacity: 1; transform: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {

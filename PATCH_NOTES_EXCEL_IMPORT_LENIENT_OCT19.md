@@ -53,3 +53,43 @@ Fix: the import route now sits above the `:id` route. A scan of all 44 routes fo
 The template header is "Master SKU" but the importer only looked for SKU / Product SKU / Item Code / Code, so every
 SKU in the sheet was dropped and replaced by an auto-generated one. "Master SKU" is now recognised. All other
 template headers were checked against the importer and match.
+
+---
+# Mobile fixes (Oct 19): title size, Back navigation, swipe, blank fullscreen viewer
+
+## 1. "VK VASTRAM" title too small on phones
+Header.tsx: title was 14px (12px after scrolling). Now 17px (15px scrolled), 20px/18px on phones 400px and wider,
+and 15px on very narrow phones (under 360px) so it never collides with the menu and bag icons. Desktop sizes unchanged.
+
+## 2. Back button went to the top of the page / left the product section
+Causes (App.tsx): scroll restoration was set to "manual" and every page change scrolled to the top, and nothing
+remembered where the user was. Now:
+- Each history entry remembers its scroll position when you leave it (handleNavigate saves window.scrollY).
+- Back/forward restore that position (retries briefly until the page content has rendered).
+- The product page "Back to <category>" link uses the real browser Back when you came from a listing, so the
+  listing reopens at the same spot instead of a new page at the top.
+
+## 3. Back while a fullscreen image is open left the whole product page
+New src/lib/overlayHistory.ts: opening the fullscreen viewer adds one history entry; the phone/browser Back button
+now closes the viewer only (page and scroll position untouched). X button and Escape use the same path.
+
+## 4. Product images could not be swiped
+- ProductGallery.tsx: swipe left/right on the main image changes the photo (vertical drags still scroll the page; a swipe
+  no longer also opens the fullscreen viewer). Mobile dots show the position.
+- MobileImageViewer.tsx: horizontal swipe is now ignored for vertical drags, and the stage allows horizontal gestures.
+- Thumbnails no longer stay hidden for 1.5 s and no longer re-hide whenever the product object refreshes.
+
+## 5. Blank dark fullscreen viewer (root cause of "cannot swipe")
+index.css had TWO `pageEnter` animations that both ended with a transform and kept it ("forwards"). A leftover
+transform on <main> makes every `position: fixed` overlay inside it relative to the page instead of the screen, so the
+viewer's header, image and close button were off-screen. Both now end with `transform: none` and no "forwards".
+MobileImageViewer also renders on document.body (createPortal) so no parent can displace it again.
+
+## Files changed in this round
+src/index.css, src/App.tsx, src/lib/overlayHistory.ts (new), src/components/common/Header.tsx,
+src/components/product/ProductGallery.tsx, src/components/product/MobileImageViewer.tsx,
+src/components/pages/ProductDetailPage.tsx
+
+## Not covered
+Collection-page filters are component state, so after Back the scroll position returns but any chosen filters reset.
+Tested: syntax/scope check and a simulated browser-history test of the Back-closes-viewer logic. Not tested on a device.

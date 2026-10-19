@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useLayoutEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { X, ChevronLeft, ChevronRight, ZoomIn, ZoomOut, RotateCcw } from 'lucide-react';
 import { normalizeImageUrl } from '../../lib/imageHelper';
 import { ProductVariantImage } from '../../types';
@@ -60,7 +61,7 @@ export const MobileImageViewer: React.FC<MobileImageViewerProps> = ({
       gsap.fromTo(
         modalRef.current,
         { opacity: 0, scale: 0.98 },
-        { opacity: 1, scale: 1, duration: 0.35, ease: 'power2.out' }
+        { opacity: 1, scale: 1, duration: 0.35, ease: 'power2.out', clearProps: 'transform' }
       );
     }
 
@@ -90,7 +91,7 @@ export const MobileImageViewer: React.FC<MobileImageViewerProps> = ({
     return () => window.clearTimeout(timeout);
   }, [activeImageUrl, isOpen, imageLoaded, imageLoadError]);
 
-  if (!isOpen || images.length === 0) return null;
+  if (!isOpen || images.length === 0 || typeof document === 'undefined') return null;
 
   const handleImageLoaded = (event: React.SyntheticEvent<HTMLImageElement>) => {
     setImageLoaded(true);
@@ -159,10 +160,13 @@ export const MobileImageViewer: React.FC<MobileImageViewerProps> = ({
     }
   };
 
-  return (
+  // Render on document.body: an ancestor with a CSS transform (the page-enter
+  // animation on <main>) would otherwise become the containing block for this
+  // fixed overlay and push its header/image far outside the visible screen.
+  return createPortal(
     <div
       ref={modalRef}
-      className="fixed inset-0 z-50 bg-[#1C1917]/95 backdrop-blur-md flex flex-col justify-between select-none"
+      className="fixed inset-0 z-[100] bg-[#1C1917]/95 backdrop-blur-md flex flex-col justify-between select-none"
       role="dialog"
       aria-modal="true"
       aria-label={`${productName} fullscreen gallery`}
@@ -345,6 +349,7 @@ export const MobileImageViewer: React.FC<MobileImageViewerProps> = ({
           </div>
         )}
       </div>
-    </div>
+    </div>,
+    document.body
   );
 };

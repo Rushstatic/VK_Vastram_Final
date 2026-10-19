@@ -109,7 +109,7 @@
 }
 
 .animate-page-enter {
-  animation: pageEnter 250ms cubic-bezier(0.215, 0.61, 0.355, 1);
+  animation: pageEnter 250ms cubic-bezier(0.215, 0.61, 0.355, 1) forwards;
 }
 
 /* Luxury Smooth Navigation Drawer Animations */

@@ -34,6 +34,8 @@ interface ParsedRow {
   description: string;
   primaryImageUrl: string;
   status: 'active' | 'draft';
+  /** Exactly what the sheet's status cell said ('' when blank); existing products only change status when this is set. */
+  requestedStatus: '' | 'active' | 'draft';
   color: string;
   slug: string;
   sareeType: string;
@@ -49,7 +51,10 @@ interface ParsedRow {
   newArrival: boolean;
   tags: string;
   isValid: boolean;
+  /** Blocks the row (only: missing product name, duplicate SKU in the same file). */
   errors: string[];
+  /** Row still imports; the listed fields were left empty / the product is saved as a draft. */
+  warnings: string[];
 }
 
 interface ImportSummary {
@@ -133,34 +138,40 @@ export const AdminImport: React.FC = () => {
           errors.push('Product name is required');
         }
 
+        const warnings: string[] = [];
+
         const rawPrice = getField(raw, ['Price', 'Selling Price', 'Price INR', 'Offer Price']);
-        const price = Number(rawPrice);
-        if (rawPrice === undefined || isNaN(price) || price <= 0) {
-          errors.push('Valid positive price is required');
-        }
+        const parsedPrice = rawPrice === undefined || String(rawPrice).trim() === '' ? NaN : Number(String(rawPrice).replace(/[₹,\s]/g, ''));
+        const hasPrice = Number.isFinite(parsedPrice) && parsedPrice > 0;
+        const price = hasPrice ? parsedPrice : 0;
+        if (!hasPrice) warnings.push('No valid price: price left at 0 and the product is saved as a draft.');
 
         const rawGstRate = getField(raw, ['GST Rate %', 'GST Rate (%)', 'GST Rate', 'Tax Rate', 'gst_rate']);
-        const gstRate = rawGstRate === undefined || String(rawGstRate).trim() === '' ? null : Number(rawGstRate);
-        if (gstRate !== null && (!Number.isFinite(gstRate) || ![0, 5, 12, 18].includes(gstRate))) errors.push('GST Rate must be one of 0, 5, 12 or 18. Confirm the applicable rate with your accountant.');
+        let gstRate = rawGstRate === undefined || String(rawGstRate).trim() === '' ? null : Number(rawGstRate);
+        if (gstRate !== null && (!Number.isFinite(gstRate) || ![0, 5, 12, 18].includes(gstRate))) { warnings.push('GST Rate must be 0, 5, 12 or 18: left empty so the default rate applies.'); gstRate = null; }
 
         const rawMrp = getField(raw, ['MRP', 'Maximum Retail Price', 'Original Price', 'List Price']);
-        const mrp = rawMrp !== undefined && !isNaN(Number(rawMrp)) ? Number(rawMrp) : undefined;
+        const parsedMrp = rawMrp !== undefined && String(rawMrp).trim() !== '' ? Number(String(rawMrp).replace(/[₹,\s]/g, '')) : NaN;
+        let mrp: number | undefined = Number.isFinite(parsedMrp) && parsedMrp > 0 ? parsedMrp : undefined;
         if (mrp !== undefined && mrp < price) {
-          errors.push(`MRP (${mrp}) cannot be lower than price (${price})`);
+          warnings.push(`MRP (${mrp}) is lower than the price (${price}): MRP ignored.`);
+          mrp = undefined;
         }
 
-        const rawSku = String(getField(raw, ['SKU', 'Product SKU', 'Item Code', 'Code']) || '').trim();
-        const sku = rawSku || `VKV-SAR-${(index + 1).toString().padStart(4, '0')}`;
+        const rawSku = String(getField(raw, ['Master SKU', 'SKU', 'Product SKU', 'Item Code', 'Code']) || '').trim();
+        // Blank SKU stays blank: the server generates a unique one. (An index-based SKU such as
+        // VKV-SAR-0001 could collide with an existing product and silently overwrite it.)
+        const sku = rawSku;
 
         const category = String(getField(raw, ['Category', 'Category Name', 'Collection Type']) || '').trim();
-        if (!category) errors.push('Category is required. Choose a value from the LISTS sheet.');
+        if (!category) warnings.push('No category: the product is saved to Sarees as a draft.');
         const collection = String(getField(raw, ['Collection', 'Collection Name']) || '').trim();
 
         const rawStock = getField(raw, ['Stock', 'Quantity', 'Stock Quantity', 'Inventory']);
         const parsedStock = rawStock !== undefined && String(rawStock).trim() !== '' ? Number(rawStock) : NaN;
         const stockQuantity = Number.isInteger(parsedStock) && parsedStock >= 0 ? parsedStock : 0;
         if (!Number.isInteger(parsedStock) || parsedStock < 0) {
-          errors.push('Valid non-negative Stock is required; stock will not default silently to 5');
+          warnings.push('No valid stock quantity: stock set to 0.');
         }
 
         const fabric = String(getField(raw, ['Fabric', 'Material', 'Fabric Composition']) || '').trim();
@@ -186,19 +197,42 @@ export const AdminImport: React.FC = () => {
         const bestSeller = boolValue(getField(raw, ['Best Seller', 'Best Seller (TRUE/FALSE)', 'Bestseller']));
         const newArrival = boolValue(getField(raw, ['New Arrival', 'New Arrival (TRUE/FALSE)', 'New Arrivals']));
         const tags = String(getField(raw, ['Tags', 'Tags (comma-separated)']) || '').trim();
-        if (!color) errors.push('Primary Colour Name is required.');
-        if (!primaryColourHex) errors.push('Primary Colour Hex is required.');
-        if (primaryColourHex && !/^#[0-9A-F]{6}$/.test(primaryColourHex)) errors.push('Primary Colour Hex must use #RRGGBB format.');
-        if (secondaryColourHex && !/^#[0-9A-F]{6}$/.test(secondaryColourHex)) errors.push('Secondary Colour Hex must use #RRGGBB format.');
-        if (secondaryColourName && !secondaryColourHex) errors.push('Secondary Colour Hex is required when Secondary Colour Name is provided.');
-        if (!primaryImageUrl) errors.push('Primary Image URL is required.');
-        if (category.toLowerCase().includes('saree') && !sareeType) errors.push('Saree Type is required for saree products.');
-        if (category.toLowerCase().includes('saree') && !fabric) errors.push('Fabric is required for saree products.');
-        if (mrp !== undefined && mrp < price) errors.push(`MRP (${mrp}) cannot be lower than price (${price}).`);
+        // Optional fields: keep what is valid, leave the rest empty, never block the row.
+        let primaryHexClean = primaryColourHex;
+        if (primaryHexClean && !/^#[0-9A-F]{6}$/.test(primaryHexClean)) {
+          warnings.push(`Primary Colour Hex "${primaryHexClean}" is not #RRGGBB: left empty.`);
+          primaryHexClean = '';
+        }
+        let secondaryHexClean = secondaryColourHex;
+        if (secondaryHexClean && !/^#[0-9A-F]{6}$/.test(secondaryHexClean)) {
+          warnings.push(`Secondary Colour Hex "${secondaryHexClean}" is not #RRGGBB: left empty.`);
+          secondaryHexClean = '';
+        }
+        let secondaryNameClean = secondaryColourName;
+        if (secondaryNameClean && !secondaryHexClean) {
+          warnings.push('Secondary colour has no valid HEX code: secondary colour skipped.');
+          secondaryNameClean = '';
+        }
+
+        // Images that can never work for customers (localhost / blob / embedded) are dropped.
+        const imageProblem = (url: string) =>
+          /^blob:/i.test(url) || /^data:/i.test(url) || /^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0|\[?::1\]?)(:|\/|$)/i.test(url);
+        let primaryImageClean = primaryImageUrl;
+        if (primaryImageClean && imageProblem(primaryImageClean)) {
+          warnings.push('Primary Image URL points to your computer (localhost/blob): image skipped. Upload it in the product form.');
+          primaryImageClean = '';
+        }
+        const additionalImagesClean = additionalImageUrls.split(',').map((url) => url.trim()).filter((url) => url && !imageProblem(url));
+        if (!primaryImageClean) warnings.push('No image: the product is saved as a draft. Add photos in the product form, then publish.');
+        if (!color && !primaryHexClean) warnings.push('No colour entered: colour left empty.');
+        if (category.toLowerCase().includes('saree') && !sareeType) warnings.push('No Saree Type: it will not appear under a saree-type filter or menu item until you set it.');
+        if (category.toLowerCase().includes('saree') && !fabric) warnings.push('No Fabric: left empty.');
 
         const rawStatus = String(getField(raw, ['Catalog Status', 'Status', 'Product Status']) || '').toLowerCase().trim();
-        if (!['active', 'draft'].includes(rawStatus)) errors.push('Catalog Status must be active or draft.');
-        const status: 'active' | 'draft' = rawStatus === 'draft' ? 'draft' : 'active';
+        // Incomplete products never go live automatically: without a price, an image or a
+        // category they are saved as drafts so the admin can finish them in the product form.
+        const isIncomplete = !hasPrice || !primaryImageClean || !category;
+        const status: 'active' | 'draft' = rawStatus === 'draft' || isIncomplete ? 'draft' : 'active';
 
         return {
           rowNumber,
@@ -216,15 +250,16 @@ export const AdminImport: React.FC = () => {
           dimensions,
           careInstructions,
           description,
-          primaryImageUrl,
+          primaryImageUrl: primaryImageClean,
           status,
+          requestedStatus: rawStatus === 'active' || rawStatus === 'draft' ? rawStatus : '',
           color,
           slug,
           sareeType,
-          primaryColourHex,
-          secondaryColourName,
-          secondaryColourHex,
-          additionalImageUrls,
+          primaryColourHex: primaryHexClean,
+          secondaryColourName: secondaryNameClean,
+          secondaryColourHex: secondaryHexClean,
+          additionalImageUrls: additionalImagesClean.join(','),
           imageAltText,
           seoTitle,
           seoDescription,
@@ -234,6 +269,7 @@ export const AdminImport: React.FC = () => {
           tags,
           isValid: errors.length === 0,
           errors,
+          warnings,
         };
       });
 
@@ -245,11 +281,15 @@ export const AdminImport: React.FC = () => {
       const existingSlugBySku = new Map<string, string>();
       let knownTypes: Set<string> | null = null;
       let knownFabrics: Set<string> | null = null;
+      let knownCategories: Set<string> | null = null;
+      let knownCollections: Set<string> | null = null;
       if (isSupabaseConfigured()) {
-        const [{ data: existingProducts }, { data: typeSetting }, { data: fabricSetting }] = await Promise.all([
+        const [{ data: existingProducts }, { data: typeSetting }, { data: fabricSetting }, { data: categoryRows }, { data: collectionRows }] = await Promise.all([
           (supabase as any).from('products').select('sku, slug'),
           (supabase as any).from('site_settings').select('value').eq('key', 'saree_types').maybeSingle(),
           (supabase as any).from('site_settings').select('value').eq('key', 'fabric_types').maybeSingle(),
+          (supabase as any).from('categories').select('name, slug'),
+          (supabase as any).from('collections').select('name, slug'),
         ]);
         (existingProducts || []).forEach((product: any) => { if (product.sku && product.slug) existingSlugBySku.set(String(product.sku).toLowerCase(), String(product.slug).toLowerCase()); if (product.slug) knownSlugs.add(String(product.slug).toLowerCase()); });
         const extractNames = (value: any): Set<string> | null => {
@@ -258,17 +298,53 @@ export const AdminImport: React.FC = () => {
         };
         knownTypes = extractNames(typeSetting?.value);
         knownFabrics = extractNames(fabricSetting?.value);
+        const toSet = (rows: any[] | null) => rows && rows.length
+          ? new Set<string>(rows.flatMap((r: any) => [r.name, r.slug]).filter(Boolean).map((v: string) => String(v).trim().toLowerCase()))
+          : null;
+        knownCategories = toSet(categoryRows);
+        knownCollections = toSet(collectionRows);
       }
       const validated = parsed.map((row) => {
         const errors = [...row.errors];
-        const skuKey = row.sku.toLowerCase(); const slugKey = row.slug.toLowerCase();
-        if (seenSkus.has(skuKey)) errors.push(`Duplicate SKU in this workbook: ${row.sku}`);
-        const existingSlugForSku = existingSlugBySku.get(skuKey);
-        if (seenSlugs.has(slugKey) || (knownSlugs.has(slugKey) && existingSlugForSku !== slugKey)) errors.push(`Duplicate URL slug: ${row.slug}`);
-        seenSkus.add(skuKey); seenSlugs.add(slugKey);
-        if (row.category.toLowerCase().includes('saree') && row.sareeType && knownTypes && !knownTypes.has(row.sareeType.toLowerCase())) errors.push(`Unknown Saree Type: ${row.sareeType}. Add it in Admin > Saree Attributes first.`);
-        if (row.fabric && knownFabrics && !knownFabrics.has(row.fabric.toLowerCase())) errors.push(`Unknown Fabric: ${row.fabric}. Add it in Admin > Saree Attributes first.`);
-        return { ...row, errors, isValid: errors.length === 0 };
+        const warnings = [...row.warnings];
+        let status = row.status;
+
+        // Only a repeated SKU inside the same file blocks a row (the second one would overwrite the first).
+        const skuKey = row.sku.toLowerCase();
+        if (row.sku) {
+          if (seenSkus.has(skuKey)) errors.push(`Duplicate SKU in this workbook: ${row.sku}`);
+          seenSkus.add(skuKey);
+        }
+
+        // Slugs are made unique automatically (two "Pink Mulmul Saree" rows are fine).
+        let slug = row.slug;
+        if (slug) {
+          const existingSlugForSku = row.sku ? existingSlugBySku.get(skuKey) : undefined;
+          const taken = (candidate: string) => seenSlugs.has(candidate) || (knownSlugs.has(candidate) && existingSlugForSku !== candidate);
+          if (taken(slug)) {
+            let n = 2;
+            while (taken(`${slug}-${n}`)) n += 1;
+            warnings.push(`URL slug "${slug}" is already used: using "${slug}-${n}".`);
+            slug = `${slug}-${n}`;
+          }
+          seenSlugs.add(slug);
+        }
+
+        // Values that do not match the managed lists are kept as typed (nothing is lost) but flagged.
+        if (row.category && knownCategories && !knownCategories.has(row.category.toLowerCase())) {
+          warnings.push(`Category "${row.category}" was not found: the product is saved to Sarees as a draft.`);
+          status = 'draft';
+        }
+        if (row.collection && knownCollections && !knownCollections.has(row.collection.toLowerCase())) {
+          warnings.push(`Collection "${row.collection}" was not found: collection left empty.`);
+        }
+        if (row.category.toLowerCase().includes('saree') && row.sareeType && knownTypes && !knownTypes.has(row.sareeType.toLowerCase())) {
+          warnings.push(`Saree Type "${row.sareeType}" is not in Saree Types: kept as typed, but add it in Admin > Saree Types so it appears in the menu and filters.`);
+        }
+        if (row.fabric && knownFabrics && !knownFabrics.has(row.fabric.toLowerCase())) {
+          warnings.push(`Fabric "${row.fabric}" is not in the Fabrics list: kept as typed, but add it in Admin > Saree Types (Fabrics) so it appears in the filter.`);
+        }
+        return { ...row, slug, status, errors, warnings, isValid: errors.length === 0 };
       });
       setParsedRows(validated);
       setStatus('ready');
@@ -282,7 +358,7 @@ export const AdminImport: React.FC = () => {
   const handleExecuteImport = async () => {
     const validRows = parsedRows.filter((row) => row.isValid);
     if (validRows.length === 0) {
-      setGlobalError('There are no valid rows to import. Fix the row errors and try again.');
+      setGlobalError('No importable rows: every row is missing a product name or repeats a SKU already used in this file.');
       return;
     }
 
@@ -308,6 +384,7 @@ export const AdminImport: React.FC = () => {
       description: r.description,
       primaryImageUrl: r.primaryImageUrl,
       status: r.status,
+      requestedStatus: r.requestedStatus,
       color: r.color,
       sareeType: r.sareeType,
       primaryColourHex: r.primaryColourHex,
@@ -400,15 +477,15 @@ export const AdminImport: React.FC = () => {
     // documented in LISTS for spreadsheet editors that do not preserve imported validations.
     XLSX.utils.book_append_sheet(wb, ws, 'PRODUCTS');
     const instructions = headers.map((header) => ({ Column: header, Instructions: ({
-      'Product Title': 'Required. Unique product display name.', 'Master SKU': 'Optional; blank SKU is generated automatically.', 'URL Slug': 'Optional; generated from title if blank and must be unique.',
-      Category: 'Required. Choose a value from LISTS.', Collection: 'Optional. Choose a value from LISTS.', 'Saree Type': 'Required for sarees; choose a managed type.',
-      Fabric: 'Required for sarees; choose a managed fabric.', 'Weave / Technique': 'Optional descriptive text; not used as a filter.', 'Selling Price': 'Required GST-inclusive amount greater than zero.',
-      MRP: 'Optional; must be greater than or equal to Selling Price.', 'GST Rate %': 'Use 0, 5, 12 or 18 as confirmed by your accountant.', 'Stock Quantity': 'Required whole number, zero or greater.',
-      'Primary Colour Name': 'Required. Enter the customer-facing primary colour.', 'Primary Colour Hex': 'Required hex colour in #RRGGBB format.', 'Secondary Colour Name': 'Optional.',
-      'Secondary Colour Hex': 'Required only when a secondary colour name is entered.', 'Primary Image URL': 'Required for a product intended to be displayed.', 'Additional Image URLs': 'Optional comma-separated URLs.',
-      'Catalog Status': 'Choose active or draft.', Featured: 'TRUE/FALSE; controls Curated Heritage section.', 'Best Seller': 'TRUE/FALSE.', 'New Arrival': 'TRUE/FALSE.',
+      'Product Title': 'The only required column. Product display name.', 'Master SKU': 'Optional; blank SKU is generated automatically.', 'URL Slug': 'Optional; generated from title if blank and must be unique.',
+      Category: 'Optional. Choose a value from LISTS. Blank or unknown: saved to Sarees as a draft.', Collection: 'Optional. Choose a value from LISTS.', 'Saree Type': 'Optional. Choose a type from LISTS so the product appears in the menu and filters.',
+      Fabric: 'Optional. Choose a fabric from LISTS so it appears in the Fabric filter.', 'Weave / Technique': 'Optional descriptive text; not used as a filter.', 'Selling Price': 'Optional GST-inclusive amount. Without it the product is saved as a draft with price 0.',
+      MRP: 'Optional. Ignored if lower than the Selling Price.', 'GST Rate %': 'Use 0, 5, 12 or 18 as confirmed by your accountant.', 'Stock Quantity': 'Optional whole number. Blank = 0.',
+      'Primary Colour Name': 'Optional. Customer-facing primary colour, e.g. Pearl Beige.', 'Primary Colour Hex': 'Optional #RRGGBB code. An invalid code is left empty.', 'Secondary Colour Name': 'Optional.',
+      'Secondary Colour Hex': 'Optional #RRGGBB code; the secondary colour is used only when it has a valid code.', 'Primary Image URL': 'Optional. Without an image the product is saved as a draft (add photos later in the product form).', 'Additional Image URLs': 'Optional comma-separated URLs.',
+      'Catalog Status': 'Optional: active or draft. Products missing a price, image or category are always saved as drafts.', Featured: 'TRUE/FALSE; controls Curated Heritage section.', 'Best Seller': 'TRUE/FALSE.', 'New Arrival': 'TRUE/FALSE.',
       Tags: 'Optional comma-separated tags.',
-    } as Record<string, string>)[header] || 'Optional unless marked required.' }));
+    } as Record<string, string>)[header] || 'Optional.' }));
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(instructions), 'INSTRUCTIONS');
     const lists = XLSX.utils.aoa_to_sheet([
       ['Category', 'Collection', 'Saree Type', 'Fabric', 'Catalog Status', 'GST Rate %', 'Boolean'],
@@ -441,8 +518,12 @@ export const AdminImport: React.FC = () => {
     XLSX.writeFile(wb, 'VK_VASTRAM_PRODUCT_IMPORT_TEMPLATE.xlsx');
   };
 
-  const validCount = parsedRows.filter((r) => r.isValid).length;
+  // importable = will be sent (no blocking error); clean = importable without any warning.
+  const importableCount = parsedRows.filter((r) => r.isValid).length;
+  const warningCount = parsedRows.filter((r) => r.isValid && r.warnings.length > 0).length;
+  const draftCount = parsedRows.filter((r) => r.isValid && r.status === 'draft').length;
   const errorCount = parsedRows.filter((r) => !r.isValid).length;
+  const validCount = importableCount;
 
   return (
     <div className="space-y-6 max-w-6xl mx-auto">
@@ -536,12 +617,18 @@ export const AdminImport: React.FC = () => {
             <div className="flex items-center gap-2">
               <span className="px-2.5 py-1 bg-emerald-50 border border-emerald-200 text-emerald-800 text-[11px] rounded-xs font-medium flex items-center gap-1.5">
                 <CheckCircle2 className="w-3 h-3 text-emerald-600" />
-                {validCount} Valid Rows
+                {importableCount} Rows will import
               </span>
-              {errorCount > 0 && (
+              {warningCount > 0 && (
                 <span className="px-2.5 py-1 bg-amber-50 border border-amber-200 text-amber-800 text-[11px] rounded-xs font-medium flex items-center gap-1.5">
                   <AlertTriangle className="w-3 h-3 text-amber-600" />
-                  {errorCount} Rows with Warnings
+                  {warningCount} with empty fields{draftCount > 0 ? ` (${draftCount} as draft)` : ''}
+                </span>
+              )}
+              {errorCount > 0 && (
+                <span className="px-2.5 py-1 bg-red-50 border border-red-200 text-red-800 text-[11px] rounded-xs font-medium flex items-center gap-1.5">
+                  <AlertCircle className="w-3 h-3 text-red-600" />
+                  {errorCount} skipped
                 </span>
               )}
             </div>
@@ -566,7 +653,7 @@ export const AdminImport: React.FC = () => {
                 {parsedRows.slice(0, 8).map((row) => (
                   <tr key={row.rowNumber} className="hover:bg-white/50 transition-colors">
                     <td className="p-2.5 font-mono text-[11px] text-[#78716C]">{row.rowNumber}</td>
-                    <td className="p-2.5 font-mono font-medium text-[#1C1917]">{row.sku}</td>
+                    <td className="p-2.5 font-mono font-medium text-[#1C1917]">{row.sku || <span className="text-[#A8A29E] font-normal">(auto)</span>}</td>
                     <td className="p-2.5">
                       <span className="font-medium text-[#1C1917] block">{row.name}</span>
                       {row.primaryImageUrl && (
@@ -575,7 +662,7 @@ export const AdminImport: React.FC = () => {
                         </span>
                       )}
                     </td>
-                    <td className="p-2.5 text-[#57534E]">{row.category}</td>
+                    <td className="p-2.5 text-[#57534E]">{row.category || '—'}</td>
                     <td className="p-2.5 font-mono">
                       ₹{row.price.toLocaleString('en-IN')}
                       {row.mrp && (
@@ -589,16 +676,23 @@ export const AdminImport: React.FC = () => {
                       {row.fabric || '—'} {row.weave ? `· ${row.weave}` : ''}
                     </td>
                     <td className="p-2.5">
-                      {row.isValid ? (
-                        <span className="inline-flex items-center gap-1 text-[10px] text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded-xs">
-                          <Check className="w-2.5 h-2.5" /> Valid
-                        </span>
-                      ) : (
+                      {!row.isValid ? (
                         <span
                           title={row.errors.join('; ')}
                           className="inline-flex items-center gap-1 text-[10px] text-red-700 bg-red-50 px-1.5 py-0.5 rounded-xs cursor-help"
                         >
-                          <AlertCircle className="w-2.5 h-2.5" /> Error
+                          <AlertCircle className="w-2.5 h-2.5" /> Skipped
+                        </span>
+                      ) : row.warnings.length > 0 ? (
+                        <span
+                          title={row.warnings.join('\n')}
+                          className="inline-flex items-center gap-1 text-[10px] text-amber-800 bg-amber-50 px-1.5 py-0.5 rounded-xs cursor-help"
+                        >
+                          <AlertTriangle className="w-2.5 h-2.5" /> {row.status === 'draft' ? 'Draft' : 'Imports'} · {row.warnings.length} note{row.warnings.length > 1 ? 's' : ''}
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 text-[10px] text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded-xs">
+                          <Check className="w-2.5 h-2.5" /> Ready
                         </span>
                       )}
                     </td>
@@ -610,14 +704,14 @@ export const AdminImport: React.FC = () => {
 
           {parsedRows.length > 8 && (
             <p className="text-[11px] text-[#78716C] text-center">
-              Showing first 8 of {parsedRows.length} rows. Only valid rows will be sent; invalid rows are skipped.
+              Showing first 8 of {parsedRows.length} rows. Hover a status badge to see what was left empty. Only rows without a product name (or with a repeated SKU) are skipped.
             </p>
           )}
 
           {/* Action Trigger */}
           <div className="flex items-center justify-between pt-2">
             <span className="text-xs text-[#57534E]">
-              Ready to synchronize {validCount} valid records to Supabase. {errorCount > 0 ? `${errorCount} invalid rows will be skipped.` : ''}
+              Ready to import {importableCount} products{draftCount > 0 ? ` (${draftCount} saved as drafts until price, image and category are complete)` : ''}. {errorCount > 0 ? `${errorCount} rows will be skipped.` : ''}
             </span>
             <Button
               onClick={handleExecuteImport}

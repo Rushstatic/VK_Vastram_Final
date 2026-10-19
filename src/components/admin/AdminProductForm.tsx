@@ -104,6 +104,11 @@ export const AdminProductForm: React.FC<AdminProductFormProps> = ({
   const [color, setColor] = useState('');
   const [sareeType, setSareeType] = useState('');
   const [managedSareeTypes, setManagedSareeTypes] = useState<string[]>(['Chanderi', 'Malmal Cotton', 'Tissue Silk', 'Linen Cotton', 'Banarasi', 'Kanjivaram', 'Paithani', 'Other']);
+  const [primaryColourName, setPrimaryColourName] = useState('');
+  const [primaryColourHex, setPrimaryColourHex] = useState('#78281F');
+  const [secondaryColourName, setSecondaryColourName] = useState('');
+  const [showSecondaryColour, setShowSecondaryColour] = useState(false);
+  const [secondaryColourHex, setSecondaryColourHex] = useState('#B88E3E');
   const [pattern, setPattern] = useState('');
   const [occasion, setOccasion] = useState('');
   const [blousePiece, setBlousePiece] = useState('0.8m Running Blouse Piece Included');
@@ -229,7 +234,12 @@ export const AdminProductForm: React.FC<AdminProductFormProps> = ({
         setCare(p.care || '');
         const productMetadata = (p as any).metadata || {};
         setSareeType(productMetadata.sareeType || '');
-        setColor((p as any).color || '');
+        setPrimaryColourName(productMetadata.primaryColourName || '');
+        setColor(productMetadata.primaryColourName || p.colors?.[0] || '');
+        setPrimaryColourHex(productMetadata.primaryColourHex || '#78281F');
+        setSecondaryColourName(productMetadata.secondaryColourName || '');
+        setShowSecondaryColour(Boolean(productMetadata.secondaryColourName));
+        setSecondaryColourHex(productMetadata.secondaryColourHex || '#B88E3E');
         setSeoTitle(p.seoTitle || '');
         setSeoDescription(p.seoDescription || '');
 
@@ -562,6 +572,18 @@ export const AdminProductForm: React.FC<AdminProductFormProps> = ({
       setErrorMessage('An active product must have a selling price greater than ₹0. Keep unfinished products in Draft.');
       return;
     }
+    if (status === 'active' && category === 'sarees' && !primaryColourName.trim()) {
+      setErrorMessage('Primary colour name is required for an active saree.');
+      return;
+    }
+    if (status === 'active' && category === 'sarees' && !/^#[0-9A-Fa-f]{6}$/.test(primaryColourHex.trim())) {
+      setErrorMessage('Primary colour HEX must be a valid #RRGGBB value.');
+      return;
+    }
+    if (status === 'active' && category === 'sarees' && showSecondaryColour && (!secondaryColourName.trim() || !/^#[0-9A-Fa-f]{6}$/.test(secondaryColourHex.trim()))) {
+      setErrorMessage('Enter both the secondary colour name and a valid #RRGGBB HEX value, or turn the secondary colour option off.');
+      return;
+    }
     if (status === 'active' && (gstRate ==='' || !Number.isFinite(Number(gstRate)) || Number(gstRate) < 0 || Number(gstRate) > 100)) {
       setErrorMessage('Enter the accountant-confirmed GST rate for this active product before saving. Variants cannot be saved until the product tax setting is valid.');
       return;
@@ -634,6 +656,10 @@ export const AdminProductForm: React.FC<AdminProductFormProps> = ({
       care: care.trim() || undefined,
       metadata: {
         sareeType: category === 'sarees' ? sareeType.trim() || null : null,
+        primaryColourName: primaryColourName.trim() || null,
+        primaryColourHex: /^#[0-9A-Fa-f]{6}$/.test(primaryColourHex) ? primaryColourHex.toUpperCase() : null,
+        secondaryColourName: secondaryColourName.trim() || null,
+        secondaryColourHex: /^#[0-9A-Fa-f]{6}$/.test(secondaryColourHex) ? secondaryColourHex.toUpperCase() : null,
       },
       seoTitle: seoTitle || `${name} | ${storeName}`,
       seoDescription: seoDescription || description.slice(0, 150),
@@ -1135,7 +1161,15 @@ export const AdminProductForm: React.FC<AdminProductFormProps> = ({
                     </select>
                   </div>
                 )}
-                {category === 'sarees' && <p className="md:col-span-2 text-xs text-[#78716C]">Colour name and HEX are configured once per stock variant below. Add another variant only when the saree is available in another colour/edition.</p>}
+                {category === 'sarees' && <div>
+                  <label className="block font-semibold text-[#1C1917] mb-1.5">Primary Colour Name *</label>
+                  <input value={primaryColourName} onChange={(e) => { setPrimaryColourName(e.target.value); setColor(e.target.value); setIsDirty(true); }} placeholder="e.g. Pearl Beige" className="w-full bg-[#F4EFE6] border border-[#1C1917]/15 p-2.5 rounded-xs text-[#1C1917]" />
+                  <div className="flex items-center gap-2 mt-2"><input type="color" value={/^#[0-9A-Fa-f]{6}$/.test(primaryColourHex) ? primaryColourHex : '#78281F'} onChange={(e) => { setPrimaryColourHex(e.target.value.toUpperCase()); setIsDirty(true); }} className="h-8 w-10 bg-transparent" /><input value={primaryColourHex} onChange={(e) => { setPrimaryColourHex(e.target.value); setIsDirty(true); }} pattern="^#[0-9A-Fa-f]{6}$" aria-label="Primary colour HEX" className="min-w-0 flex-1 bg-[#F4EFE6] border border-[#1C1917]/15 p-2 rounded-xs font-mono" /></div>
+                </div>}
+                {category === 'sarees' && <div className="md:col-span-2">
+                  <label className="flex items-center gap-2 font-semibold text-[#1C1917] mb-1.5"><input type="checkbox" checked={showSecondaryColour} onChange={(e) => { setShowSecondaryColour(e.target.checked); if (!e.target.checked) { setSecondaryColourName(''); setSecondaryColourHex('#B88E3E'); } setIsDirty(true); }} /> Add a secondary colour</label>
+                  {showSecondaryColour && <div className="grid grid-cols-1 sm:grid-cols-2 gap-3"><div><label className="block text-xs text-[#57534E] mb-1">Secondary Colour Name *</label><input value={secondaryColourName} onChange={(e) => { setSecondaryColourName(e.target.value); setIsDirty(true); }} placeholder="e.g. Teal Border" className="w-full bg-[#F4EFE6] border border-[#1C1917]/15 p-2.5 rounded-xs text-[#1C1917]" /></div><div><label className="block text-xs text-[#57534E] mb-1">Secondary Colour HEX *</label><div className="flex items-center gap-2"><input type="color" value={/^#[0-9A-Fa-f]{6}$/.test(secondaryColourHex) ? secondaryColourHex : '#B88E3E'} onChange={(e) => { setSecondaryColourHex(e.target.value.toUpperCase()); setIsDirty(true); }} className="h-8 w-10 bg-transparent" /><input value={secondaryColourHex} onChange={(e) => { setSecondaryColourHex(e.target.value.toUpperCase()); setIsDirty(true); }} pattern="^#[0-9A-Fa-f]{6}$" aria-label="Secondary colour HEX" className="min-w-0 flex-1 bg-[#F4EFE6] border border-[#1C1917]/15 p-2 rounded-xs font-mono" /></div></div></div>}
+                </div>}
               </div>
             </div>
           </div>

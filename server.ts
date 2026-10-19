@@ -3920,6 +3920,373 @@ const orderPayload = {
     }
   );
 
+  // NOTE: this static route MUST be registered before '/api/admin/products/:id'. Express matches in
+  // declaration order, so otherwise 'import' is treated as a product id and the import never runs
+  // ("Product ID and payload are required").
+  // -------------------------------------------------------------------
+  // POST /api/admin/products/import (BULK EXCEL PRODUCT IMPORT)
+  // -------------------------------------------------------------------
+  app.post(
+    '/api/admin/products/import',
+    authenticateUser,
+    async (req: AuthenticatedRequest, res: Response) => {
+      try {
+        const isAdmin = await checkAdminRole(req.user?.id);
+        if (!isAdmin) {
+          res.status(403).json({ success: false, error: 'Forbidden. Admin access required.' });
+          return;
+        }
+
+        const { products } = req.body;
+        if (!Array.isArray(products) || products.length === 0) {
+          res.status(400).json({ success: false, error: 'A non-empty products array is required.' });
+          return;
+        }
+
+        if (!db) {
+          res.status(500).json({ success: false, error: 'Database service unavailable.' });
+          return;
+        }
+
+        // Cache categories and collections for fast taxonomy lookup
+        const { data: categories } = await db.from('categories').select('id, name, slug');
+        const { data: collections } = await db.from('collections').select('id, name, slug');
+        const { data: taxonomySettings, error: taxonomyError } = await db.from('site_settings').select('key, value').in('key', ['saree_types', 'fabric_types']);
+        if (taxonomyError) throw new Error(`Could not validate managed Saree Types and Fabrics: ${taxonomyError.message}`);
+        const managedNames = (key: string): Set<string> => {
+          const setting = (taxonomySettings || []).find((row: any) => row.key === key)?.value;
+          const parsed = typeof setting === 'string' ? (() => { try { return JSON.parse(setting); } catch { return null; } })() : setting;
+          return new Set<string>((Array.isArray(parsed?.types) ? parsed.types : []).filter((x: any) => x && x.active !== false && x.name).map((x: any) => String(x.name).trim().toLowerCase()));
+        };
+        const managedSareeTypes = managedNames('saree_types');
+        const managedFabrics = managedNames('fabric_types');
+
+        const catMap = new Map<string, string>();
+        categories?.forEach((c: any) => {
+          catMap.set(c.slug.toLowerCase(), c.id);
+          catMap.set(c.name.toLowerCase(), c.id);
+        });
+
+        const colMap = new Map<string, string>();
+        collections?.forEach((c: any) => {
+          colMap.set(c.slug.toLowerCase(), c.id);
+          colMap.set(c.name.toLowerCase(), c.id);
+        });
+
+        const defaultCategoryId = catMap.get('sarees') || categories?.[0]?.id || null;
+
+        let importedCount = 0;
+        let updatedCount = 0;
+        let failedCount = 0;
+        const errors: { row: number; sku?: string; error: string }[] = [];
+
+        for (let idx = 0; idx < products.length; idx++) {
+          const item = products[idx];
+          const rowNumber = idx + 2; // matching excel row index (1-based + 1 for header)
+
+          try {
+            if (!item.name || typeof item.name !== 'string' || !item.name.trim()) {
+              throw new Error('Product name is required.');
+            }
+
+            // ---- Lenient import policy -------------------------------------------------
+            // Only the product name is mandatory. Every other column is optional: valid values are
+            // saved, missing/invalid ones are left empty, and an incomplete NEW product (no price,
+            // no image or no recognised category) is saved as a draft instead of going live.
+            const text = (value: any) => String(value ?? '').trim();
+            const rawPrice = Number(item.price);
+            const price = Number.isFinite(rawPrice) && rawPrice > 0 ? rawPrice : 0;
+            const hasPrice = price > 0;
+            const hexOf = (value: any) => (/^#[0-9a-f]{6}$/i.test(text(value)) ? text(value).toUpperCase() : '');
+            const primaryHex = hexOf(item.primaryColourHex);
+            const secondaryHex = hexOf(item.secondaryColourHex);
+            const secondaryName = secondaryHex ? text(item.secondaryColourName) : '';
+            // Variant colour name follows the product form: "Primary" or "Primary / Secondary".
+            const variantColor = [text(item.color), secondaryName].filter(Boolean).join(' / ');
+
+            let mrp: number | null = item.mrp ? Number(item.mrp) : null;
+            if (mrp !== null && (!Number.isFinite(mrp) || mrp <= 0 || mrp < price)) mrp = null;
+
+            const isUsableImageUrl = (value: any) => {
+              const url = text(value);
+              return /^https?:\/\//i.test(url) && !/^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0|\[?::1\]?)(:|\/|$)/i.test(url);
+            };
+            const primaryImage = isUsableImageUrl(item.primaryImageUrl) ? text(item.primaryImageUrl) : '';
+
+            const cleanSku = (item.sku || `VKV-SAR-${Date.now().toString().slice(-6)}-${idx + 1}`).trim().toUpperCase();
+            const cleanSlug = (item.slug || item.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')).trim() || `product-${Date.now().toString().slice(-6)}-${idx + 1}`;
+
+            // Category: blank/unknown falls back to the default category and forces a draft.
+            const catKey = text(item.category).toLowerCase();
+            const categoryKnown = Boolean(catKey) && catMap.has(catKey);
+            const categoryId = categoryKnown ? catMap.get(catKey)! : defaultCategoryId;
+            if (!categoryId) throw new Error('No product categories exist yet. Create a category first, then import.');
+
+            // Collection: unknown names are ignored instead of failing the row.
+            let collectionId: string | null = null;
+            const colKey = text(item.collection).toLowerCase();
+            if (colKey && colMap.has(colKey)) collectionId = colMap.get(colKey)!;
+
+            // Stock: blank/invalid means "not provided" (0 for a new product, unchanged for an existing one).
+            const rawStock = item.stockQuantity ?? item.stock;
+            const stockNumber = rawStock !== undefined && rawStock !== null && text(rawStock) !== '' ? Number(rawStock) : NaN;
+            const stockProvided = Number.isInteger(stockNumber) && stockNumber >= 0;
+            const stockQuantity = stockProvided ? stockNumber : 0;
+
+            // Status the sheet asked for ('' when the column was blank).
+            const requestedStatus: '' | 'active' | 'draft' =
+              item.requestedStatus === 'draft' || item.requestedStatus === 'active' ? item.requestedStatus : '';
+            const newProductStatus: 'active' | 'draft' =
+              requestedStatus === 'draft' || !hasPrice || !primaryImage || !categoryKnown ? 'draft' : 'active';
+
+            // Check if product with this SKU already exists
+            const { data: existingProduct } = await db
+              .from('products')
+              .select('id, slug, sku, metadata, price')
+              .eq('sku', cleanSku)
+              .maybeSingle();
+
+            if (existingProduct) {
+              // UPDATE EXISTING
+              // UPDATE only what the sheet actually provides: blank cells never wipe existing data,
+              // and the live URL slug is preserved.
+              const updates: Record<string, any> = { name: item.name.trim(), updated_at: new Date().toISOString() };
+              if (hasPrice) updates.price = price;
+              if (item.gstRate !== undefined && item.gstRate !== null && item.gstRate !== '' && Number.isFinite(Number(item.gstRate))) updates.gst_rate = Number(item.gstRate);
+              if (mrp) updates.mrp = mrp;
+              if (categoryKnown) updates.category_id = categoryId;
+              if (collectionId) updates.collection_id = collectionId;
+              if (text(item.fabric)) updates.fabric = text(item.fabric);
+              if (text(item.weave)) updates.weave = text(item.weave);
+              if (text(item.origin)) updates.origin = text(item.origin);
+              if (text(item.dimensions)) updates.dimensions = text(item.dimensions);
+              if (text(item.careInstructions || item.care)) updates.care_instructions = text(item.careInstructions || item.care);
+              if (text(item.description)) updates.description = text(item.description);
+              if (text(item.seoTitle)) updates.seo_title = text(item.seoTitle);
+              if (text(item.seoDescription)) updates.seo_description = text(item.seoDescription);
+              if (item.featured === true) updates.featured = true;
+              if (item.bestSeller === true) updates.bestseller = true;
+              if (item.newArrival === true) updates.new_arrival = true;
+              if (requestedStatus === 'draft') updates.status = 'draft';
+              else if (requestedStatus === 'active' && (hasPrice || Number(existingProduct.price) > 0)) updates.status = 'active';
+              updates.metadata = {
+                ...(existingProduct.metadata && typeof existingProduct.metadata === 'object' ? existingProduct.metadata : {}),
+                ...(text(item.sareeType) ? { sareeType: text(item.sareeType) } : {}),
+                ...(text(item.color) ? { primaryColourName: text(item.color) } : {}),
+                ...(primaryHex ? { primaryColourHex: primaryHex } : {}),
+                ...(secondaryName ? { secondaryColourName: secondaryName } : {}),
+                ...(secondaryHex ? { secondaryColourHex: secondaryHex } : {}),
+                ...(Array.isArray(item.tags) && item.tags.length ? { tags: item.tags } : {}),
+              };
+              const { error: updateError } = await db
+                .from('products')
+                .update(updates)
+                .eq('id', existingProduct.id);
+
+              if (updateError) throw updateError;
+
+              // Upsert/Update primary image if provided
+              if (primaryImage) {
+                const { data: existingImg } = await db
+                  .from('product_images')
+                  .select('id')
+                  .eq('product_id', existingProduct.id)
+                  .eq('is_primary', true)
+                  .maybeSingle();
+
+                if (existingImg) {
+                  await db
+                    .from('product_images')
+                    .update({ image_url: primaryImage, alt_text: item.imageAltText || item.name.trim() })
+                    .eq('id', existingImg.id);
+                } else {
+                  await db.from('product_images').insert({
+                    product_id: existingProduct.id,
+                    image_url: primaryImage,
+                    alt_text: item.name.trim(),
+                    is_primary: true,
+                    sort_order: 1,
+                  });
+                }
+              }
+
+              if (Array.isArray(item.additionalImageUrls)) {
+                for (let imageIndex = 0; imageIndex < item.additionalImageUrls.length; imageIndex++) {
+                  const imageUrl = String(item.additionalImageUrls[imageIndex] || '').trim();
+                  if (!isUsableImageUrl(imageUrl)) continue;
+                  const { data: alreadyThere } = await db.from('product_images').select('id').eq('product_id', existingProduct.id).eq('image_url', imageUrl).maybeSingle();
+                  if (!alreadyThere) await db.from('product_images').insert({ product_id: existingProduct.id, image_url: imageUrl, alt_text: item.imageAltText || item.name.trim(), is_primary: false, sort_order: imageIndex + 2 });
+                }
+              }
+
+              // Match only a variant belonging to this product. Importing metadata
+              // must not reset stock on an existing variant; use Inventory Control Center
+              // for explicit stock movements.
+              const { data: exactVariant, error: variantLookupError } = await db
+                .from('product_variants')
+                .select('id, product_id, stock_quantity, reserved_quantity, sku')
+                .eq('product_id', existingProduct.id)
+                .eq('sku', cleanSku)
+                .maybeSingle();
+              if (variantLookupError) throw variantLookupError;
+              let existingVariant = exactVariant;
+              if (!existingVariant) {
+                const { data: productVariants, error: variantsLookupError } = await db.from('product_variants')
+                  .select('id, product_id, stock_quantity, reserved_quantity, sku').eq('product_id', existingProduct.id).eq('is_active', true).limit(2);
+                if (variantsLookupError) throw variantsLookupError;
+                if ((productVariants || []).length === 1) existingVariant = productVariants![0];
+                else if ((productVariants || []).length > 1) throw new Error('This product has multiple active variants. A single product row cannot safely distribute Stock Quantity across them; update stock in Inventory or use variant-level inventory rows.');
+              }
+
+              if (existingVariant) {
+                const currentStock = Number(existingVariant.stock_quantity || 0);
+                const reservedStock = Number(existingVariant.reserved_quantity || 0);
+                if (stockProvided && (!Number.isSafeInteger(stockQuantity) || stockQuantity < reservedStock)) {
+                  throw new Error(`Imported stock for ${cleanSku} cannot be below the ${reservedStock} unit(s) reserved by orders.`);
+                }
+                if (stockProvided && stockQuantity !== currentStock) {
+                  // Import stock as an audited inventory adjustment. Optimistic stock
+                  // matching prevents overwriting a concurrent checkout's inventory update.
+                  const { data: stockUpdate, error: stockUpdateError } = await db.from('product_variants')
+                    .update({ stock_quantity: stockQuantity, ...(variantColor ? { color: variantColor } : {}), updated_at: new Date().toISOString() })
+                    .eq('id', existingVariant.id).eq('stock_quantity', currentStock).select('id').maybeSingle();
+                  if (stockUpdateError) throw stockUpdateError;
+                  if (!stockUpdate) throw new Error(`Stock for ${cleanSku} changed during import. Refresh the catalogue and retry this row.`);
+                  const delta = stockQuantity - currentStock;
+                  const { error: movementError } = await db.from('inventory_movements').insert({
+                    product_variant_id: existingVariant.id, movement_type: 'adjustment', quantity: delta,
+                    notes: `Stock synchronized by product Excel import (${cleanSku})`,
+                    created_by: req.user?.id || null, created_at: new Date().toISOString(),
+                  });
+                  if (movementError) {
+                    await db.from('product_variants').update({ stock_quantity: currentStock }).eq('id', existingVariant.id).eq('stock_quantity', stockQuantity);
+                    throw new Error(`Stock was not imported because the inventory audit entry failed: ${movementError.message}`);
+                  }
+                } else if (variantColor) {
+                  const { error: variantUpdateError } = await db.from('product_variants')
+                    .update({ color: variantColor, updated_at: new Date().toISOString() }).eq('id', existingVariant.id);
+                  if (variantUpdateError) throw variantUpdateError;
+                }
+              } else {
+                const { error: variantInsertError } = await db.from('product_variants').insert({
+                  product_id: existingProduct.id,
+                  sku: cleanSku,
+                  variant_name: 'Standard Free Size',
+                  stock_quantity: stockQuantity,
+                  color: variantColor || null,
+                  is_active: true,
+                });
+                if (variantInsertError) throw variantInsertError;
+              }
+
+              updatedCount++;
+            } else {
+              // INSERT NEW PRODUCT
+              let finalSlug = cleanSlug;
+              const { data: slugCheck } = await db
+                .from('products')
+                .select('id')
+                .eq('slug', finalSlug)
+                .maybeSingle();
+
+              if (slugCheck) {
+                finalSlug = `${cleanSlug}-${Date.now().toString().slice(-4)}`;
+              }
+
+              const { data: newProd, error: insertError } = await db
+                .from('products')
+                .insert({
+                  sku: cleanSku,
+                  name: item.name.trim(),
+                  slug: finalSlug,
+                  price,
+                  gst_rate: item.gstRate === undefined || item.gstRate === null || item.gstRate === '' || !Number.isFinite(Number(item.gstRate)) ? null : Number(item.gstRate),
+                  mrp,
+                  category_id: categoryId,
+                  collection_id: collectionId,
+                  status: newProductStatus,
+                  fabric: text(item.fabric) || null,
+                  weave: text(item.weave) || null,
+                  origin: text(item.origin) || null,
+                  dimensions: text(item.dimensions) || null,
+                  care_instructions: text(item.careInstructions || item.care) || null,
+                  description: text(item.description) || null,
+                  featured: Boolean(item.featured),
+                  bestseller: Boolean(item.bestSeller),
+                  new_arrival: Boolean(item.newArrival),
+                  seo_title: text(item.seoTitle) || null,
+                  seo_description: text(item.seoDescription) || null,
+                  metadata: {
+                    ...(text(item.sareeType) ? { sareeType: text(item.sareeType) } : {}),
+                    ...(text(item.color) ? { primaryColourName: text(item.color) } : {}),
+                    ...(primaryHex ? { primaryColourHex: primaryHex } : {}),
+                    ...(secondaryName ? { secondaryColourName: secondaryName } : {}),
+                    ...(secondaryHex ? { secondaryColourHex: secondaryHex } : {}),
+                    ...(Array.isArray(item.tags) && item.tags.length ? { tags: item.tags } : {}),
+                  },
+                })
+                .select('id')
+                .single();
+
+              if (insertError || !newProd) throw (insertError || new Error('Failed to insert product record'));
+
+              // Primary image
+              if (primaryImage) {
+                const { error: imageInsertError } = await db.from('product_images').insert({
+                  product_id: newProd.id,
+                  image_url: primaryImage,
+                  alt_text: item.name.trim(),
+                  is_primary: true,
+                  sort_order: 1,
+                });
+                if (imageInsertError) throw imageInsertError;
+              }
+
+              if (Array.isArray(item.additionalImageUrls)) {
+                for (let imageIndex = 0; imageIndex < item.additionalImageUrls.length; imageIndex++) {
+                  const imageUrl = String(item.additionalImageUrls[imageIndex] || '').trim();
+                  if (!isUsableImageUrl(imageUrl)) continue;
+                  await db.from('product_images').insert({ product_id: newProd.id, image_url: imageUrl, alt_text: item.imageAltText || item.name.trim(), is_primary: false, sort_order: imageIndex + 2 });
+                }
+              }
+
+              // Variant
+              const { error: variantInsertError } = await db.from('product_variants').insert({
+                product_id: newProd.id,
+                sku: cleanSku,
+                variant_name: 'Standard Free Size',
+                stock_quantity: stockQuantity,
+                color: variantColor || null,
+                is_active: true,
+              });
+              if (variantInsertError) throw variantInsertError;
+
+              importedCount++;
+            }
+          } catch (rowErr: any) {
+            failedCount++;
+            errors.push({
+              row: rowNumber,
+              sku: item.sku,
+              error: rowErr?.message || 'Unknown row processing error',
+            });
+          }
+        }
+
+        res.json({
+          success: true,
+          total: products.length,
+          imported: importedCount,
+          updated: updatedCount,
+          failed: failedCount,
+          errors,
+        });
+      } catch (err: any) {
+        res.status(500).json({ success: false, error: err.message || 'Import processing failed.' });
+      }
+    }
+  );
+
   // -------------------------------------------------------------------
   // POST /api/admin/products/:id (AUTHORITATIVE PRODUCT UPDATE & PRESERVATION)
   // -------------------------------------------------------------------
@@ -4189,364 +4556,6 @@ const orderPayload = {
     }
   );
 
-  // -------------------------------------------------------------------
-  // POST /api/admin/products/import (BULK EXCEL PRODUCT IMPORT)
-  // -------------------------------------------------------------------
-  app.post(
-    '/api/admin/products/import',
-    authenticateUser,
-    async (req: AuthenticatedRequest, res: Response) => {
-      try {
-        const isAdmin = await checkAdminRole(req.user?.id);
-        if (!isAdmin) {
-          res.status(403).json({ success: false, error: 'Forbidden. Admin access required.' });
-          return;
-        }
-
-        const { products } = req.body;
-        if (!Array.isArray(products) || products.length === 0) {
-          res.status(400).json({ success: false, error: 'A non-empty products array is required.' });
-          return;
-        }
-
-        if (!db) {
-          res.status(500).json({ success: false, error: 'Database service unavailable.' });
-          return;
-        }
-
-        // Cache categories and collections for fast taxonomy lookup
-        const { data: categories } = await db.from('categories').select('id, name, slug');
-        const { data: collections } = await db.from('collections').select('id, name, slug');
-        const { data: taxonomySettings, error: taxonomyError } = await db.from('site_settings').select('key, value').in('key', ['saree_types', 'fabric_types']);
-        if (taxonomyError) throw new Error(`Could not validate managed Saree Types and Fabrics: ${taxonomyError.message}`);
-        const managedNames = (key: string): Set<string> => {
-          const setting = (taxonomySettings || []).find((row: any) => row.key === key)?.value;
-          const parsed = typeof setting === 'string' ? (() => { try { return JSON.parse(setting); } catch { return null; } })() : setting;
-          return new Set<string>((Array.isArray(parsed?.types) ? parsed.types : []).filter((x: any) => x && x.active !== false && x.name).map((x: any) => String(x.name).trim().toLowerCase()));
-        };
-        const managedSareeTypes = managedNames('saree_types');
-        const managedFabrics = managedNames('fabric_types');
-
-        const catMap = new Map<string, string>();
-        categories?.forEach((c: any) => {
-          catMap.set(c.slug.toLowerCase(), c.id);
-          catMap.set(c.name.toLowerCase(), c.id);
-        });
-
-        const colMap = new Map<string, string>();
-        collections?.forEach((c: any) => {
-          colMap.set(c.slug.toLowerCase(), c.id);
-          colMap.set(c.name.toLowerCase(), c.id);
-        });
-
-        const defaultCategoryId = catMap.get('sarees') || categories?.[0]?.id || null;
-
-        let importedCount = 0;
-        let updatedCount = 0;
-        let failedCount = 0;
-        const errors: { row: number; sku?: string; error: string }[] = [];
-
-        for (let idx = 0; idx < products.length; idx++) {
-          const item = products[idx];
-          const rowNumber = idx + 2; // matching excel row index (1-based + 1 for header)
-
-          try {
-            if (!item.name || typeof item.name !== 'string' || !item.name.trim()) {
-              throw new Error('Product name is required.');
-            }
-
-            const price = Number(item.price);
-            if (!Number.isFinite(price) || price < 0 || ((item.status || 'active') === 'active' && price <= 0)) {
-              throw new Error(`Invalid price "${item.price}". Active products require a price greater than zero.`);
-            }
-            const primaryHex = String(item.primaryColourHex || '').trim();
-            const secondaryName = String(item.secondaryColourName || '').trim();
-            const secondaryHex = String(item.secondaryColourHex || '').trim();
-            if (primaryHex && !/^#[0-9a-f]{6}$/i.test(primaryHex)) throw new Error('Primary Colour Hex must use #RRGGBB format.');
-            if (secondaryName && !/^#[0-9a-f]{6}$/i.test(secondaryHex)) throw new Error('Secondary Colour Hex must use #RRGGBB format when a secondary colour name is provided.');
-
-            const mrp = item.mrp ? Number(item.mrp) : null;
-            if (mrp !== null && !isNaN(mrp) && mrp < price) {
-              throw new Error(`MRP (${mrp}) cannot be less than selling price (${price}).`);
-            }
-
-            const cleanSku = (item.sku || `VKV-SAR-${Date.now().toString().slice(-6)}-${idx + 1}`).trim().toUpperCase();
-            const cleanSlug = (item.slug || item.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')).trim();
-
-            // Taxonomy values must map to real managed records; never silently assign the default category.
-            const catKey = String(item.category || '').toLowerCase().trim();
-            if (!catKey || !catMap.has(catKey)) throw new Error(`Unknown Category: ${item.category || '(blank)'}. Choose a category from the downloaded LISTS sheet.`);
-            const categoryId = catMap.get(catKey)!;
-
-            let collectionId: string | null = null;
-            if (item.collection) {
-              const colKey = String(item.collection).toLowerCase().trim();
-              if (!colMap.has(colKey)) throw new Error(`Unknown Collection: ${item.collection}. Choose a collection from the downloaded LISTS sheet.`);
-              collectionId = colMap.get(colKey)!;
-            }
-            const categoryName = categories?.find((c: any) => c.id === categoryId)?.name || '';
-            if (categoryName.toLowerCase().includes('saree')) {
-              if (!item.sareeType || (managedSareeTypes.size && !managedSareeTypes.has(String(item.sareeType).trim().toLowerCase()))) throw new Error(`Unknown or missing Saree Type: ${item.sareeType || '(blank)'}. Add/select a managed Saree Type first.`);
-              if (!item.fabric || (managedFabrics.size && !managedFabrics.has(String(item.fabric).trim().toLowerCase()))) throw new Error(`Unknown or missing Fabric: ${item.fabric || '(blank)'}. Add/select a managed Fabric first.`);
-              if ((item.status || 'active') === 'active' && (!String(item.color || '').trim() || !/^#[0-9a-f]{6}$/i.test(primaryHex))) throw new Error('Active sarees require a Primary Colour Name and a valid Primary Colour Hex (#RRGGBB).');
-            }
-
-            const rawStock = item.stockQuantity ?? item.stock;
-            const stockQuantity = rawStock !== undefined && rawStock !== null && String(rawStock).trim() !== ''
-              ? Number(rawStock)
-              : NaN;
-            if (!Number.isInteger(stockQuantity) || stockQuantity < 0) {
-              throw new Error('A valid non-negative stock quantity is required for import.');
-            }
-            const status = (item.status === 'active' || item.status === 'draft') ? item.status : 'active';
-
-            // Check if product with this SKU already exists
-            const { data: existingProduct } = await db
-              .from('products')
-              .select('id, slug, sku, metadata')
-              .eq('sku', cleanSku)
-              .maybeSingle();
-
-            if (existingProduct) {
-              // UPDATE EXISTING
-              const { error: updateError } = await db
-                .from('products')
-                .update({
-                  name: item.name.trim(),
-                  slug: cleanSlug,
-                  price,
-                  gst_rate: item.gstRate === undefined || item.gstRate === '' ? null : Number(item.gstRate),
-                  mrp: mrp && !isNaN(mrp) ? mrp : null,
-                  category_id: categoryId,
-                  collection_id: collectionId,
-                  status,
-                  fabric: item.fabric || null,
-                  weave: item.weave || null,
-                  origin: item.origin || null,
-                  dimensions: item.dimensions || null,
-                  care_instructions: item.careInstructions || item.care || null,
-                  description: item.description || null,
-                  featured: Boolean(item.featured),
-                  bestseller: Boolean(item.bestSeller),
-                  new_arrival: Boolean(item.newArrival),
-                  seo_title: item.seoTitle || null,
-                  seo_description: item.seoDescription || null,
-                  metadata: {
-                    ...(existingProduct.metadata && typeof existingProduct.metadata === 'object' ? existingProduct.metadata : {}),
-                    ...(item.sareeType ? { sareeType: item.sareeType } : {}),
-                    ...(item.color ? { primaryColourName: item.color } : {}),
-                    ...(item.primaryColourHex ? { primaryColourHex: item.primaryColourHex } : {}),
-                    ...(item.secondaryColourName ? { secondaryColourName: item.secondaryColourName } : {}),
-                    ...(item.secondaryColourHex ? { secondaryColourHex: item.secondaryColourHex } : {}),
-                    ...(Array.isArray(item.tags) ? { tags: item.tags } : {}),
-                  },
-                  updated_at: new Date().toISOString(),
-                })
-                .eq('id', existingProduct.id);
-
-              if (updateError) throw updateError;
-
-              // Upsert/Update primary image if provided
-              if (item.primaryImageUrl) {
-                const { data: existingImg } = await db
-                  .from('product_images')
-                  .select('id')
-                  .eq('product_id', existingProduct.id)
-                  .eq('is_primary', true)
-                  .maybeSingle();
-
-                if (existingImg) {
-                  await db
-                    .from('product_images')
-                    .update({ image_url: item.primaryImageUrl, alt_text: item.imageAltText || item.name.trim() })
-                    .eq('id', existingImg.id);
-                } else {
-                  await db.from('product_images').insert({
-                    product_id: existingProduct.id,
-                    image_url: item.primaryImageUrl,
-                    alt_text: item.name.trim(),
-                    is_primary: true,
-                    sort_order: 1,
-                  });
-                }
-              }
-
-              if (Array.isArray(item.additionalImageUrls)) {
-                for (let imageIndex = 0; imageIndex < item.additionalImageUrls.length; imageIndex++) {
-                  const imageUrl = String(item.additionalImageUrls[imageIndex] || '').trim();
-                  if (!/^https?:\/\//i.test(imageUrl)) continue;
-                  const { data: alreadyThere } = await db.from('product_images').select('id').eq('product_id', existingProduct.id).eq('image_url', imageUrl).maybeSingle();
-                  if (!alreadyThere) await db.from('product_images').insert({ product_id: existingProduct.id, image_url: imageUrl, alt_text: item.imageAltText || item.name.trim(), is_primary: false, sort_order: imageIndex + 2 });
-                }
-              }
-
-              // Match only a variant belonging to this product. Importing metadata
-              // must not reset stock on an existing variant; use Inventory Control Center
-              // for explicit stock movements.
-              const { data: exactVariant, error: variantLookupError } = await db
-                .from('product_variants')
-                .select('id, product_id, stock_quantity, reserved_quantity, sku')
-                .eq('product_id', existingProduct.id)
-                .eq('sku', cleanSku)
-                .maybeSingle();
-              if (variantLookupError) throw variantLookupError;
-              let existingVariant = exactVariant;
-              if (!existingVariant) {
-                const { data: productVariants, error: variantsLookupError } = await db.from('product_variants')
-                  .select('id, product_id, stock_quantity, reserved_quantity, sku').eq('product_id', existingProduct.id).eq('is_active', true).limit(2);
-                if (variantsLookupError) throw variantsLookupError;
-                if ((productVariants || []).length === 1) existingVariant = productVariants![0];
-                else if ((productVariants || []).length > 1) throw new Error('This product has multiple active variants. A single product row cannot safely distribute Stock Quantity across them; update stock in Inventory or use variant-level inventory rows.');
-              }
-
-              if (existingVariant) {
-                const currentStock = Number(existingVariant.stock_quantity || 0);
-                const reservedStock = Number(existingVariant.reserved_quantity || 0);
-                if (!Number.isSafeInteger(stockQuantity) || stockQuantity < reservedStock) {
-                  throw new Error(`Imported stock for ${cleanSku} cannot be below the ${reservedStock} unit(s) reserved by orders.`);
-                }
-                if (stockQuantity !== currentStock) {
-                  // Import stock as an audited inventory adjustment. Optimistic stock
-                  // matching prevents overwriting a concurrent checkout's inventory update.
-                  const { data: stockUpdate, error: stockUpdateError } = await db.from('product_variants')
-                    .update({ stock_quantity: stockQuantity, color: item.color || null, updated_at: new Date().toISOString() })
-                    .eq('id', existingVariant.id).eq('stock_quantity', currentStock).select('id').maybeSingle();
-                  if (stockUpdateError) throw stockUpdateError;
-                  if (!stockUpdate) throw new Error(`Stock for ${cleanSku} changed during import. Refresh the catalogue and retry this row.`);
-                  const delta = stockQuantity - currentStock;
-                  const { error: movementError } = await db.from('inventory_movements').insert({
-                    product_variant_id: existingVariant.id, movement_type: 'adjustment', quantity: delta,
-                    notes: `Stock synchronized by product Excel import (${cleanSku})`,
-                    created_by: req.user?.id || null, created_at: new Date().toISOString(),
-                  });
-                  if (movementError) {
-                    await db.from('product_variants').update({ stock_quantity: currentStock }).eq('id', existingVariant.id).eq('stock_quantity', stockQuantity);
-                    throw new Error(`Stock was not imported because the inventory audit entry failed: ${movementError.message}`);
-                  }
-                } else {
-                  const { error: variantUpdateError } = await db.from('product_variants')
-                    .update({ color: item.color || null, updated_at: new Date().toISOString() }).eq('id', existingVariant.id);
-                  if (variantUpdateError) throw variantUpdateError;
-                }
-              } else {
-                const { error: variantInsertError } = await db.from('product_variants').insert({
-                  product_id: existingProduct.id,
-                  sku: cleanSku,
-                  variant_name: 'Standard Free Size',
-                  stock_quantity: stockQuantity,
-                  color: item.color || null,
-                  is_active: true,
-                });
-                if (variantInsertError) throw variantInsertError;
-              }
-
-              updatedCount++;
-            } else {
-              // INSERT NEW PRODUCT
-              let finalSlug = cleanSlug;
-              const { data: slugCheck } = await db
-                .from('products')
-                .select('id')
-                .eq('slug', finalSlug)
-                .maybeSingle();
-
-              if (slugCheck) {
-                finalSlug = `${cleanSlug}-${Date.now().toString().slice(-4)}`;
-              }
-
-              const { data: newProd, error: insertError } = await db
-                .from('products')
-                .insert({
-                  sku: cleanSku,
-                  name: item.name.trim(),
-                  slug: finalSlug,
-                  price,
-                  gst_rate: item.gstRate === undefined || item.gstRate === '' ? null : Number(item.gstRate),
-                  mrp: mrp && !isNaN(mrp) ? mrp : null,
-                  category_id: categoryId,
-                  collection_id: collectionId,
-                  status,
-                  fabric: item.fabric || null,
-                  weave: item.weave || null,
-                  origin: item.origin || null,
-                  dimensions: item.dimensions || null,
-                  care_instructions: item.careInstructions || item.care || null,
-                  description: item.description || null,
-                  featured: Boolean(item.featured),
-                  bestseller: Boolean(item.bestSeller),
-                  new_arrival: Boolean(item.newArrival),
-                  seo_title: item.seoTitle || null,
-                  seo_description: item.seoDescription || null,
-                  metadata: {
-                    ...(item.sareeType ? { sareeType: item.sareeType } : {}),
-                    ...(item.color ? { primaryColourName: item.color } : {}),
-                    ...(item.primaryColourHex ? { primaryColourHex: item.primaryColourHex } : {}),
-                    ...(item.secondaryColourName ? { secondaryColourName: item.secondaryColourName } : {}),
-                    ...(item.secondaryColourHex ? { secondaryColourHex: item.secondaryColourHex } : {}),
-                    ...(Array.isArray(item.tags) ? { tags: item.tags } : {}),
-                  },
-                })
-                .select('id')
-                .single();
-
-              if (insertError || !newProd) throw (insertError || new Error('Failed to insert product record'));
-
-              // Primary image
-              if (item.primaryImageUrl) {
-                const { error: imageInsertError } = await db.from('product_images').insert({
-                  product_id: newProd.id,
-                  image_url: item.primaryImageUrl,
-                  alt_text: item.name.trim(),
-                  is_primary: true,
-                  sort_order: 1,
-                });
-                if (imageInsertError) throw imageInsertError;
-              }
-
-              if (Array.isArray(item.additionalImageUrls)) {
-                for (let imageIndex = 0; imageIndex < item.additionalImageUrls.length; imageIndex++) {
-                  const imageUrl = String(item.additionalImageUrls[imageIndex] || '').trim();
-                  if (!/^https?:\/\//i.test(imageUrl)) continue;
-                  await db.from('product_images').insert({ product_id: newProd.id, image_url: imageUrl, alt_text: item.imageAltText || item.name.trim(), is_primary: false, sort_order: imageIndex + 2 });
-                }
-              }
-
-              // Variant
-              const { error: variantInsertError } = await db.from('product_variants').insert({
-                product_id: newProd.id,
-                sku: cleanSku,
-                variant_name: 'Standard Free Size',
-                stock_quantity: stockQuantity,
-                color: item.color || null,
-                is_active: true,
-              });
-              if (variantInsertError) throw variantInsertError;
-
-              importedCount++;
-            }
-          } catch (rowErr: any) {
-            failedCount++;
-            errors.push({
-              row: rowNumber,
-              sku: item.sku,
-              error: rowErr?.message || 'Unknown row processing error',
-            });
-          }
-        }
-
-        res.json({
-          success: true,
-          total: products.length,
-          imported: importedCount,
-          updated: updatedCount,
-          failed: failedCount,
-          errors,
-        });
-      } catch (err: any) {
-        res.status(500).json({ success: false, error: err.message || 'Import processing failed.' });
-      }
-    }
-  );
 
   // -------------------------------------------------------------------
   // 6. Frontend / Vite Middleware Mount

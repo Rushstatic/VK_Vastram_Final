@@ -1,4 +1,5 @@
 import React from 'react';
+import { GoldRule } from './GoldRule';
 
 interface SectionHeadingProps {
   kicker?: string;
@@ -34,6 +35,7 @@ export const SectionHeading: React.FC<SectionHeadingProps> = ({
         <h2 className="text-2xl sm:text-3xl lg:text-4xl font-serif text-[#1C1917] tracking-tight font-normal leading-tight text-balance">
           {title}
         </h2>
+        <GoldRule className={`mt-3 ${isCenter ? 'mx-auto' : ''}`} />
         {subtitle && (
           <p className="mt-2.5 text-sm sm:text-base text-[#57534E] font-normal leading-relaxed text-balance">
             {subtitle}

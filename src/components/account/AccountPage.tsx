@@ -343,7 +343,7 @@ export const AccountPage: React.FC<AccountPageProps> = ({
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-[#1C1917]/10 pb-6 mb-8">
           <div>
             <span className="text-[10px] uppercase font-semibold tracking-[0.2em] text-[#967029]">
-              Patron Account
+              VKV Account
             </span>
             <h1 className="font-serif text-3xl text-[#1C1917] font-normal mt-1">
               Namaste, {profile?.fullName || userEmail.split('@')[0]}

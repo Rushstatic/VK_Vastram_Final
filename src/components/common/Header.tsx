@@ -39,6 +39,9 @@ export const Header: React.FC<HeaderProps> = ({
   const { settings } = useSiteSettings();
   const sareeTypes = useSareeTypes();
   const storeName = settings?.storeName || 'VK VASTRAM';
+  const supportEmail = settings?.supportEmail || 'care@vkvastram.com';
+  const whatsappDisplay = (settings?.whatsappNumber || settings?.supportPhone || '').trim();
+  const whatsappDigits = whatsappDisplay.replace(/\D/g, '');
 
   // Smooth close helper that triggers exit animation before unmounting
   const handleCloseMenu = () => {
@@ -631,7 +634,7 @@ export const Header: React.FC<HeaderProps> = ({
                     >
                       <div className="flex items-center gap-2.5">
                         <User className="w-4 h-4 text-[#78716C] group-hover:text-[#967029] group-hover:scale-110 transition-all duration-200" />
-                        <span className="group-hover:translate-x-0.5 transition-transform duration-200">{isCustomerLoggedIn ? 'My Patron Account' : 'Sign In / Register'}</span>
+                        <span className="group-hover:translate-x-0.5 transition-transform duration-200">{isCustomerLoggedIn ? 'My VKV Account' : 'Sign In / Register'}</span>
                       </div>
                       {isCustomerLoggedIn && (
                         <span className="w-2 h-2 rounded-full bg-[#B88E3E]" />
@@ -649,20 +652,24 @@ export const Header: React.FC<HeaderProps> = ({
 
                 <div className="space-y-2 text-xs text-[#57534E]">
                   <a
-                    href="mailto:care@vkvastram.com"
+                    href={`mailto:${supportEmail}`}
                     className="flex items-center gap-2 hover:text-[#1C1917] transition-colors"
                   >
                     <Mail className="w-3.5 h-3.5 text-[#967029] shrink-0" />
-                    <span>care@vkvastram.com</span>
+                    <span>{supportEmail}</span>
                   </a>
 
-                  <a
-                    href="tel:+919876543210"
-                    className="flex items-center gap-2 hover:text-[#1C1917] transition-colors"
-                  >
-                    <Phone className="w-3.5 h-3.5 text-[#967029] shrink-0" />
-                    <span>WhatsApp / Phone: +91 98765 43210</span>
-                  </a>
+                  {whatsappDigits && (
+                    <a
+                      href={`https://wa.me/${whatsappDigits}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex items-center gap-2 hover:text-[#1C1917] transition-colors"
+                    >
+                      <Phone className="w-3.5 h-3.5 text-[#967029] shrink-0" />
+                      <span>WhatsApp: {whatsappDisplay}</span>
+                    </a>
+                  )}
 
                   <div className="flex items-center gap-2 text-[#78716C]">
                     <Clock className="w-3.5 h-3.5 text-[#967029] shrink-0" />

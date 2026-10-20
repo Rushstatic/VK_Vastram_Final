@@ -49,6 +49,7 @@ import { AdminSareeTypes } from './components/admin/AdminSareeTypes';
 import { Container } from './components/ui/Container';
 import { SectionHeading } from './components/ui/SectionHeading';
 import { ScrollReveal } from './components/ui/ScrollReveal';
+import { ScrollProgress } from './components/ui/ScrollProgress';
 import { Button } from './components/ui/Button';
 import { BagWaveTransition } from './components/ui/BagWaveTransition';
 import { ScrollTrigger } from './lib/gsap';
@@ -833,6 +834,7 @@ export default function App() {
   // ==========================================
   return (
     <div className="min-h-screen flex flex-col bg-[#FAF8F5] text-[#1C1917] selection:bg-[#B88E3E]/20">
+      <ScrollProgress />
       {/* 1. Slim Announcement Bar */}
       <AnnouncementBar />
 

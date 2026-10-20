@@ -566,25 +566,22 @@ async function expireUnpaidOnlineCheckouts(): Promise<void> {
   unpaidCheckoutSweepRunning = true;
   try {
     const cutoff = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+    // This production schema has no checkout_payment_method column. Do not run
+    // a broad cleanup against orders until payment method can be safely determined
+    // from the payments table. In particular, never cancel COD orders by assumption.
     const { data: expired, error } = await db
       .from('orders')
-      .update({
-        payment_status: 'failed',
-        order_status: 'cancelled',
-        reservation_expires_at: null,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('checkout_payment_method', 'online')
+      .select('id,created_at,payment_status,order_status,reservation_expires_at')
       .eq('payment_status', 'pending')
       .in('order_status', ['pending', 'pending_payment'])
-      .lt('created_at', cutoff)
-      .select('id');
+      .not('reservation_expires_at', 'is', None)
+      .lt('reservation_expires_at', cutoff);
     if (error) {
       console.warn('[unpaid-checkout-sweep] unable to expire stale online attempts:', error.message);
       return;
     }
-    for (const order of expired || []) {
-      void dispatchAdminOrderAlert(order.id, 'payment_issue', 'expired_after_5_minutes');
+    if ((expired || []).length) {
+      console.warn(`[unpaid-checkout-sweep] found ${(expired || []).length} stale reservations; no orders were auto-cancelled because payment method is not represented on orders in this schema.`);
     }
   } catch (error) {
     console.warn('[unpaid-checkout-sweep] sweep failed safely');
@@ -2135,9 +2132,10 @@ const orderPayload = {
           if (paymentStatus !== 'all') {
             query = query.eq('payment_status', paymentStatus);
           } else {
-            // Default operational queue: paid online orders plus all COD orders.
-            // Pending/failed online attempts remain auditable via the explicit payment filter.
-            query = query.eq('is_admin_queue_visible', true);
+            // Production schema compatibility: orders does not have is_admin_queue_visible.
+            // Do not add a filter on a non-existent column; fetch orders and let the UI
+            // expose payment/order status filters. This prevents the entire admin query
+            // from failing with Postgres 42703.
           }
 
           if (customerType === 'guest') {

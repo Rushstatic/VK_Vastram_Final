@@ -44,3 +44,9 @@ The source files pass a TypeScript transpile/syntax check in this environment. A
 - Added a server-side one-minute sweep: online checkouts still pending after five minutes become failed/cancelled (not fulfilment orders), their reservation expiry is cleared, and the admin is alerted through the existing Resend notification path. Razorpay `payment.failed` events also trigger an admin alert.
 - Configure `ADMIN_NOTIFICATION_EMAIL`, `RESEND_API_KEY`, and `RESEND_FROM_EMAIL` in the production server environment. The sweep runs in the Node server process; it does not run if the production server is stopped. Apply the SQL migration and deploy the matching server code together.
 - COD orders continue to be accepted and stock is deducted once. Online stock is deducted only after verified capture. A late capture for an expired/cancelled order must still be reconciled through the existing refund-review safeguards.
+
+## Production schema compatibility correction
+
+- Removed the `is_admin_queue_visible` filter from `/api/admin/orders` because the supplied production schema does not contain that column. This prevents Postgres error 42703 from blanking the entire admin order console.
+- The production `orders` table also does not contain `checkout_payment_method`. The five-minute sweep was changed to detect stale reservation candidates only and does not cancel orders or claim stock is released. Do not rely on automated five-minute cancellation until payment method is reliably identified from the `payments` table and a schema-compatible, tested cleanup transaction is deployed.
+- Default admin order results now include all order statuses; use the existing payment/order filters to review pending attempts. This favors visibility over silently hiding orders while production schema compatibility is resolved.

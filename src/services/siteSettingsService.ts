@@ -7,6 +7,8 @@ export interface SiteSettingsData {
   taglineEmojis?: string;
   thankYouNote?: string;
   logoUrl?: string;
+  instagramUrl?: string;
+  facebookUrl?: string;
   supportEmail: string;
   supportPhone: string;
   whatsappNumber: string;
@@ -31,6 +33,8 @@ const DEFAULT_SETTINGS: SiteSettingsData = {
   taglineEmojis: '✨🧵',
   thankYouNote: 'Thank you for patronizing VK VASTRAM',
   logoUrl: '',
+  instagramUrl: '',
+  facebookUrl: '',
   supportEmail: 'care@vkvastram.com',
   supportPhone: '+91 98234 56789',
   whatsappNumber: '+91 98234 56789',
@@ -76,6 +80,8 @@ export const siteSettingsService = {
         taglineEmojis: gen.tagline_emojis || DEFAULT_SETTINGS.taglineEmojis,
         thankYouNote: gen.thank_you_note || DEFAULT_SETTINGS.thankYouNote,
         logoUrl: gen.logo_url || DEFAULT_SETTINGS.logoUrl,
+        instagramUrl: String(gen.instagram_url || '').trim(),
+        facebookUrl: String(gen.facebook_url || '').trim(),
         supportEmail: gen.support_email || DEFAULT_SETTINGS.supportEmail,
         supportPhone: gen.support_phone || DEFAULT_SETTINGS.supportPhone,
         whatsappNumber: gen.whatsapp_number || DEFAULT_SETTINGS.whatsappNumber,

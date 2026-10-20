@@ -417,6 +417,9 @@ export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
             {activeTab === 'care' && (
               <div className="text-xs text-[#57534E] leading-relaxed space-y-2">
                 <p>{product.care}</p>
+                <ul className="list-disc pl-4 space-y-1 text-[11px] text-[#78716C]">
+                  <li>Disclaimer: Actual product colours may vary slightly due to screen settings and photography lighting.</li>
+                </ul>
                 <p className="text-[11px] text-[#967029] font-medium">
                   Tip: Always air your silk sarees in shade twice a year and refold along different lines to avoid zari crease wear.
                 </p>

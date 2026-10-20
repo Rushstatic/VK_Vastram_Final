@@ -939,42 +939,6 @@ export default function App() {
             {isHomepageSectionActive('hero') && <HeroSection onNavigate={handleNavigate} />}
             {isHomepageSectionActive('categories') && <CategoryShowcase categories={categories} onNavigate={handleNavigate} />}
 
-            {/* New Arrivals: sourced from the current active catalog, never from demo fixtures. */}
-            {activeProducts.length > 0 && (
-              <section className="py-9 sm:py-14 lg:py-16 bg-[#F4EFE6]/45 border-y border-[#1C1917]/10">
-                <Container>
-                  <ScrollReveal distance={16} duration={550}>
-                    <SectionHeading
-                      kicker="Just Arrived"
-                      title="New Arrivals"
-                      subtitle="The latest additions to our considered collection."
-                      action={
-                        <Button variant="ghost" size="sm"
-                          onClick={() => handleNavigate({ type: 'collection', category: 'all' })}
-                          rightIcon={<ArrowRight className="w-4 h-4" />}>
-                          Explore All
-                        </Button>
-                      }
-                    />
-                  </ScrollReveal>
-                  <ProductGrid
-                    products={[...activeProducts].sort((a: any, b: any) => {
-                      const dateA = new Date(a.createdAt || a.created_at || 0).getTime();
-                      const dateB = new Date(b.createdAt || b.created_at || 0).getTime();
-                      return (Number.isFinite(dateB) ? dateB : 0) - (Number.isFinite(dateA) ? dateA : 0);
-                    }).slice(0, 4).map((product) => ({ ...product, isNewArrival: true } as any))}
-                    wishlistIds={wishlistIds}
-                    columns={4}
-                    mobileCarousel
-                    onToggleWishlist={handleToggleWishlist}
-                    onSelectProduct={(slug) => handleNavigate({ type: 'product', slug })}
-                    onQuickView={(product) => setQuickViewProduct(product)}
-                    onAddToCart={(product, quantity, color, size, variantId) => handleAddToCart(product, quantity ?? 1, color, size, variantId)}
-                  />
-                </Container>
-              </section>
-            )}
-
             {/* Curated Heritage is editorial, not the full saree catalogue.
                 Products appear here only when the admin marks them Featured. */}
             {featuredSarees.length > 0 && <section className="py-10 sm:py-16 lg:py-20 bg-[#FAF8F5]">

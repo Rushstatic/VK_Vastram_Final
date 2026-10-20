@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Search, Heart, ShoppingBag, Menu, X, User, Plus, Minus, Mail, Phone, Clock, PackageSearch } from 'lucide-react';
+import { Search, Heart, ShoppingBag, Menu, X, User, Plus, Minus, Mail, Phone, Clock, PackageSearch, Instagram, Facebook } from 'lucide-react';
 import { Container } from '../ui/Container';
 import { PageView } from '../../types';
 import { useSiteSettings } from '../../hooks/useSiteSettings';
@@ -396,28 +396,10 @@ export const Header: React.FC<HeaderProps> = ({
 
             {/* Drawer Body with Clean Hierarchical IA */}
             <div className="flex-1 overflow-y-auto px-6 py-6 text-left space-y-6">
-              {/* MENU Section Kicker */}
+              
               <div>
-                <p className="text-[11px] uppercase tracking-[0.25em] font-semibold text-[#78716C] mb-3">
-                  Menu
-                </p>
-
-                {/* Primary Nav List */}
+{/* Primary Nav List */}
                 <div className="space-y-0 divide-y divide-[#1C1917]/10 border-y border-[#1C1917]/10">
-                  {/* 1. New In */}
-                  <div className="py-3.5 transition-transform hover:translate-x-1 duration-200">
-                    <button
-                      type="button"
-                      onClick={() => handleNavClick({ type: 'collection', category: 'sarees' })}
-                      className="w-full flex items-center justify-between text-base font-medium text-[#1C1917] hover:text-[#78281F] transition-colors cursor-pointer group"
-                    >
-                      <span className="group-hover:translate-x-0.5 transition-transform duration-200">New In</span>
-                      <span className="text-[10px] tracking-widest uppercase bg-[#78281F] text-[#FAF8F5] px-2 py-0.5 rounded-xs font-semibold shadow-xs">
-                        Fresh
-                      </span>
-                    </button>
-                  </div>
-
                   {/* 2. Sarees + Accordion */}
                   <div className="py-3.5">
                     <button
@@ -695,6 +677,30 @@ export const Header: React.FC<HeaderProps> = ({
                 </div>
               </div>
             </div>
+
+            {/* Social links */}
+            {(settings?.instagramUrl || settings?.facebookUrl) && (
+            <div className="px-4 pt-4 pb-2 border-t border-[#1C1917]/10 bg-[#FAF8F5] flex items-center justify-center gap-5">
+              {settings?.instagramUrl && <a
+                href={settings.instagramUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                aria-label="Visit our Instagram"
+                className="p-2 text-[#57534E] hover:text-[#78281F] transition-colors"
+              >
+                <Instagram className="w-5 h-5" />
+              </a>}
+              {settings?.facebookUrl && <a
+                href={settings.facebookUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                aria-label="Visit our Facebook"
+                className="p-2 text-[#57534E] hover:text-[#78281F] transition-colors"
+              >
+                <Facebook className="w-5 h-5" />
+              </a>}
+            </div>
+            )}
 
             {/* Bottom Sticky Bag Action */}
             <div className="p-4 border-t border-[#1C1917]/10 bg-[#FAF8F5]">

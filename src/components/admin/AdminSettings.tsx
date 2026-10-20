@@ -12,6 +12,8 @@ interface GeneralSettings {
   tagline_emojis?: string;
   thank_you_note?: string;
   logo_url?: string;
+  instagram_url?: string;
+  facebook_url?: string;
   support_email: string;
   support_phone: string;
   whatsapp_number: string;
@@ -41,6 +43,8 @@ export const AdminSettings: React.FC = () => {
     tagline_emojis: '✨🧵',
     thank_you_note: 'Thank you for patronizing VK VASTRAM',
     logo_url: '',
+    instagram_url: '',
+    facebook_url: '',
     support_email: 'care@vkvastram.com',
     support_phone: '+91 98234 56789',
     whatsapp_number: '+91 98234 56789',
@@ -187,6 +191,8 @@ export const AdminSettings: React.FC = () => {
         taglineEmojis: general.tagline_emojis || '✨🧵',
         thankYouNote: general.thank_you_note || 'Thank you for patronizing VK VASTRAM',
         logoUrl: general.logo_url || '',
+        instagramUrl: (general.instagram_url || '').trim(),
+        facebookUrl: (general.facebook_url || '').trim(),
         supportEmail: general.support_email,
         supportPhone: general.support_phone,
         whatsappNumber: general.whatsapp_number,
@@ -291,6 +297,22 @@ export const AdminSettings: React.FC = () => {
                 onChange={(url) => setGeneral({ ...general, logo_url: url })}
                 folder="logo"
               />
+            </div>
+
+            <div>
+              <label className="block font-semibold text-[#1C1917] mb-1">Instagram Link</label>
+              <input type="url" value={general.instagram_url || ''}
+                onChange={(e) => setGeneral({ ...general, instagram_url: e.target.value })}
+                placeholder="https://www.instagram.com/yourpage"
+                className="w-full bg-[#F4EFE6] border border-[#1C1917]/15 p-2 rounded-xs" />
+            </div>
+
+            <div>
+              <label className="block font-semibold text-[#1C1917] mb-1">Facebook Link</label>
+              <input type="url" value={general.facebook_url || ''}
+                onChange={(e) => setGeneral({ ...general, facebook_url: e.target.value })}
+                placeholder="https://www.facebook.com/yourpage"
+                className="w-full bg-[#F4EFE6] border border-[#1C1917]/15 p-2 rounded-xs" />
             </div>
 
             <div>

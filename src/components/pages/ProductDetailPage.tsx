@@ -807,6 +807,9 @@ export const ProductDetailPage: React.FC<ProductDetailPageProps> = ({
               {activeDetailSection === 'care' && (
                 <div className="text-xs sm:text-sm text-[#57534E] leading-relaxed space-y-3">
                   <p>{product.care || 'Dry clean only. Air out occasionally in shade.'}</p>
+                <ul className="list-disc pl-4 space-y-1 text-[11px] text-[#78716C]">
+                  <li>Disclaimer: Actual product colours may vary slightly due to screen settings and photography lighting.</li>
+                </ul>
                   <div className="p-4 bg-[#F4EFE6] rounded-xs border border-[#1C1917]/10 text-xs text-[#57534E]">
                     <p className="font-semibold text-[#1C1917] mb-1">Preservation Recommendation</p>
                     <p>

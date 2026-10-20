@@ -44,72 +44,6 @@ interface CheckoutPageProps {
   ) => void;
 }
 
-const PENDING_ONLINE_ORDER_SESSION_KEY = 'vk_pending_online_checkout_v1';
-
-type StoredPendingOnlineOrder = {
-  orderId: string;
-  orderNumber: string;
-  guestAccessToken?: string | null;
-  fingerprint: string;
-  savedAt: number;
-};
-
-async function getCheckoutFingerprint(input: {
-  userId?: string;
-  email?: string;
-  phone?: string;
-  shippingAddress: CustomerAddress;
-  items: CartItem[];
-  couponCode?: string;
-}): Promise<string> {
-  const stableValue = JSON.stringify({
-    userId: input.userId || null,
-    email: String(input.email || '').trim().toLowerCase(),
-    phone: String(input.phone || '').replace(/[^+\d]/g, ''),
-    address: {
-      recipientName: input.shippingAddress.recipientName || '',
-      addressLine1: input.shippingAddress.addressLine1 || '',
-      addressLine2: input.shippingAddress.addressLine2 || '',
-      city: input.shippingAddress.city || '',
-      state: input.shippingAddress.state || '',
-      pincode: input.shippingAddress.pincode || (input.shippingAddress as any).postalCode || '',
-    },
-    couponCode: String(input.couponCode || '').trim().toUpperCase(),
-    items: input.items.map((item) => ({
-      variantId: item.variantId || '',
-      productId: item.product.id,
-      quantity: item.quantity,
-      price: item.product.price,
-      includeFallPico: item.includeFallPico === true,
-    })).sort((a, b) => `${a.variantId}:${a.productId}`.localeCompare(`${b.variantId}:${b.productId}`)),
-  });
-  try {
-    if (globalThis.crypto?.subtle) {
-      const digest = await globalThis.crypto.subtle.digest('SHA-256', new TextEncoder().encode(stableValue));
-      return Array.from(new Uint8Array(digest)).map((value) => value.toString(16).padStart(2, '0')).join('');
-    }
-  } catch { /* Fallback is only a local session matching key, never an authorization token. */ }
-  let hash = 2166136261;
-  for (let i = 0; i < stableValue.length; i += 1) hash = Math.imul(hash ^ stableValue.charCodeAt(i), 16777619);
-  return `local-${(hash >>> 0).toString(16)}-${stableValue.length}`;
-}
-
-function readStoredPendingOnlineOrder(): StoredPendingOnlineOrder | null {
-  try {
-    const raw = sessionStorage.getItem(PENDING_ONLINE_ORDER_SESSION_KEY);
-    if (!raw) return null;
-    const value = JSON.parse(raw) as StoredPendingOnlineOrder;
-    return value?.orderId && value?.orderNumber && value?.fingerprint ? value : null;
-  } catch { return null; }
-}
-
-function clearStoredPendingOnlineOrder(orderId?: string): void {
-  try {
-    const existing = readStoredPendingOnlineOrder();
-    if (!orderId || existing?.orderId === orderId) sessionStorage.removeItem(PENDING_ONLINE_ORDER_SESSION_KEY);
-  } catch { /* session storage can be unavailable in hardened browser modes */ }
-}
-
 const INDIAN_STATES = [
   'Andhra Pradesh',
   'Arunachal Pradesh',
@@ -230,7 +164,6 @@ export const CheckoutPage: React.FC<CheckoutPageProps> = ({
   const [activePendingOrder, setActivePendingOrder] = useState<{
     id: string;
     orderNumber: string;
-    fingerprint?: string;
   } | null>(null);
 
   // Initial Fetch & Cart Validation
@@ -385,8 +318,7 @@ export const CheckoutPage: React.FC<CheckoutPageProps> = ({
   const launchRazorpayFlow = async (
     orderId: string,
     orderNumber: string,
-    guestAccessToken?: string,
-    checkoutFingerprint?: string
+    guestAccessToken?: string
   ) => {
     setSubmitting(true);
     setErrorMessage('');
@@ -397,7 +329,18 @@ export const CheckoutPage: React.FC<CheckoutPageProps> = ({
       const rzpOrder = await paymentService.createRazorpayOrder(orderId, guestAccessToken);
 
       if (!rzpOrder.success || !rzpOrder.razorpayOrderId) {
-        setActivePendingOrder({ id: orderId, orderNumber, fingerprint: checkoutFingerprint });
+        // The checkout window ended (hold expired / order cancelled): the pending order can no
+        // longer be paid. Clear it so the customer simply places the order again.
+        if (/expired|cancelled|canceled/i.test(String(rzpOrder.error || ''))) {
+          setActivePendingOrder(null);
+          setInfoMessage('');
+          setErrorMessage(
+            'Your checkout session ended and the items were released because payment was not completed in time. Your bag is unchanged: please place the order again.'
+          );
+          setSubmitting(false);
+          return;
+        }
+        setActivePendingOrder({ id: orderId, orderNumber });
         setErrorMessage(
           rzpOrder.error || 'Unable to initiate payment with Razorpay. Please try again.'
         );
@@ -448,7 +391,6 @@ export const CheckoutPage: React.FC<CheckoutPageProps> = ({
           setVerifyingPayment(false);
 
           if (verification.success && verification.verified) {
-            clearStoredPendingOnlineOrder(orderId);
             onOrderSuccess(orderId, orderNumber, {
               paymentVerified: true,
               paymentMethod: 'online',
@@ -461,18 +403,37 @@ export const CheckoutPage: React.FC<CheckoutPageProps> = ({
             );
           }
         },
-        onDismiss: () => {
+        onDismiss: async () => {
           setSubmitting(false);
-          setInfoMessage(
-            `Payment process was cancelled. Order #${orderNumber} is preserved in pending state. You may retry payment now or later.`
-          );
+          setInfoMessage('Checking your payment...');
+          // The customer closed the payment window. Release the stock hold now (the server first
+          // confirms that no payment was taken) so the item is not blocked for other customers.
+          const result = await paymentService.abandonUnpaidOrder({ orderId, guestAccessToken });
+          if (result.abandoned) {
+            setActivePendingOrder(null);
+            setErrorMessage('');
+            setInfoMessage(
+              'Payment was not completed, so no order was placed and you have not been charged. Your items are released and your bag is unchanged. Place the order again whenever you are ready.'
+            );
+          } else if (result.paid) {
+            setActivePendingOrder(null);
+            setErrorMessage('');
+            setInfoMessage(
+              `We received your payment for order #${orderNumber} and are confirming it. Please do not pay again. You will get a confirmation shortly.`
+            );
+          } else {
+            // Could not release right now (e.g. connectivity). The hold ends automatically in a few minutes.
+            setInfoMessage(
+              'Payment window closed. Your items stay reserved for a few minutes. You can retry payment now, otherwise they are released automatically.'
+            );
+          }
         },
         onError: async (err) => {
           setSubmitting(false);
           console.warn('Razorpay error in checkout:', err);
           // Keep the same internal order for retry; never create a replacement order
           // just because an individual gateway attempt failed.
-          setActivePendingOrder({ id: orderId, orderNumber, fingerprint: checkoutFingerprint });
+          setActivePendingOrder({ id: orderId, orderNumber });
           const recorded = await paymentService.recordPaymentFailure({
             orderId,
             razorpayOrderId: rzpOrder.razorpayOrderId,
@@ -493,7 +454,7 @@ export const CheckoutPage: React.FC<CheckoutPageProps> = ({
       });
 
       if (!opened) {
-        setActivePendingOrder({ id: orderId, orderNumber, fingerprint: checkoutFingerprint });
+        setActivePendingOrder({ id: orderId, orderNumber });
         setErrorMessage('Razorpay checkout could not connect. No payment was attempted and your order is preserved. Check your connection or retry shortly using the same order. If this keeps happening, contact support with this order number.');
         setSubmitting(false);
       }
@@ -526,35 +487,10 @@ export const CheckoutPage: React.FC<CheckoutPageProps> = ({
       return;
     }
 
-    // Reuse the same internal order after a payment retry, including after a checkout
-    // refresh. The fingerprint is only a local session convenience key; server-side
-    // order ownership and Razorpay payment verification remain authoritative.
-    let checkoutFingerprint = '';
-    if (paymentMethod === 'online') {
-      checkoutFingerprint = await getCheckoutFingerprint({
-        userId,
-        email: userId ? userEmail : guestEmail.trim(),
-        phone: userId ? profile?.phone : guestPhone.trim(),
-        shippingAddress,
-        items: validation?.validatedItems || cartItems,
-        couponCode,
-      });
-      const storedPendingOrder = readStoredPendingOnlineOrder();
-      if (storedPendingOrder && storedPendingOrder.fingerprint === checkoutFingerprint) {
-        const token = storedPendingOrder.guestAccessToken || sessionStorage.getItem(`vk_guest_token_${storedPendingOrder.orderId}`) || undefined;
-        setActivePendingOrder({ id: storedPendingOrder.orderId, orderNumber: storedPendingOrder.orderNumber, fingerprint: checkoutFingerprint });
-        await launchRazorpayFlow(storedPendingOrder.orderId, storedPendingOrder.orderNumber, token || undefined, checkoutFingerprint);
-        return;
-      }
-      // When session storage is unavailable, still reuse the in-memory order only if its
-      // cart/address fingerprint matches this exact checkout.
-      if (activePendingOrder && activePendingOrder.fingerprint === checkoutFingerprint) {
-        const token = sessionStorage.getItem(`vk_guest_token_${activePendingOrder.id}`) || undefined;
-        await launchRazorpayFlow(activePendingOrder.id, activePendingOrder.orderNumber, token, checkoutFingerprint);
-        return;
-      }
-      // If this cart/address differs from the saved attempt, do not accidentally reuse it.
-      if (activePendingOrder) setActivePendingOrder(null);
+    // If customer already has an active pending order from a previous attempt, retry against it
+    if (paymentMethod === 'online' && activePendingOrder) {
+      await launchRazorpayFlow(activePendingOrder.id, activePendingOrder.orderNumber);
+      return;
     }
 
     setSubmitting(true);
@@ -590,12 +526,10 @@ export const CheckoutPage: React.FC<CheckoutPageProps> = ({
         sessionStorage.setItem(`vk_guest_token_${createdOrderId}`, guestAccessToken);
       }
 
-      setActivePendingOrder({ id: createdOrderId, orderNumber: createdOrderNumber, fingerprint: checkoutFingerprint || undefined });
+      setActivePendingOrder({ id: createdOrderId, orderNumber: createdOrderNumber });
 
       // 2. Route based on payment method
       if (paymentMethod === 'cod') {
-        clearStoredPendingOnlineOrder();
-        setActivePendingOrder(null);
         setSubmitting(false);
         onOrderSuccess(createdOrderId, createdOrderNumber, {
           paymentVerified: false,
@@ -603,19 +537,8 @@ export const CheckoutPage: React.FC<CheckoutPageProps> = ({
           guestAccessToken,
         });
       } else {
-        // Online orders are provisional until capture. Persist their ID for same-order retry
-        // within this tab; unlike the inventory state, this does not reserve/consume stock.
-        try {
-          sessionStorage.setItem(PENDING_ONLINE_ORDER_SESSION_KEY, JSON.stringify({
-            orderId: createdOrderId,
-            orderNumber: createdOrderNumber,
-            guestAccessToken: guestAccessToken || null,
-            fingerprint: checkoutFingerprint,
-            savedAt: Date.now(),
-          } satisfies StoredPendingOnlineOrder));
-        } catch { /* retry remains available in component state even if storage is blocked */ }
         // Online Payment: Launch Razorpay Server-Side Order & Checkout
-        await launchRazorpayFlow(createdOrderId, createdOrderNumber, guestAccessToken, checkoutFingerprint);
+        await launchRazorpayFlow(createdOrderId, createdOrderNumber, guestAccessToken);
       }
     } catch (err: any) {
       setErrorMessage(err.message || 'An unexpected error occurred during checkout.');
@@ -726,7 +649,7 @@ export const CheckoutPage: React.FC<CheckoutPageProps> = ({
             {activePendingOrder && (
               <button
                 onClick={() =>
-                  launchRazorpayFlow(activePendingOrder.id, activePendingOrder.orderNumber, sessionStorage.getItem(`vk_guest_token_${activePendingOrder.id}`) || undefined, activePendingOrder.fingerprint)
+                  launchRazorpayFlow(activePendingOrder.id, activePendingOrder.orderNumber)
                 }
                 className="px-3 py-1 bg-[#800020] text-white text-[11px] font-medium rounded-xs hover:bg-[#600018] cursor-pointer"
               >

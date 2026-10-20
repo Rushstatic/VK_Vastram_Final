@@ -296,6 +296,46 @@ export const AccountPage: React.FC<AccountPageProps> = ({
     printWindow.document.close();
   };
 
+  // Only orders that really exist are shown as orders: paid online orders and Cash on Delivery.
+  // Online checkouts that were never paid (payment failed, closed, or still waiting) are kept
+  // out of the main list so they do not look like pending orders.
+  const isUnconfirmedOnlineOrder = (o: OrderData): boolean =>
+    o.paymentMethod !== 'cod' &&
+    ['pending', 'failed'].includes(String(o.paymentStatus)) &&
+    ['pending', 'cancelled'].includes(String(o.orderStatus));
+  const confirmedOrders = orders.filter((o) => !isUnconfirmedOnlineOrder(o));
+  const unconfirmedOrders = orders.filter(isUnconfirmedOnlineOrder);
+
+  const unconfirmedOrdersSection = unconfirmedOrders.length > 0 ? (
+    <details className="mt-6 bg-[#FAF8F5] border border-[#1C1917]/10 rounded-xs text-xs">
+      <summary className="cursor-pointer select-none px-4 py-3 text-[#57534E] font-medium">
+        Payment not completed ({unconfirmedOrders.length})
+      </summary>
+      <div className="px-4 pb-4 space-y-2">
+        <p className="text-[11px] text-[#78716C]">
+          These checkouts were not paid, so no order was placed and nothing was charged. If a payment
+          was actually taken, the order moves to your orders automatically or is refunded.
+        </p>
+        {unconfirmedOrders.map((ord) => (
+          <div key={ord.id} className="flex items-center justify-between gap-3 border-t border-[#1C1917]/10 pt-2">
+            <div>
+              <span className="font-mono font-semibold text-[#1C1917]">{ord.orderNumber}</span>
+              <span className="block text-[10px] text-[#78716C]">
+                {new Date(ord.createdAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
+              </span>
+            </div>
+            <div className="text-right">
+              <span className="tabular-nums text-[#1C1917]">₹{Number(ord.totalAmount || 0).toLocaleString('en-IN')}</span>
+              <span className="block text-[10px] text-rose-700">
+                {String(ord.paymentStatus) === 'failed' || String(ord.orderStatus) === 'cancelled' ? 'Payment failed' : 'Payment not completed'}
+              </span>
+            </div>
+          </div>
+        ))}
+      </div>
+    </details>
+  ) : null;
+
   return (
     <div className="py-12 bg-[#FAF8F5] min-h-[85vh]">
       <Container>
@@ -378,7 +418,7 @@ export const AccountPage: React.FC<AccountPageProps> = ({
                 <span>Orders & Shipments</span>
               </div>
               <span className="text-[11px] tabular-nums font-mono opacity-80">
-                {orders.length}
+                {confirmedOrders.length}
               </span>
             </button>
 
@@ -672,7 +712,8 @@ export const AccountPage: React.FC<AccountPageProps> = ({
                   <div className="py-12 text-center text-xs text-[#78716C]">
                     Loading your order history...
                   </div>
-                ) : orders.length === 0 ? (
+                ) : confirmedOrders.length === 0 ? (
+                  <>
                   <div className="bg-[#FAF8F5] border border-dashed border-[#1C1917]/15 rounded-xs p-8 text-center space-y-4">
                     <Package className="w-10 h-10 text-[#A8A29E] mx-auto" />
                     <h3 className="font-serif text-base text-[#1C1917] font-normal">
@@ -690,9 +731,11 @@ export const AccountPage: React.FC<AccountPageProps> = ({
                       Explore Catalog
                     </Button>
                   </div>
+                  {unconfirmedOrdersSection}
+                  </>
                 ) : (
                   <div className="space-y-4">
-                    {orders.map((ord) => (
+                    {confirmedOrders.map((ord) => (
                       <div
                         key={ord.id}
                         className="bg-[#FAF8F5] border border-[#1C1917]/10 rounded-xs p-5 shadow-2xs space-y-4"
@@ -869,6 +912,7 @@ export const AccountPage: React.FC<AccountPageProps> = ({
                         </div>
                       </div>
                     ))}
+                    {unconfirmedOrdersSection}
                   </div>
                 )}
               </div>

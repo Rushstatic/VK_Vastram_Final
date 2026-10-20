@@ -84,6 +84,11 @@ export const AdminOrders: React.FC = () => {
   const [paymentStatus, setPaymentStatus] = useState('all');
   const [customerType, setCustomerType] = useState('all');
   const [dateRange, setDateRange] = useState('all');
+  // Which orders to show. Only real orders (paid online or Cash on Delivery) appear by default;
+  // unpaid checkouts and failed / abandoned payments live in their own tabs.
+  type OrderView = 'confirmed' | 'awaiting' | 'failed' | 'all';
+  const [orderView, setOrderView] = useState<OrderView>('confirmed');
+  const [viewCounts, setViewCounts] = useState<{ confirmed: number; awaiting: number; failed: number }>({ confirmed: 0, awaiting: 0, failed: 0 });
 
   // Selected order details state
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
@@ -112,7 +117,7 @@ export const AdminOrders: React.FC = () => {
     try {
       // Export the full currently filtered result set, not just the visible 10-row page.
       const pageLimit = 100;
-      const filters = { search: search.trim(), orderStatus, paymentStatus, customerType, dateRange };
+      const filters = { search: search.trim(), orderStatus, paymentStatus, customerType, dateRange, view: orderView };
       const firstPage = await adminService.getOrders({ ...filters, page: 1, limit: pageLimit });
       if (!firstPage.success) throw new Error(firstPage.error || 'Could not load orders for export.');
       const orderSummaries: any[] = [...(firstPage.orders || [])];
@@ -323,12 +328,14 @@ export const AdminOrders: React.FC = () => {
         paymentStatus,
         customerType,
         dateRange,
+        view: orderView,
         page,
         limit
       });
       if (res.success) {
         setOrders(res.orders || []);
         setTotalCount(res.totalCount || 0);
+        if (res.viewCounts) setViewCounts(res.viewCounts);
       } else {
         console.error('Failed to retrieve orders list:', res.error);
       }
@@ -365,7 +372,7 @@ export const AdminOrders: React.FC = () => {
   useEffect(() => {
     setPage(1);
     fetchOrdersList();
-  }, [search, orderStatus, paymentStatus, customerType, dateRange]);
+  }, [search, orderStatus, paymentStatus, customerType, dateRange, orderView]);
 
   // Handle page change
   useEffect(() => {
@@ -594,15 +601,48 @@ export const AdminOrders: React.FC = () => {
         </div>
       </div>
 
+      {/* ORDER VIEW TABS: real orders first; unpaid / failed checkouts are kept separate */}
+      <div className="space-y-2">
+        <div className="flex flex-wrap gap-2" role="tablist" aria-label="Order views">
+          {([
+            { id: 'confirmed', label: 'Confirmed orders', count: viewCounts.confirmed },
+            { id: 'awaiting', label: 'Awaiting payment', count: viewCounts.awaiting },
+            { id: 'failed', label: 'Failed / abandoned payments', count: viewCounts.failed },
+            { id: 'all', label: 'All', count: null as number | null },
+          ] as Array<{ id: OrderView; label: string; count: number | null }>).map((tab) => (
+            <button
+              key={tab.id}
+              type="button"
+              role="tab"
+              aria-selected={orderView === tab.id}
+              onClick={() => setOrderView(tab.id)}
+              className={`px-3.5 py-2 text-xs rounded-xs border transition-colors cursor-pointer ${
+                orderView === tab.id
+                  ? 'bg-[#1C1917] text-[#FAF8F5] border-[#1C1917]'
+                  : 'bg-[#FAF8F5] text-[#57534E] border-[#1C1917]/15 hover:border-[#B88E3E]'
+              }`}
+            >
+              {tab.label}{tab.count !== null ? ` (${tab.count})` : ''}
+            </button>
+          ))}
+        </div>
+        {orderView === 'confirmed' && (
+          <p className="text-[11px] text-[#78716C]">Paid online orders and Cash on Delivery orders. Stock is deducted for these orders.</p>
+        )}
+        {orderView === 'awaiting' && (
+          <p className="text-[11px] text-[#78716C]">Customers who are on the payment step right now. The item is held for a short time, then released automatically if they do not pay.</p>
+        )}
+        {orderView === 'failed' && (
+          <p className="text-[11px] text-[#78716C]">Payment failed, was cancelled, or the customer left. Stock has already been released. These are not orders to ship.</p>
+        )}
+      </div>
+
       {/* SEARCH, FILTER & QUERY WORKSPACE */}
       <div className="bg-[#FAF8F5] p-5 rounded-xs border border-[#1C1917]/10 space-y-4 shadow-2xs">
         <div className="flex items-center gap-2 text-xs text-[#967029] font-medium uppercase tracking-[0.1em]">
           <Sparkles className="w-3.5 h-3.5" />
           <span>Search & Refine Loom Orders</span>
         </div>
-        <p className="text-[11px] leading-relaxed text-[#57534E]">
-          Default view shows paid online orders and all COD orders. To review an unfinished online checkout, select Pending or Failed under Payment Status; those attempts remain available for audit and same-order retry.
-        </p>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-12 gap-3.5">
           {/* Text Search */}

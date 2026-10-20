@@ -235,8 +235,11 @@ export const adminService = {
           .select('*, category:categories(name, slug), images:product_images(image_url, is_primary)')
           .order('updated_at', { ascending: false })
           .limit(5),
-        (supabase as any).from('orders').select('*', { count: 'exact', head: true }).gte('created_at', todayStart.toISOString()),
-        (supabase as any).from('orders').select('*', { count: 'exact', head: true }).eq('payment_status', 'pending'),
+        // Real orders only: paid online or COD. Unpaid / failed checkouts are not counted as orders.
+        (supabase as any).from('orders').select('*', { count: 'exact', head: true }).gte('created_at', todayStart.toISOString())
+          .neq('payment_status', 'failed').or('order_status.neq.pending,payment_status.neq.pending'),
+        // COD orders awaiting cash collection (confirmed orders whose payment is still pending).
+        (supabase as any).from('orders').select('*', { count: 'exact', head: true }).eq('payment_status', 'pending').neq('order_status', 'pending').neq('order_status', 'cancelled'),
         (supabase as any).from('orders').select('*', { count: 'exact', head: true }).in('order_status', ['confirmed']),
         (supabase as any).from('orders').select('*', { count: 'exact', head: true }).in('order_status', ['packed', 'processing']),
         (supabase as any).from('orders').select('*', { count: 'exact', head: true }).eq('order_status', 'out_for_delivery'),
@@ -1490,9 +1493,11 @@ export const adminService = {
     paymentStatus?: string;
     customerType?: string;
     dateRange?: string;
+    /** 'confirmed' (default) | 'awaiting' | 'failed' | 'all' */
+    view?: string;
     page?: number;
     limit?: number;
-  }): Promise<{ success: boolean; orders: any[]; totalCount: number; page: number; limit: number; error?: string }> {
+  }): Promise<{ success: boolean; orders: any[]; totalCount: number; page: number; limit: number; error?: string; viewCounts?: { confirmed: number; awaiting: number; failed: number } }> {
     try {
       let token = '';
       if (isSupabaseConfigured()) {
@@ -1506,6 +1511,7 @@ export const adminService = {
       if (params?.paymentStatus) queryParams.set('paymentStatus', params.paymentStatus);
       if (params?.customerType) queryParams.set('customerType', params.customerType);
       if (params?.dateRange) queryParams.set('dateRange', params.dateRange);
+      if (params?.view) queryParams.set('view', params.view);
       if (params?.page) queryParams.set('page', String(params.page));
       if (params?.limit) queryParams.set('limit', String(params.limit));
 

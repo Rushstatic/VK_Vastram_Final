@@ -93,3 +93,50 @@ src/components/pages/ProductDetailPage.tsx
 ## Not covered
 Collection-page filters are component state, so after Back the scroll position returns but any chosen filters reset.
 Tested: syntax/scope check and a simulated browser-history test of the Back-closes-viewer logic. Not tested on a device.
+
+---
+# Unpaid / abandoned payments: stock, order status, visibility (Oct 19)
+
+## What was wrong
+A customer who started online payment and then skipped it left an order "pending" and the saree reserved, so a
+1-piece saree showed "Sold out". Causes found:
+1. `reconcile_expired_reservations()` existed but NOTHING ever called it (no scheduler, no server code).
+2. It ignored orders whose payment_status had become 'failed' (the payment-failure route sets that), so they never expired.
+3. Closing the Razorpay popup deliberately kept the order "preserved in pending state" with the stock held.
+4. The admin alert and customer email were sent when the order was CREATED, before any payment.
+5. Admin Orders list, dashboard counters and the customer's "My orders" treated unpaid checkouts as real orders.
+
+## Rules now (standard e-commerce behaviour)
+- Online payment: the item is only RESERVED for a short hold (default 10 min, env `CHECKOUT_HOLD_MINUTES`, 5-30).
+  Stock is deducted ONLY when the payment is confirmed (unchanged).
+- Customer closes the payment popup: the hold is released immediately and the unpaid order is cancelled with
+  payment_status = failed. The bag is untouched; the customer just places the order again.
+- Customer just leaves / closes the tab: the server sweeper (every 60 s, also before each new order) and, if available,
+  pg_cron (every minute) release the hold after the window (+3 min grace for a delayed payment notification).
+- Cash on Delivery: confirmed immediately, stock deducted immediately, never expired.
+- A payment that was captured/authorized is never released (database check + Razorpay check on popup close).
+  If money arrives after a hold was released, the existing refund-review alert flow handles it.
+- Admin alert + customer email: sent when an order is confirmed (COD at creation, online after payment capture).
+- Admin Orders: tabs  Confirmed (default) | Awaiting payment | Failed / abandoned payments | All, with counts.
+- Dashboard "Orders today" counts confirmed orders only; "Pending Pay" card is now "COD To Collect".
+- Customer account: orders list shows confirmed orders; unpaid checkouts appear in a small collapsed
+  "Payment not completed" section (no charge was made).
+
+## Files
+- supabase/migrations/20261019000002_unpaid_order_expiry_and_visibility.sql   (RUN THIS)
+- server.ts: hold minutes, sweeper, /api/payment/abandon, confirmed-only notifications, admin orders `view` filter + counts
+- src/services/paymentService.ts, src/components/checkout/CheckoutPage.tsx (release on popup close; expired retry message)
+- src/services/adminService.ts, src/components/admin/AdminOrders.tsx, AdminDashboard.tsx
+- src/components/account/AccountPage.tsx
+
+## To deploy
+1. Back up the database, then run the new migration. It also releases stock for orders that are ALREADY stuck
+   (this frees the saree that currently shows "Sold out").
+2. Restart the server. On start it logs the hold length and runs the sweeper; a warning appears if the migration is missing.
+3. Check: select order_number, order_status, payment_status, reservation_expires_at from orders where order_status='pending';
+          select sku, stock_quantity, reserved_quantity from product_variants where reserved_quantity > 0;
+
+## Not run
+The SQL was reviewed by reading only (no PostgreSQL in the build sandbox) and the TypeScript was syntax/scope checked only.
+Test in Razorpay TEST mode before going live: (a) pay, (b) close the popup, (c) leave the tab and wait 13 minutes,
+(d) COD order, (e) two browsers racing for a 1-piece saree.

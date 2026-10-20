@@ -384,13 +384,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigateSubVie
           {/* Pending Payment */}
           <div className="bg-[#FAF8F5] p-4 rounded-xs border border-[#1C1917]/10 shadow-2xs space-y-1.5">
             <div className="flex items-center justify-between text-[#78716C]">
-              <span className="text-[10px] uppercase tracking-wider font-semibold">Pending Pay</span>
+              <span className="text-[10px] uppercase tracking-wider font-semibold">COD To Collect</span>
               <div className="w-2 h-2 rounded-full bg-amber-500" />
             </div>
             <p className="font-serif text-2xl font-semibold text-[#1C1917] tabular-nums">
               {loading ? '...' : stats?.pendingPaymentCount || 0}
             </p>
-            <span className="text-[10px] text-[#78716C] block">Awaiting checkout pay</span>
+            <span className="text-[10px] text-[#78716C] block">Cash on delivery, not yet paid</span>
           </div>
         </div>
       </div>

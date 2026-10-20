@@ -32,6 +32,10 @@ const useSupabase = Boolean(
 
 const RAZORPAY_KEY_ID = process.env.RAZORPAY_KEY_ID || process.env.VITE_RAZORPAY_KEY_ID || '';
 const RAZORPAY_KEY_SECRET = process.env.RAZORPAY_KEY_SECRET || '';
+// Online checkout stock hold. While a customer is paying, the item is only RESERVED (stock is
+// not deducted). If payment is not completed within this window the hold is released and the
+// unpaid order is cancelled automatically. COD orders are confirmed immediately and are not affected.
+const CHECKOUT_HOLD_MINUTES = Math.min(30, Math.max(5, Number(process.env.CHECKOUT_HOLD_MINUTES) || 10));
 const RAZORPAY_WEBHOOK_SECRET = process.env.RAZORPAY_WEBHOOK_SECRET || '';
 
 // In production, privileged server-side database operations must never fall back to
@@ -50,13 +54,11 @@ const supabaseAdmin: SupabaseClient | null =
 const db = useSupabase ? supabaseAdmin : null;
 
 /** Admin-only best-effort push + email. Delivery failures never roll back an order commit. */
-async function dispatchAdminOrderAlert(orderId: string, eventType: 'new_order' | 'status_update' | 'refund_required' | 'payment_issue', status?: string): Promise<boolean> {
-  if (!db) return false;
-  let pushDelivered = false;
-  let emailDelivered = false;
+async function dispatchAdminOrderAlert(orderId: string, eventType: 'new_order' | 'status_update' | 'refund_required', status?: string): Promise<void> {
+  if (!db) return;
   try {
     const { data: order, error } = await db.from('orders').select('id,order_number,total_amount,currency,payment_status,order_status,customer_name,customer_email').eq('id', orderId).maybeSingle();
-    if (error || !order) return false;
+    if (error || !order) return;
     const orderNumber = String(order.order_number || order.id);
     const isNew = eventType === 'new_order';
     let paymentMethod = 'ORDER';
@@ -65,47 +67,42 @@ async function dispatchAdminOrderAlert(orderId: string, eventType: 'new_order' |
       paymentMethod = String(payment?.method || payment?.provider || 'ORDER').toUpperCase();
     }
     const isRefundAlert = eventType === 'refund_required';
-    const isPaymentIssue = eventType === 'payment_issue';
-    const title = isRefundAlert ? 'ACTION REQUIRED: VK VASTRAM refund review' : (isPaymentIssue ? 'VK VASTRAM unpaid checkout' : (isNew ? 'New VK VASTRAM order' : 'VK VASTRAM order updated'));
-    const body = isPaymentIssue ? `${orderNumber} · online payment not completed within 5 minutes; no stock was deducted` : (isNew ? `${orderNumber} · ₹${Number(order.total_amount || 0).toLocaleString('en-IN')} · ${paymentMethod}` : `${orderNumber} · ${String(status || order.order_status || 'status updated').replace(/_/g, ' ')}`);
+    const title = isRefundAlert ? 'ACTION REQUIRED: VK VASTRAM refund review' : (isNew ? 'New VK VASTRAM order' : 'VK VASTRAM order updated');
+    const body = isNew ? `${orderNumber} · ₹${Number(order.total_amount || 0).toLocaleString('en-IN')} · ${paymentMethod}` : `${orderNumber} · ${String(status || order.order_status || 'status updated').replace(/_/g, ' ')}`;
     const payload = JSON.stringify({ title, body, url: '/admin', tag: `vkv-${order.id}-${eventType}-${status || ''}` });
     if (process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY) {
       try {
         webpush.setVapidDetails(process.env.VAPID_SUBJECT || 'mailto:support@vkvastram.in', process.env.VAPID_PUBLIC_KEY, process.env.VAPID_PRIVATE_KEY);
         const { data: subs } = await db.from('admin_push_subscriptions').select('id,endpoint,p256dh,auth').eq('enabled', true).limit(100);
         for (const sub of subs || []) {
-          try { await webpush.sendNotification({ endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } }, payload); pushDelivered = true; }
+          try { await webpush.sendNotification({ endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } }, payload); }
           catch (e: any) { if (e?.statusCode === 404 || e?.statusCode === 410) await db.from('admin_push_subscriptions').update({ enabled: false, updated_at: new Date().toISOString() }).eq('id', sub.id); }
         }
       } catch { console.warn('[admin-notifications] push delivery attempt failed'); }
     }
-    const to = (eventType === 'new_order' || isRefundAlert || isPaymentIssue) ? String(process.env.ADMIN_NOTIFICATION_EMAIL || '').trim() : '';
+    const to = (eventType === 'new_order' || isRefundAlert) ? String(process.env.ADMIN_NOTIFICATION_EMAIL || '').trim() : '';
     if (to && process.env.RESEND_API_KEY && process.env.RESEND_FROM_EMAIL) {
       const safe = (v: unknown) => String(v ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c] || c));
       try {
         const response = await fetch('https://api.resend.com/emails', { method: 'POST', headers: { Authorization: `Bearer ${process.env.RESEND_API_KEY}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ from: process.env.RESEND_FROM_EMAIL, to: [to], subject: `${title}: ${orderNumber}`, html: `<div style="font-family:Arial,sans-serif"><h2>${safe(title)}</h2><p>${safe(body)}</p><p>Customer: ${safe(order.customer_name || 'Customer')}</p><p>Payment status: ${safe(order.payment_status)}</p><p><a href="${String(process.env.SITE_URL || process.env.APP_URL || 'http://localhost:3000').replace(/\/$/, '')}/admin">Open VK VASTRAM Admin</a></p></div>` }) });
         if (!response.ok) { const detail = await response.text().catch(() => ''); console.error(`[admin-notifications] Resend rejected email (${response.status}): ${detail.slice(0, 500)}`); }
-        else { emailDelivered = true; console.info(`[admin-notifications] email accepted by Resend for order ${orderNumber}`); }
+        else { console.info(`[admin-notifications] email accepted by Resend for order ${orderNumber}`); }
       } catch (error) { console.error('[admin-notifications] email delivery request failed', error instanceof Error ? error.message : 'unknown error'); }
     }
-    // When Resend is configured for this event, email acceptance is the important
-    // delivery signal; a push alone must not suppress retries after email failure.
-    const adminEmailExpected = Boolean((eventType === 'new_order' || isRefundAlert || isPaymentIssue) && process.env.ADMIN_NOTIFICATION_EMAIL && process.env.RESEND_API_KEY && process.env.RESEND_FROM_EMAIL);
-    return adminEmailExpected ? emailDelivered : pushDelivered;
-  } catch { console.warn('[admin-notifications] alert dispatch failed; order state remains committed'); return false; }
+  } catch { console.warn('[admin-notifications] alert dispatch failed; order state remains committed'); }
 }
 
 
 
 
 /** Customer order email: order summary/invoice details plus a direct link to the tracking page. */
-async function dispatchCustomerOrderEmail(orderId: string): Promise<boolean> {
-  if (!db || !process.env.RESEND_API_KEY || !process.env.RESEND_FROM_EMAIL) return false;
+async function dispatchCustomerOrderEmail(orderId: string): Promise<void> {
+  if (!db || !process.env.RESEND_API_KEY || !process.env.RESEND_FROM_EMAIL) return;
   const baseUrl = String(process.env.SITE_URL || process.env.APP_URL || '').replace(/\/$/, '');
-  if (!baseUrl) return false;
+  if (!baseUrl) return;
   try {
     const { data: order, error } = await db.from('orders').select('id,order_number,customer_name,customer_email,total_amount,subtotal,discount_amount,shipping_amount,tax_amount,currency,payment_status,order_status,created_at,items:order_items(product_name_snapshot,quantity,price_snapshot,total_amount)').eq('id',orderId).maybeSingle();
-    if (error || !order?.customer_email) return false;
+    if (error || !order?.customer_email) return;
     const esc = (v: unknown) => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c] || c));
     const orderNo = String(order.order_number || order.id);
     const trackingUrl = `${baseUrl}/track-order?orderId=${encodeURIComponent(orderNo)}`;
@@ -113,55 +110,70 @@ async function dispatchCustomerOrderEmail(orderId: string): Promise<boolean> {
     const amount = (label:string,value:unknown) => `<tr><td style="padding:7px 10px;color:#57534e">${label}</td><td style="padding:7px 10px;text-align:right">₹${Number(value||0).toLocaleString('en-IN')}</td></tr>`;
     const html = `<div style="margin:0 auto;max-width:640px;background:#faf8f5;padding:28px;font-family:Arial,sans-serif;color:#1c1917"><div style="text-align:center;padding:22px 12px"><p style="letter-spacing:4px;color:#b88e3e;font-size:11px">VK VASTRAM</p><h1 style="font-family:Georgia,serif;font-weight:normal">Thank you for your order.</h1><p style="color:#57534e">Your order ${esc(orderNo)} has been received.</p></div><div style="background:#fff;padding:22px;border:1px solid #e7dfd2"><h2 style="font-family:Georgia,serif;font-weight:normal">Order summary / invoice details</h2><p>Order date: ${esc(new Date(order.created_at).toLocaleDateString('en-IN'))}<br>Payment status: ${esc(order.payment_status)}<br>Order status: ${esc(order.order_status)}</p><table style="width:100%;border-collapse:collapse">${items}${amount('Subtotal',order.subtotal)}${amount('Discount',order.discount_amount)}${amount('Shipping',order.shipping_amount)}${amount('Tax',order.tax_amount)}${amount('Total',order.total_amount)}</table><p style="font-size:12px;color:#78716c">This email contains your order and tax summary; your official tax invoice remains available through the order records/invoice workflow.</p><p style="text-align:center;margin:28px 0"><a href="${trackingUrl}" style="display:inline-block;background:#1c1917;color:#fff;text-decoration:none;padding:14px 24px">TRACK YOUR ORDER</a></p><p style="font-size:12px;color:#78716c">For privacy, the tracking page asks for your order ID and checkout email.</p></div><p style="text-align:center;font-size:12px;color:#78716c;padding:18px">With care, VK VASTRAM</p></div>`;
     const response = await fetch('https://api.resend.com/emails',{method:'POST',headers:{Authorization:`Bearer ${process.env.RESEND_API_KEY}`,'Content-Type':'application/json'},body:JSON.stringify({from:process.env.RESEND_FROM_EMAIL,to:[order.customer_email],subject:`Order received · ${orderNo} | VK VASTRAM`,html})});
-    if(!response.ok) { console.error(`[customer-order-email] Resend rejected email (${response.status}) for order ${orderNo}`); return false; }
-    console.info(`[customer-order-email] accepted for order ${orderNo}`);
-    return true;
-  } catch (e) { console.warn('[customer-order-email] dispatch failed; order remains committed'); return false; }
+    if(!response.ok) console.error(`[customer-order-email] Resend rejected email (${response.status}) for order ${orderNo}`); else console.info(`[customer-order-email] accepted for order ${orderNo}`);
+  } catch (e) { console.warn('[customer-order-email] dispatch failed; order remains committed'); }
 }
 
 /**
- * Durable idempotency for the two placement emails. Verification and Razorpay webhooks can
- * both confirm the same order; only one path should send each placement notification. Failed
- * sends can be retried on a later duplicate event without duplicating already accepted emails.
+ * Admin alert + customer email are sent only when an order is CONFIRMED:
+ * Cash on Delivery at creation, online orders once the payment is captured.
+ * An online order that is merely waiting for payment never notifies anyone.
  */
-async function claimOrderNotification(orderId: string, eventType: 'admin_new_order' | 'customer_order_confirmation'): Promise<boolean> {
-  if (!db) return false;
-  const now = new Date().toISOString();
-  const { error } = await db.from('order_notification_events').insert({
-    order_id: orderId, event_type: eventType, status: 'processing', attempt_count: 1, updated_at: now
-  });
-  if (!error) return true;
-  if (error.code !== '23505') {
-    console.warn('[order-notification] unable to claim notification event:', error.code || 'DB_ERROR');
+const confirmedOrderNotified = new Set<string>();
+async function notifyOrderConfirmed(orderId: string): Promise<void> {
+  if (!orderId || confirmedOrderNotified.has(orderId)) return;
+  confirmedOrderNotified.add(orderId);
+  if (confirmedOrderNotified.size > 5000) {
+    const oldest = confirmedOrderNotified.values().next().value;
+    if (oldest) confirmedOrderNotified.delete(oldest);
+  }
+  void dispatchAdminOrderAlert(orderId, 'new_order');
+  void dispatchCustomerOrderEmail(orderId);
+}
+
+/** True when the order's payment was already captured (so a repeat verify/webhook must not notify again). */
+async function isOrderPaymentCaptured(orderId: string): Promise<boolean> {
+  if (!db || !orderId) return false;
+  try {
+    const { data } = await db.from('orders').select('payment_status').eq('id', orderId).maybeSingle();
+    return ['captured', 'paid'].includes(String(data?.payment_status || '').toLowerCase());
+  } catch {
     return false;
   }
-  const { data, error: retryError } = await db.from('order_notification_events')
-    .update({ status: 'processing', last_error: null, updated_at: now })
-    .eq('order_id', orderId).eq('event_type', eventType).eq('status', 'failed')
-    .select('order_id').maybeSingle();
-  if (retryError) { console.warn('[order-notification] unable to reclaim failed notification:', retryError.code || 'DB_ERROR'); return false; }
-  return Boolean(data);
 }
 
-async function recordOrderNotificationResult(orderId: string, eventType: 'admin_new_order' | 'customer_order_confirmation', delivered: boolean): Promise<void> {
-  if (!db) return;
-  const { error } = await db.from('order_notification_events').update({
-    status: delivered ? 'sent' : 'failed',
-    last_error: delivered ? null : 'Notification service did not accept the message; retry on a later event.',
-    updated_at: new Date().toISOString()
-  }).eq('order_id', orderId).eq('event_type', eventType).eq('status', 'processing');
-  if (error) console.warn('[order-notification] could not record delivery result:', error.code || 'DB_ERROR');
-}
-
-async function dispatchOrderPlacementNotificationsOnce(orderId: string): Promise<void> {
-  if (!db) return;
-  if (await claimOrderNotification(orderId, 'admin_new_order')) {
-    const delivered = await dispatchAdminOrderAlert(orderId, 'new_order');
-    await recordOrderNotificationResult(orderId, 'admin_new_order', delivered);
-  }
-  if (await claimOrderNotification(orderId, 'customer_order_confirmation')) {
-    const delivered = await dispatchCustomerOrderEmail(orderId);
-    await recordOrderNotificationResult(orderId, 'customer_order_confirmation', delivered);
+/**
+ * Releases the stock hold of unpaid online orders whose checkout window ended, and cancels those
+ * orders with payment_status = failed. Runs every minute (see startServer) and just before a new
+ * order is created, so a skipped payment can never keep a saree "sold out".
+ */
+let lastUnpaidSweepAt = 0;
+let unpaidSweepInFlight = false;
+let unpaidSweepWarned = false;
+async function sweepUnpaidOrders(force = false): Promise<void> {
+  if (!db || unpaidSweepInFlight) return;
+  const now = Date.now();
+  if (!force && now - lastUnpaidSweepAt < 20_000) return;
+  unpaidSweepInFlight = true;
+  lastUnpaidSweepAt = now;
+  try {
+    const { data, error } = await (db as any).rpc('reconcile_expired_reservations');
+    if (error) {
+      if (!unpaidSweepWarned) {
+        unpaidSweepWarned = true;
+        console.warn('[checkout-sweeper] Could not release expired holds. Has migration 20261019000002 been applied?', error.message);
+      }
+      return;
+    }
+    const released = Number((data as any)?.expired_count ?? (data as any)?.reconciled_count ?? 0);
+    if (released > 0) console.info(`[checkout-sweeper] Released ${released} unpaid online order(s) and their stock hold.`);
+  } catch (err: any) {
+    if (!unpaidSweepWarned) {
+      unpaidSweepWarned = true;
+      console.warn('[checkout-sweeper] Sweep failed:', err?.message || err);
+    }
+  } finally {
+    unpaidSweepInFlight = false;
   }
 }
 
@@ -556,46 +568,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-
 const ORDER_NUMBER_RE = /^VKV(?:-[A-Z0-9]{1,12}){2,4}$/i;
 
 async function startServer() {
-  
-// Abandoned online checkout sweep: provisional online attempts do not hold stock.
-// After 5 minutes, mark still-pending attempts failed/cancelled and email the admin.
-// This is deliberately idempotent: only rows still in pending state are updated.
-let unpaidCheckoutSweepRunning = false;
-async function expireUnpaidOnlineCheckouts(): Promise<void> {
-  if (!db || unpaidCheckoutSweepRunning) return;
-  unpaidCheckoutSweepRunning = true;
-  try {
-    const cutoff = new Date(Date.now() - 5 * 60 * 1000).toISOString();
-    // This production schema has no checkout_payment_method column. Do not run
-    // a broad cleanup against orders until payment method can be safely determined
-    // from the payments table. In particular, never cancel COD orders by assumption.
-    const { data: expired, error } = await db
-      .from('orders')
-      .select('id,created_at,payment_status,order_status,reservation_expires_at')
-      .eq('payment_status', 'pending')
-      .in('order_status', ['pending', 'pending_payment'])
-      .not('reservation_expires_at', 'is', None)
-      .lt('reservation_expires_at', cutoff);
-    if (error) {
-      console.warn('[unpaid-checkout-sweep] unable to expire stale online attempts:', error.message);
-      return;
-    }
-    if ((expired || []).length) {
-      console.warn(`[unpaid-checkout-sweep] found ${(expired || []).length} stale reservations; no orders were auto-cancelled because payment method is not represented on orders in this schema.`);
-    }
-  } catch (error) {
-    console.warn('[unpaid-checkout-sweep] sweep failed safely');
-  } finally {
-    unpaidCheckoutSweepRunning = false;
-  }
-}
-
-const app = express();
-
-// Run at startup and every minute; stale checkouts expire after the five-minute cutoff.
-void expireUnpaidOnlineCheckouts();
-const unpaidCheckoutSweepTimer = setInterval(() => { void expireUnpaidOnlineCheckouts(); }, 60 * 1000);
-if (typeof unpaidCheckoutSweepTimer.unref === 'function') unpaidCheckoutSweepTimer.unref();
+  const app = express();
 
   // Render forwards one proxy hop. Do not trust arbitrary X-Forwarded-For chains.
   const proxyHops = Number(process.env.TRUST_PROXY_HOPS || (isProduction ? 1 : 0));
@@ -630,6 +603,7 @@ if (typeof unpaidCheckoutSweepTimer.unref === 'function') unpaidCheckoutSweepTim
   app.use('/api/payment/create-order', rateLimit({ windowMs: 60_000, max: 8 , bucketName: 'payment-create' }));
   app.use('/api/payment/verify', rateLimit({ windowMs: 60_000, max: 12 , bucketName: 'payment-verify' }));
   app.use('/api/payment/failure', rateLimit({ windowMs: 60_000, max: 12 , bucketName: 'payment-failure' }));
+  app.use('/api/payment/abandon', rateLimit({ windowMs: 60_000, max: 12 , bucketName: 'payment-abandon' }));
   app.use('/api/coupons/validate', rateLimit({ windowMs: 60_000, max: 20 , bucketName: 'coupon-validate' }));
   app.use('/api/admin', rateLimit({ windowMs: 60_000, max: 120 , bucketName: 'admin' }));
   app.use('/api/auth', rateLimit({ windowMs: 60_000, max: 10 , bucketName: 'auth' }));
@@ -1046,6 +1020,7 @@ if (typeof unpaidCheckoutSweepTimer.unref === 'function') unpaidCheckoutSweepTim
 
           // Reconcile payment + order + inventory in one database transaction. The RPC locks
           // the order row, matching the cancellation RPC's lock order to prevent races.
+          const alreadyCapturedBeforeVerify = await isOrderPaymentCaptured(orderId);
           const { data: reconciliationResult, error: reconciliationError } = await supabaseAdmin.rpc(
             'reconcile_captured_payment_for_order',
             {
@@ -1069,12 +1044,13 @@ if (typeof unpaidCheckoutSweepTimer.unref === 'function') unpaidCheckoutSweepTim
               verified: false,
               captured: true,
               refundRequired: true,
-              error: 'Payment was captured, but the order could not be fulfilled. Please do not retry payment; VK VASTRAM will review the refund.',
+              error: 'Payment was captured after the order was cancelled. The order remains cancelled and requires refund review.',
             });
             return;
           }
-          void dispatchOrderPlacementNotificationsOnce(orderId);
 
+          // Payment confirmed: only now does the order exist for the admin and the customer.
+          if (!alreadyCapturedBeforeVerify) void notifyOrderConfirmed(orderId);
         }
 
         res.json({
@@ -1168,6 +1144,92 @@ if (typeof unpaidCheckoutSweepTimer.unref === 'function') unpaidCheckoutSweepTim
     } catch (err: any) {
       console.error('Unable to persist payment failure:', err);
       res.status(500).json({ success: false, error: 'Could not update payment status. Please retry or contact support with your existing order number.' });
+    }
+  });
+
+  // -------------------------------------------------------------------
+  // 4c. POST /api/payment/abandon (CUSTOMER CLOSED THE PAYMENT WINDOW WITHOUT PAYING)
+  // Releases the stock hold immediately and cancels the unpaid online order, so a skipped
+  // payment never keeps a product "sold out". A payment that was actually taken is never
+  // touched: the database and Razorpay are both checked first.
+  // -------------------------------------------------------------------
+  app.post('/api/payment/abandon', optionalAuthenticateUser, async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const { orderId } = req.body || {};
+      if (!orderId || typeof orderId !== 'string') {
+        res.status(400).json({ success: false, error: 'Order identifier is required.' });
+        return;
+      }
+      if (!supabaseAdmin || !db || (isProduction && !SUPABASE_SERVICE_ROLE_KEY)) {
+        res.status(503).json({ success: false, error: 'Persistent order storage is unavailable.' });
+        return;
+      }
+      const { data: order, error: orderError } = await supabaseAdmin
+        .from('orders')
+        .select('id,order_number,user_id,payment_status,order_status,guest_access_token_hash')
+        .eq('id', orderId).maybeSingle();
+      if (orderError) throw orderError;
+      if (!order) { res.status(404).json({ success: false, error: 'Order not found.' }); return; }
+
+      let isAdmin = false;
+      if (req.user) {
+        const { data: profile } = await supabaseAdmin.from('profiles').select('role').eq('id', req.user.id).maybeSingle();
+        isAdmin = profile?.role === 'admin';
+      }
+      const access = verifyOrderAccess(order, req, isAdmin);
+      if (!access.authorized) { res.status(access.statusCode).json({ success: false, error: access.error }); return; }
+
+      const alreadyPaid = ['captured', 'paid', 'authorized'].includes(String(order.payment_status || '').toLowerCase());
+      if (order.order_status !== 'pending' || alreadyPaid) {
+        res.json({ success: true, abandoned: false, unchanged: true, paid: alreadyPaid, orderStatus: order.order_status, paymentStatus: order.payment_status });
+        return;
+      }
+
+      // Never release stock if Razorpay says money was taken (the customer may have paid and closed
+      // the window a moment later). If Razorpay cannot be reached, do nothing: the sweeper will
+      // release the hold when the checkout window ends.
+      const { data: attempts, error: attemptsError } = await supabaseAdmin
+        .from('payments').select('provider,provider_order_id,status').eq('order_id', orderId);
+      if (attemptsError) throw attemptsError;
+      if ((attempts || []).some((a: any) => ['captured', 'authorized', 'paid', 'succeeded'].includes(String(a.status || '').toLowerCase()))) {
+        res.json({ success: true, abandoned: false, unchanged: true, paid: true });
+        return;
+      }
+      if (RAZORPAY_KEY_ID && RAZORPAY_KEY_SECRET) {
+        for (const attempt of attempts || []) {
+          if (!attempt.provider_order_id) continue;
+          const providerResponse = await fetch(`https://api.razorpay.com/v1/orders/${encodeURIComponent(attempt.provider_order_id)}/payments`, {
+            headers: { Authorization: `Basic ${Buffer.from(`${RAZORPAY_KEY_ID}:${RAZORPAY_KEY_SECRET}`).toString('base64')}` },
+          });
+          if (!providerResponse.ok) {
+            res.json({ success: true, abandoned: false, deferred: true });
+            return;
+          }
+          const providerData: any = await providerResponse.json();
+          if (Array.isArray(providerData.items) && providerData.items.some((item: any) => ['captured', 'authorized'].includes(item.status))) {
+            res.json({ success: true, abandoned: false, unchanged: true, paid: true });
+            return;
+          }
+        }
+      }
+
+      const { data: result, error: abandonError } = await (supabaseAdmin as any).rpc('abandon_unpaid_order', {
+        p_order_id: orderId,
+        p_reason: 'Payment not completed: customer closed the payment window',
+      });
+      if (abandonError) throw abandonError;
+      if (!result || result.success !== true) throw new Error(result?.error || 'Could not release the unpaid order.');
+
+      res.json({
+        success: true,
+        abandoned: Boolean(result.abandoned),
+        orderId,
+        orderNumber: order.order_number,
+        reason: result.reason || undefined,
+      });
+    } catch (err: any) {
+      console.error('Unable to abandon unpaid order:', err);
+      res.status(500).json({ success: false, error: 'Could not release the unpaid order. It will be released automatically shortly.' });
     }
   });
 
@@ -1311,18 +1373,23 @@ const orderPayload = {
 };
 
 
+        // Free any expired holds first so stock held by abandoned checkouts is available again.
+        await sweepUnpaidOrders();
+
         const created = await invokeCheckedRpc(db, 'create_order_with_inventory_reservation', {
           p_order: orderPayload,
           p_items: orderLines,
           p_payment_method: paymentMethod,
-          p_reservation_minutes: 15,
+          p_reservation_minutes: CHECKOUT_HOLD_MINUTES,
         }, 'Order creation');
         if (typeof created.order_id !== 'string' || !created.order_id || typeof created.order_number !== 'string' || !created.order_number) {
           throw new OrderSafetyError('Order service returned an incomplete result.', 503, 'INVALID_RPC_RESULT');
         }
-        // COD is accepted immediately. Online orders remain provisional until verified capture:
-        // do not notify admin/customer for an abandoned or failed payment attempt.
-        if (paymentMethod === 'cod') void dispatchOrderPlacementNotificationsOnce(created.order_id);
+        // COD is confirmed immediately, so notify now. An online order is only "waiting for payment":
+        // the admin alert and customer email are sent when the payment is captured instead.
+        if (paymentMethod === 'cod') {
+          void notifyOrderConfirmed(created.order_id);
+        }
 
         res.json({
           success: true,
@@ -1765,6 +1832,7 @@ const orderPayload = {
 
           // The RPC locks the order row and atomically reconciles payment, order status,
           // and inventory. This is serialized against cancel_order_and_reconcile_inventory.
+          const alreadyCapturedBeforeWebhook = await isOrderPaymentCaptured(internalOrderId);
           const { data: reconciliationResult, error: reconciliationError } = await supabaseAdmin.rpc(
             'reconcile_captured_payment_for_order',
             {
@@ -1783,8 +1851,9 @@ const orderPayload = {
             await supabaseAdmin.from('orders').update({ refund_status: 'pending', updated_at: now }).eq('id', internalOrderId).neq('refund_status', 'completed');
             void dispatchAdminOrderAlert(internalOrderId, 'refund_required', 'pending');
             console.error(`[PAYMENT RECONCILIATION REQUIRED] Razorpay captured payment for order ${internalOrderId}; refund/manual review required.`);
-          } else {
-            void dispatchOrderPlacementNotificationsOnce(internalOrderId);
+          } else if (!alreadyCapturedBeforeWebhook) {
+            // Payment confirmed via webhook (e.g. the customer closed the tab right after paying).
+            void notifyOrderConfirmed(internalOrderId);
           }
         } else if (eventType === 'payment.failed') {
           let paymentQuery = supabaseAdmin.from('payments').update({
@@ -1816,20 +1885,6 @@ const orderPayload = {
             }
             // Already captured: treat this stale failure event as reconciled without downgrade.
           }
-        }
-
-        // Failed online payment: alert admin, but never create a fulfilment order or deduct stock.
-        if (eventType === 'payment.failed' && internalOrderId) {
-          const { data: failedOrder, error: failedOrderError } = await supabaseAdmin
-            .from('orders')
-            .update({ payment_status: 'failed', order_status: 'cancelled', updated_at: now })
-            .eq('id', internalOrderId)
-            .eq('checkout_payment_method', 'online')
-            .eq('payment_status', 'pending')
-            .select('id')
-            .maybeSingle();
-          if (failedOrderError) throw failedOrderError;
-          if (failedOrder?.id) void dispatchAdminOrderAlert(internalOrderId, 'payment_issue', 'failed');
         }
 
         // Update webhook event status to 'processed'
@@ -2102,11 +2157,24 @@ const orderPayload = {
           dateRange = 'all',
           page = '1',
           limit = '10',
+          view = 'confirmed',
         } = req.query;
 
         const pageNum = parseInt(page as string, 10) || 1;
-        const limitNum = parseInt(limit as string, 10) || 10;
+        const limitNum = Math.min(100, Math.max(1, parseInt(limit as string, 10) || 10));
         const offset = (pageNum - 1) * limitNum;
+
+        // Order "views" (what the admin should look at):
+        //   confirmed (default): paid online orders and Cash on Delivery orders
+        //   awaiting: online orders still waiting for payment (stock is on a short hold)
+        //   failed:   payment failed / not completed / abandoned (stock already released)
+        //   all:      everything
+        const applyOrderView = (q: any, which: string) => {
+          if (which === 'awaiting') return q.eq('order_status', 'pending').eq('payment_status', 'pending');
+          if (which === 'failed') return q.eq('payment_status', 'failed');
+          if (which === 'all') return q;
+          return q.neq('payment_status', 'failed').or('order_status.neq.pending,payment_status.neq.pending');
+        };
 
         if (db) {
           let query = db
@@ -2116,6 +2184,8 @@ const orderPayload = {
               items:order_items(*),
               payments:payments(id,order_id,provider,provider_order_id,provider_payment_id,amount,currency,status,method,verified_at,created_at)
             `, { count: 'exact' });
+
+          query = applyOrderView(query, String(view));
 
           if (search) {
             const safeSearch = safePostgrestSearch(search);
@@ -2131,11 +2201,6 @@ const orderPayload = {
 
           if (paymentStatus !== 'all') {
             query = query.eq('payment_status', paymentStatus);
-          } else {
-            // Production schema compatibility: orders does not have is_admin_queue_visible.
-            // Do not add a filter on a non-existent column; fetch orders and let the UI
-            // expose payment/order status filters. This prevents the entire admin query
-            // from failing with Postgres 42703.
           }
 
           if (customerType === 'guest') {
@@ -2226,12 +2291,26 @@ const orderPayload = {
             };
           });
 
+          // Tab counters for the admin order views.
+          const countView = async (which: string): Promise<number> => {
+            const { count: viewCount } = await applyOrderView(
+              db.from('orders').select('id', { count: 'exact', head: true }),
+              which
+            );
+            return viewCount || 0;
+          };
+          const [confirmedCount, awaitingCount, failedCount] = await Promise.all([
+            countView('confirmed'), countView('awaiting'), countView('failed'),
+          ]);
+
           res.json({
             success: true,
             orders: formattedOrders,
             totalCount: count || 0,
             page: pageNum,
             limit: limitNum,
+            view: String(view),
+            viewCounts: { confirmed: confirmedCount, awaiting: awaitingCount, failed: failedCount },
           });
         } else {
           let list = Array.from(inMemoryOrdersMap.values());
@@ -2254,8 +2333,6 @@ const orderPayload = {
 
           if (paymentStatus !== 'all') {
             list = list.filter(o => (o.payment_status || o.paymentStatus) === paymentStatus);
-          } else {
-            list = list.filter(o => String(o.checkout_payment_method || o.paymentMethod || '').toLowerCase() === 'cod' || ['captured','paid','cod_pending','cod_collected','cod_settled'].includes(String(o.payment_status || o.paymentStatus || '').toLowerCase()));
           }
 
           if (customerType === 'guest') {
@@ -4694,8 +4771,13 @@ const orderPayload = {
     });
   }
 
+  // Automatically release stock held by unpaid online checkouts (see sweepUnpaidOrders).
+  void sweepUnpaidOrders(true);
+  const unpaidSweepTimer = setInterval(() => { void sweepUnpaidOrders(true); }, 60_000);
+  unpaidSweepTimer.unref?.();
+
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`VK VASTRAM server listening on http://0.0.0.0:${PORT}`);
+    console.log(`VK VASTRAM server listening on http://0.0.0.0:${PORT} (online checkout stock hold: ${CHECKOUT_HOLD_MINUTES} min)`);
   });
 }
 

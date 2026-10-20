@@ -228,6 +228,40 @@ export const paymentService = {
   },
 
   /**
+   * The customer closed the payment window without paying. Releases the stock hold and cancels
+   * the unpaid online order right away. The server first checks that no payment was actually taken.
+   */
+  async abandonUnpaidOrder(params: { orderId: string; guestAccessToken?: string }): Promise<{
+    success: boolean;
+    abandoned?: boolean;
+    paid?: boolean;
+    deferred?: boolean;
+    error?: string;
+  }> {
+    try {
+      let token = '';
+      if (isSupabaseConfigured()) {
+        const { data } = await supabase.auth.getSession();
+        token = data.session?.access_token || '';
+      }
+      const guestToken = params.guestAccessToken ||
+        (typeof window !== 'undefined' ? window.sessionStorage?.getItem(`vk_guest_token_${params.orderId}`) || '' : '');
+      const response = await fetch('/api/payment/abandon', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          ...(guestToken ? { 'x-guest-token': guestToken } : {}),
+        },
+        body: JSON.stringify({ orderId: params.orderId, ...(guestToken ? { guestAccessToken: guestToken } : {}) }),
+      });
+      return await response.json();
+    } catch (err: any) {
+      return { success: false, error: err?.message || 'Could not release the unpaid order.' };
+    }
+  },
+
+  /**
    * Open the official Razorpay Checkout modal
    */
   async openRazorpayCheckout(options: {

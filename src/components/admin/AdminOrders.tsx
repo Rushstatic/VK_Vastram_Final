@@ -600,6 +600,9 @@ export const AdminOrders: React.FC = () => {
           <Sparkles className="w-3.5 h-3.5" />
           <span>Search & Refine Loom Orders</span>
         </div>
+        <p className="text-[11px] leading-relaxed text-[#57534E]">
+          Default view shows paid online orders and all COD orders. To review an unfinished online checkout, select Pending or Failed under Payment Status; those attempts remain available for audit and same-order retry.
+        </p>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-12 gap-3.5">
           {/* Text Search */}

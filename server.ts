@@ -50,11 +50,13 @@ const supabaseAdmin: SupabaseClient | null =
 const db = useSupabase ? supabaseAdmin : null;
 
 /** Admin-only best-effort push + email. Delivery failures never roll back an order commit. */
-async function dispatchAdminOrderAlert(orderId: string, eventType: 'new_order' | 'status_update' | 'refund_required', status?: string): Promise<void> {
-  if (!db) return;
+async function dispatchAdminOrderAlert(orderId: string, eventType: 'new_order' | 'status_update' | 'refund_required', status?: string): Promise<boolean> {
+  if (!db) return false;
+  let pushDelivered = false;
+  let emailDelivered = false;
   try {
     const { data: order, error } = await db.from('orders').select('id,order_number,total_amount,currency,payment_status,order_status,customer_name,customer_email').eq('id', orderId).maybeSingle();
-    if (error || !order) return;
+    if (error || !order) return false;
     const orderNumber = String(order.order_number || order.id);
     const isNew = eventType === 'new_order';
     let paymentMethod = 'ORDER';
@@ -71,7 +73,7 @@ async function dispatchAdminOrderAlert(orderId: string, eventType: 'new_order' |
         webpush.setVapidDetails(process.env.VAPID_SUBJECT || 'mailto:support@vkvastram.in', process.env.VAPID_PUBLIC_KEY, process.env.VAPID_PRIVATE_KEY);
         const { data: subs } = await db.from('admin_push_subscriptions').select('id,endpoint,p256dh,auth').eq('enabled', true).limit(100);
         for (const sub of subs || []) {
-          try { await webpush.sendNotification({ endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } }, payload); }
+          try { await webpush.sendNotification({ endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } }, payload); pushDelivered = true; }
           catch (e: any) { if (e?.statusCode === 404 || e?.statusCode === 410) await db.from('admin_push_subscriptions').update({ enabled: false, updated_at: new Date().toISOString() }).eq('id', sub.id); }
         }
       } catch { console.warn('[admin-notifications] push delivery attempt failed'); }
@@ -82,23 +84,27 @@ async function dispatchAdminOrderAlert(orderId: string, eventType: 'new_order' |
       try {
         const response = await fetch('https://api.resend.com/emails', { method: 'POST', headers: { Authorization: `Bearer ${process.env.RESEND_API_KEY}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ from: process.env.RESEND_FROM_EMAIL, to: [to], subject: `${title}: ${orderNumber}`, html: `<div style="font-family:Arial,sans-serif"><h2>${safe(title)}</h2><p>${safe(body)}</p><p>Customer: ${safe(order.customer_name || 'Customer')}</p><p>Payment status: ${safe(order.payment_status)}</p><p><a href="${String(process.env.SITE_URL || process.env.APP_URL || 'http://localhost:3000').replace(/\/$/, '')}/admin">Open VK VASTRAM Admin</a></p></div>` }) });
         if (!response.ok) { const detail = await response.text().catch(() => ''); console.error(`[admin-notifications] Resend rejected email (${response.status}): ${detail.slice(0, 500)}`); }
-        else { console.info(`[admin-notifications] email accepted by Resend for order ${orderNumber}`); }
+        else { emailDelivered = true; console.info(`[admin-notifications] email accepted by Resend for order ${orderNumber}`); }
       } catch (error) { console.error('[admin-notifications] email delivery request failed', error instanceof Error ? error.message : 'unknown error'); }
     }
-  } catch { console.warn('[admin-notifications] alert dispatch failed; order state remains committed'); }
+    // When Resend is configured for this event, email acceptance is the important
+    // delivery signal; a push alone must not suppress retries after email failure.
+    const adminEmailExpected = Boolean((eventType === 'new_order' || isRefundAlert) && process.env.ADMIN_NOTIFICATION_EMAIL && process.env.RESEND_API_KEY && process.env.RESEND_FROM_EMAIL);
+    return adminEmailExpected ? emailDelivered : pushDelivered;
+  } catch { console.warn('[admin-notifications] alert dispatch failed; order state remains committed'); return false; }
 }
 
 
 
 
 /** Customer order email: order summary/invoice details plus a direct link to the tracking page. */
-async function dispatchCustomerOrderEmail(orderId: string): Promise<void> {
-  if (!db || !process.env.RESEND_API_KEY || !process.env.RESEND_FROM_EMAIL) return;
+async function dispatchCustomerOrderEmail(orderId: string): Promise<boolean> {
+  if (!db || !process.env.RESEND_API_KEY || !process.env.RESEND_FROM_EMAIL) return false;
   const baseUrl = String(process.env.SITE_URL || process.env.APP_URL || '').replace(/\/$/, '');
-  if (!baseUrl) return;
+  if (!baseUrl) return false;
   try {
     const { data: order, error } = await db.from('orders').select('id,order_number,customer_name,customer_email,total_amount,subtotal,discount_amount,shipping_amount,tax_amount,currency,payment_status,order_status,created_at,items:order_items(product_name_snapshot,quantity,price_snapshot,total_amount)').eq('id',orderId).maybeSingle();
-    if (error || !order?.customer_email) return;
+    if (error || !order?.customer_email) return false;
     const esc = (v: unknown) => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c] || c));
     const orderNo = String(order.order_number || order.id);
     const trackingUrl = `${baseUrl}/track-order?orderId=${encodeURIComponent(orderNo)}`;
@@ -106,8 +112,56 @@ async function dispatchCustomerOrderEmail(orderId: string): Promise<void> {
     const amount = (label:string,value:unknown) => `<tr><td style="padding:7px 10px;color:#57534e">${label}</td><td style="padding:7px 10px;text-align:right">₹${Number(value||0).toLocaleString('en-IN')}</td></tr>`;
     const html = `<div style="margin:0 auto;max-width:640px;background:#faf8f5;padding:28px;font-family:Arial,sans-serif;color:#1c1917"><div style="text-align:center;padding:22px 12px"><p style="letter-spacing:4px;color:#b88e3e;font-size:11px">VK VASTRAM</p><h1 style="font-family:Georgia,serif;font-weight:normal">Thank you for your order.</h1><p style="color:#57534e">Your order ${esc(orderNo)} has been received.</p></div><div style="background:#fff;padding:22px;border:1px solid #e7dfd2"><h2 style="font-family:Georgia,serif;font-weight:normal">Order summary / invoice details</h2><p>Order date: ${esc(new Date(order.created_at).toLocaleDateString('en-IN'))}<br>Payment status: ${esc(order.payment_status)}<br>Order status: ${esc(order.order_status)}</p><table style="width:100%;border-collapse:collapse">${items}${amount('Subtotal',order.subtotal)}${amount('Discount',order.discount_amount)}${amount('Shipping',order.shipping_amount)}${amount('Tax',order.tax_amount)}${amount('Total',order.total_amount)}</table><p style="font-size:12px;color:#78716c">This email contains your order and tax summary; your official tax invoice remains available through the order records/invoice workflow.</p><p style="text-align:center;margin:28px 0"><a href="${trackingUrl}" style="display:inline-block;background:#1c1917;color:#fff;text-decoration:none;padding:14px 24px">TRACK YOUR ORDER</a></p><p style="font-size:12px;color:#78716c">For privacy, the tracking page asks for your order ID and checkout email.</p></div><p style="text-align:center;font-size:12px;color:#78716c;padding:18px">With care, VK VASTRAM</p></div>`;
     const response = await fetch('https://api.resend.com/emails',{method:'POST',headers:{Authorization:`Bearer ${process.env.RESEND_API_KEY}`,'Content-Type':'application/json'},body:JSON.stringify({from:process.env.RESEND_FROM_EMAIL,to:[order.customer_email],subject:`Order received · ${orderNo} | VK VASTRAM`,html})});
-    if(!response.ok) console.error(`[customer-order-email] Resend rejected email (${response.status}) for order ${orderNo}`); else console.info(`[customer-order-email] accepted for order ${orderNo}`);
-  } catch (e) { console.warn('[customer-order-email] dispatch failed; order remains committed'); }
+    if(!response.ok) { console.error(`[customer-order-email] Resend rejected email (${response.status}) for order ${orderNo}`); return false; }
+    console.info(`[customer-order-email] accepted for order ${orderNo}`);
+    return true;
+  } catch (e) { console.warn('[customer-order-email] dispatch failed; order remains committed'); return false; }
+}
+
+/**
+ * Durable idempotency for the two placement emails. Verification and Razorpay webhooks can
+ * both confirm the same order; only one path should send each placement notification. Failed
+ * sends can be retried on a later duplicate event without duplicating already accepted emails.
+ */
+async function claimOrderNotification(orderId: string, eventType: 'admin_new_order' | 'customer_order_confirmation'): Promise<boolean> {
+  if (!db) return false;
+  const now = new Date().toISOString();
+  const { error } = await db.from('order_notification_events').insert({
+    order_id: orderId, event_type: eventType, status: 'processing', attempt_count: 1, updated_at: now
+  });
+  if (!error) return true;
+  if (error.code !== '23505') {
+    console.warn('[order-notification] unable to claim notification event:', error.code || 'DB_ERROR');
+    return false;
+  }
+  const { data, error: retryError } = await db.from('order_notification_events')
+    .update({ status: 'processing', last_error: null, updated_at: now })
+    .eq('order_id', orderId).eq('event_type', eventType).eq('status', 'failed')
+    .select('order_id').maybeSingle();
+  if (retryError) { console.warn('[order-notification] unable to reclaim failed notification:', retryError.code || 'DB_ERROR'); return false; }
+  return Boolean(data);
+}
+
+async function recordOrderNotificationResult(orderId: string, eventType: 'admin_new_order' | 'customer_order_confirmation', delivered: boolean): Promise<void> {
+  if (!db) return;
+  const { error } = await db.from('order_notification_events').update({
+    status: delivered ? 'sent' : 'failed',
+    last_error: delivered ? null : 'Notification service did not accept the message; retry on a later event.',
+    updated_at: new Date().toISOString()
+  }).eq('order_id', orderId).eq('event_type', eventType).eq('status', 'processing');
+  if (error) console.warn('[order-notification] could not record delivery result:', error.code || 'DB_ERROR');
+}
+
+async function dispatchOrderPlacementNotificationsOnce(orderId: string): Promise<void> {
+  if (!db) return;
+  if (await claimOrderNotification(orderId, 'admin_new_order')) {
+    const delivered = await dispatchAdminOrderAlert(orderId, 'new_order');
+    await recordOrderNotificationResult(orderId, 'admin_new_order', delivered);
+  }
+  if (await claimOrderNotification(orderId, 'customer_order_confirmation')) {
+    const delivered = await dispatchCustomerOrderEmail(orderId);
+    await recordOrderNotificationResult(orderId, 'customer_order_confirmation', delivered);
+  }
 }
 
 /** Sends queued restock notices when Resend is configured; never fails inventory commits. */
@@ -975,10 +1029,11 @@ async function startServer() {
               verified: false,
               captured: true,
               refundRequired: true,
-              error: 'Payment was captured after the order was cancelled. The order remains cancelled and requires refund review.',
+              error: 'Payment was captured, but the order could not be fulfilled. Please do not retry payment; VK VASTRAM will review the refund.',
             });
             return;
           }
+          void dispatchOrderPlacementNotificationsOnce(orderId);
 
         }
 
@@ -1225,8 +1280,9 @@ const orderPayload = {
         if (typeof created.order_id !== 'string' || !created.order_id || typeof created.order_number !== 'string' || !created.order_number) {
           throw new OrderSafetyError('Order service returned an incomplete result.', 503, 'INVALID_RPC_RESULT');
         }
-        void dispatchAdminOrderAlert(created.order_id, 'new_order');
-        void dispatchCustomerOrderEmail(created.order_id);
+        // COD is accepted immediately. Online orders remain provisional until verified capture:
+        // do not notify admin/customer for an abandoned or failed payment attempt.
+        if (paymentMethod === 'cod') void dispatchOrderPlacementNotificationsOnce(created.order_id);
 
         res.json({
           success: true,
@@ -1687,6 +1743,8 @@ const orderPayload = {
             await supabaseAdmin.from('orders').update({ refund_status: 'pending', updated_at: now }).eq('id', internalOrderId).neq('refund_status', 'completed');
             void dispatchAdminOrderAlert(internalOrderId, 'refund_required', 'pending');
             console.error(`[PAYMENT RECONCILIATION REQUIRED] Razorpay captured payment for order ${internalOrderId}; refund/manual review required.`);
+          } else {
+            void dispatchOrderPlacementNotificationsOnce(internalOrderId);
           }
         } else if (eventType === 'payment.failed') {
           let paymentQuery = supabaseAdmin.from('payments').update({
@@ -2019,6 +2077,10 @@ const orderPayload = {
 
           if (paymentStatus !== 'all') {
             query = query.eq('payment_status', paymentStatus);
+          } else {
+            // Default operational queue: paid online orders plus all COD orders.
+            // Pending/failed online attempts remain auditable via the explicit payment filter.
+            query = query.eq('is_admin_queue_visible', true);
           }
 
           if (customerType === 'guest') {
@@ -2137,6 +2199,8 @@ const orderPayload = {
 
           if (paymentStatus !== 'all') {
             list = list.filter(o => (o.payment_status || o.paymentStatus) === paymentStatus);
+          } else {
+            list = list.filter(o => String(o.checkout_payment_method || o.paymentMethod || '').toLowerCase() === 'cod' || ['captured','paid','cod_pending','cod_collected','cod_settled'].includes(String(o.payment_status || o.paymentStatus || '').toLowerCase()));
           }
 
           if (customerType === 'guest') {

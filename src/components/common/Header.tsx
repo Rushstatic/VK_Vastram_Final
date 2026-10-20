@@ -675,11 +675,11 @@ export const Header: React.FC<HeaderProps> = ({
                   </a>
 
                   <a
-                    href="tel:+919860069801"
+                    href="tel:+919876543210"
                     className="flex items-center gap-2 hover:text-[#1C1917] transition-colors"
                   >
                     <Phone className="w-3.5 h-3.5 text-[#967029] shrink-0" />
-                    <span>WhatsApp / Phone: +91 9860069801</span>
+                    <span>WhatsApp / Phone: +91 98765 43210</span>
                   </a>
 
                   <div className="flex items-center gap-2 text-[#78716C]">

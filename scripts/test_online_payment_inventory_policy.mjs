@@ -83,3 +83,15 @@ console.log('PASS: verified online capture is the only path that deducts stock')
 console.log('PASS: default admin queue hides pending/failed online attempts');
 console.log('PASS: explicit failed/pending status filters remain available');
 console.log('PASS: online retries reuse the saved internal order ID');
+
+const repairMigration = read('supabase/migrations/20261020170000_repair_stale_reserved_stock_and_unpaid_email.sql');
+assert.match(repairMigration, /SET reserved_quantity = COALESCE\(/,
+  'Migration must repair stale reserved_quantity counters from the reservation ledger');
+assert.match(server, /5 \* 60 \* 1000/,
+  'Abandoned online attempts must expire after five minutes');
+assert.match(server, /dispatchAdminOrderAlert\(order\.id, 'payment_issue'/,
+  'Abandoned online attempts must trigger an admin alert');
+assert.match(server, /eventType === 'payment.failed' && internalOrderId/,
+  'Failed Razorpay attempts must trigger admin notification handling');
+console.log('PASS: stale reserved_quantity counters are repaired');
+console.log('PASS: abandoned online attempts expire after five minutes and alert admin');

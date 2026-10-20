@@ -37,3 +37,10 @@
 ## Verification status
 
 The source files pass a TypeScript transpile/syntax check in this environment. A complete `npm ci` timed out here, so full `npm run lint` and `npm run build` were **not verified** in this environment. The regression test is a static source-policy check, not a substitute for staging integration tests against PostgreSQL, Supabase, or Razorpay.
+
+## Follow-up repair included in this archive
+
+- Added `20261020170000_repair_stale_reserved_stock_and_unpaid_email.sql` to reconcile drifted `reserved_quantity` values against the active reservation ledger. This specifically addresses variants that remain out of stock even after the original checkout reservation should have expired.
+- Added a server-side one-minute sweep: online checkouts still pending after five minutes become failed/cancelled (not fulfilment orders), their reservation expiry is cleared, and the admin is alerted through the existing Resend notification path. Razorpay `payment.failed` events also trigger an admin alert.
+- Configure `ADMIN_NOTIFICATION_EMAIL`, `RESEND_API_KEY`, and `RESEND_FROM_EMAIL` in the production server environment. The sweep runs in the Node server process; it does not run if the production server is stopped. Apply the SQL migration and deploy the matching server code together.
+- COD orders continue to be accepted and stock is deducted once. Online stock is deducted only after verified capture. A late capture for an expired/cancelled order must still be reconciled through the existing refund-review safeguards.

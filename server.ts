@@ -50,7 +50,7 @@ const supabaseAdmin: SupabaseClient | null =
 const db = useSupabase ? supabaseAdmin : null;
 
 /** Admin-only best-effort push + email. Delivery failures never roll back an order commit. */
-async function dispatchAdminOrderAlert(orderId: string, eventType: 'new_order' | 'status_update' | 'refund_required', status?: string): Promise<boolean> {
+async function dispatchAdminOrderAlert(orderId: string, eventType: 'new_order' | 'status_update' | 'refund_required' | 'payment_issue', status?: string): Promise<boolean> {
   if (!db) return false;
   let pushDelivered = false;
   let emailDelivered = false;
@@ -65,8 +65,9 @@ async function dispatchAdminOrderAlert(orderId: string, eventType: 'new_order' |
       paymentMethod = String(payment?.method || payment?.provider || 'ORDER').toUpperCase();
     }
     const isRefundAlert = eventType === 'refund_required';
-    const title = isRefundAlert ? 'ACTION REQUIRED: VK VASTRAM refund review' : (isNew ? 'New VK VASTRAM order' : 'VK VASTRAM order updated');
-    const body = isNew ? `${orderNumber} · ₹${Number(order.total_amount || 0).toLocaleString('en-IN')} · ${paymentMethod}` : `${orderNumber} · ${String(status || order.order_status || 'status updated').replace(/_/g, ' ')}`;
+    const isPaymentIssue = eventType === 'payment_issue';
+    const title = isRefundAlert ? 'ACTION REQUIRED: VK VASTRAM refund review' : (isPaymentIssue ? 'VK VASTRAM unpaid checkout' : (isNew ? 'New VK VASTRAM order' : 'VK VASTRAM order updated'));
+    const body = isPaymentIssue ? `${orderNumber} · online payment not completed within 5 minutes; no stock was deducted` : (isNew ? `${orderNumber} · ₹${Number(order.total_amount || 0).toLocaleString('en-IN')} · ${paymentMethod}` : `${orderNumber} · ${String(status || order.order_status || 'status updated').replace(/_/g, ' ')}`);
     const payload = JSON.stringify({ title, body, url: '/admin', tag: `vkv-${order.id}-${eventType}-${status || ''}` });
     if (process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY) {
       try {
@@ -78,7 +79,7 @@ async function dispatchAdminOrderAlert(orderId: string, eventType: 'new_order' |
         }
       } catch { console.warn('[admin-notifications] push delivery attempt failed'); }
     }
-    const to = (eventType === 'new_order' || isRefundAlert) ? String(process.env.ADMIN_NOTIFICATION_EMAIL || '').trim() : '';
+    const to = (eventType === 'new_order' || isRefundAlert || isPaymentIssue) ? String(process.env.ADMIN_NOTIFICATION_EMAIL || '').trim() : '';
     if (to && process.env.RESEND_API_KEY && process.env.RESEND_FROM_EMAIL) {
       const safe = (v: unknown) => String(v ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c] || c));
       try {
@@ -89,7 +90,7 @@ async function dispatchAdminOrderAlert(orderId: string, eventType: 'new_order' |
     }
     // When Resend is configured for this event, email acceptance is the important
     // delivery signal; a push alone must not suppress retries after email failure.
-    const adminEmailExpected = Boolean((eventType === 'new_order' || isRefundAlert) && process.env.ADMIN_NOTIFICATION_EMAIL && process.env.RESEND_API_KEY && process.env.RESEND_FROM_EMAIL);
+    const adminEmailExpected = Boolean((eventType === 'new_order' || isRefundAlert || isPaymentIssue) && process.env.ADMIN_NOTIFICATION_EMAIL && process.env.RESEND_API_KEY && process.env.RESEND_FROM_EMAIL);
     return adminEmailExpected ? emailDelivered : pushDelivered;
   } catch { console.warn('[admin-notifications] alert dispatch failed; order state remains committed'); return false; }
 }
@@ -555,7 +556,49 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-
 const ORDER_NUMBER_RE = /^VKV(?:-[A-Z0-9]{1,12}){2,4}$/i;
 
 async function startServer() {
-  const app = express();
+  
+// Abandoned online checkout sweep: provisional online attempts do not hold stock.
+// After 5 minutes, mark still-pending attempts failed/cancelled and email the admin.
+// This is deliberately idempotent: only rows still in pending state are updated.
+let unpaidCheckoutSweepRunning = false;
+async function expireUnpaidOnlineCheckouts(): Promise<void> {
+  if (!db || unpaidCheckoutSweepRunning) return;
+  unpaidCheckoutSweepRunning = true;
+  try {
+    const cutoff = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+    const { data: expired, error } = await db
+      .from('orders')
+      .update({
+        payment_status: 'failed',
+        order_status: 'cancelled',
+        reservation_expires_at: null,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('checkout_payment_method', 'online')
+      .eq('payment_status', 'pending')
+      .in('order_status', ['pending', 'pending_payment'])
+      .lt('created_at', cutoff)
+      .select('id');
+    if (error) {
+      console.warn('[unpaid-checkout-sweep] unable to expire stale online attempts:', error.message);
+      return;
+    }
+    for (const order of expired || []) {
+      void dispatchAdminOrderAlert(order.id, 'payment_issue', 'expired_after_5_minutes');
+    }
+  } catch (error) {
+    console.warn('[unpaid-checkout-sweep] sweep failed safely');
+  } finally {
+    unpaidCheckoutSweepRunning = false;
+  }
+}
+
+const app = express();
+
+// Run at startup and every minute; stale checkouts expire after the five-minute cutoff.
+void expireUnpaidOnlineCheckouts();
+const unpaidCheckoutSweepTimer = setInterval(() => { void expireUnpaidOnlineCheckouts(); }, 60 * 1000);
+if (typeof unpaidCheckoutSweepTimer.unref === 'function') unpaidCheckoutSweepTimer.unref();
 
   // Render forwards one proxy hop. Do not trust arbitrary X-Forwarded-For chains.
   const proxyHops = Number(process.env.TRUST_PROXY_HOPS || (isProduction ? 1 : 0));
@@ -1776,6 +1819,20 @@ const orderPayload = {
             }
             // Already captured: treat this stale failure event as reconciled without downgrade.
           }
+        }
+
+        // Failed online payment: alert admin, but never create a fulfilment order or deduct stock.
+        if (eventType === 'payment.failed' && internalOrderId) {
+          const { data: failedOrder, error: failedOrderError } = await supabaseAdmin
+            .from('orders')
+            .update({ payment_status: 'failed', order_status: 'cancelled', updated_at: now })
+            .eq('id', internalOrderId)
+            .eq('checkout_payment_method', 'online')
+            .eq('payment_status', 'pending')
+            .select('id')
+            .maybeSingle();
+          if (failedOrderError) throw failedOrderError;
+          if (failedOrder?.id) void dispatchAdminOrderAlert(internalOrderId, 'payment_issue', 'failed');
         }
 
         // Update webhook event status to 'processed'

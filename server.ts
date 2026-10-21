@@ -564,8 +564,8 @@ function hasImageSignature(buffer: Buffer, contentType: string): boolean {
   return false;
 }
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const ORDER_NUMBER_RE = /^VKV(?:-[A-Z0-9]{1,12}){2,4}$/i;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const ORDER_NUMBER_RE = /^VKV(?:-[A-Z0-9]{1,20}){1,5}$/i;
 
 async function startServer() {
   const app = express();
@@ -1399,10 +1399,11 @@ const orderPayload = {
           isGuest,
         });
       } catch (err: any) {
-        console.error('Unhandled error in /api/orders/create:', err);
+        console.error('Unhandled error in /api/orders/create:', err?.code || err?.name, err?.message, err?.details || '', err?.hint || '');
         res.status(err instanceof OrderSafetyError ? err.statusCode : 500).json({
           success: false,
           error: err instanceof OrderSafetyError ? err.message : 'Internal server error creating order.',
+          code: err instanceof OrderSafetyError ? err.code : undefined,
         });
       }
     }
@@ -1437,7 +1438,7 @@ const orderPayload = {
     optionalAuthenticateUser,
     async (req: AuthenticatedRequest, res: Response) => {
       try {
-        const { id } = req.params;
+        const id = String(req.params.id || '').trim();
         const isUuid = UUID_RE.test(id || '');
         const isOrderNumber = ORDER_NUMBER_RE.test(id || '');
         if (!id || (!isUuid && !isOrderNumber)) {
@@ -4765,8 +4766,22 @@ const orderPayload = {
     });
     app.use(vite.middlewares);
   } else {
-    app.use(express.static(path.resolve(__dirname, 'dist')));
+    app.use(express.static(path.resolve(__dirname, 'dist'), {
+      setHeaders: (res, filePath) => {
+        // Hashed build assets are immutable; index.html must always be revalidated so
+        // visitors never keep a stale page that points at deleted CSS/JS bundles.
+        if (filePath.includes(`${path.sep}assets${path.sep}`)) {
+          res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+        } else if (filePath.endsWith('.html')) {
+          res.setHeader('Cache-Control', 'no-cache, must-revalidate');
+        }
+      },
+    }));
+    // A missing hashed asset must be a real 404, never the HTML shell (that causes the
+    // "Refused to apply style ... MIME type text/html" error after a redeploy).
+    app.use('/assets', (_req: Request, res: Response) => { res.status(404).type('text/plain').send('Not found'); });
     app.get('*', (_req: Request, res: Response) => {
+      res.setHeader('Cache-Control', 'no-cache, must-revalidate');
       res.sendFile(path.resolve(__dirname, 'dist', 'index.html'));
     });
   }

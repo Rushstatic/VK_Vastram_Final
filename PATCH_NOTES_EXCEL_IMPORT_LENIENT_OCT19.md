@@ -140,3 +140,12 @@ A customer who started online payment and then skipped it left an order "pending
 The SQL was reviewed by reading only (no PostgreSQL in the build sandbox) and the TypeScript was syntax/scope checked only.
 Test in Razorpay TEST mode before going live: (a) pay, (b) close the popup, (c) leave the tab and wait 13 minutes,
 (d) COD order, (e) two browsers racing for a 1-piece saree.
+
+---
+# Coupon on guest checkout failed with SQLSTATE 23514 (fixed in 20261022000001)
+Cause: live table coupon_usage has check coupon_usage_customer_identity_check (user_id OR guest_email must be set).
+The order function inserted a coupon redemption for guests with user_id NULL and no guest_email.
+Fix: the function now stores the guest email (customer_email_for_coupon / customer_email) and rejects a
+guest coupon order that has no email with GUEST_EMAIL_REQUIRED. The migration also adds the guest_email
+column and the check so a fresh database matches production (they existed only in the live database).
+Run 20261022000001_coupon_guest_identity_fix.sql after 20261021000001. Safe to re-run.

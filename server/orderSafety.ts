@@ -68,6 +68,7 @@ export function requireRpcSuccess(data: any, error: any, operation: string): any
     if (error.code === '22023') {
       throw new OrderSafetyError('Cart or checkout details are invalid.', 400, error.code);
     }
+    console.error(`[${operation}] database error:`, error.code, error.message, error.details || '', error.hint || '');
     throw new OrderSafetyError(`${operation} could not be completed.`, 503, error.code || 'DATABASE_ERROR');
   }
   if (!data || data.success !== true) {

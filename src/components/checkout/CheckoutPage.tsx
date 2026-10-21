@@ -597,7 +597,7 @@ export const CheckoutPage: React.FC<CheckoutPageProps> = ({
   const subtotal = baseSubtotal + fallPicoTotal;
   const selectedAddress = addresses.find((a) => a.id === selectedAddressId);
   const destinationState = selectedAddress?.state || guestState;
-  const shippingAmount = settings ? calculateShippingAmount(subtotal, destinationState, settings) : 0;
+  const shippingAmount = settings ? calculateShippingAmount(Math.max(0, subtotal - couponDiscount), destinationState, settings) : 0;
 
   return (
     <div className="py-12 bg-[#FAF8F5] min-h-[85vh]">
@@ -624,8 +624,8 @@ export const CheckoutPage: React.FC<CheckoutPageProps> = ({
         {/* Free-delivery progress, driven by the admin-configured site setting. */}
         {Number(settings?.freeShippingThreshold || 0) > 0 && (
           <div className="mb-5 rounded-xs border border-[#B88E3E]/30 bg-[#F4EFE6] px-4 py-3 text-xs text-[#57534E]">
-            {Math.max(0, Number(settings?.freeShippingThreshold || 0) - Math.max(0, subtotal)) > 0 ? (
-              <>Add <strong className="text-[#78281F]">{formatPrice(Math.max(0, Number(settings?.freeShippingThreshold || 0) - Math.max(0, subtotal)))}</strong> more to unlock free delivery.</>
+            {Math.max(0, Number(settings?.freeShippingThreshold || 0) - Math.max(0, subtotal - couponDiscount)) > 0 ? (
+              <>Add <strong className="text-[#78281F]">{formatPrice(Math.max(0, Number(settings?.freeShippingThreshold || 0) - Math.max(0, subtotal - couponDiscount)))}</strong> more (after discounts) to unlock free delivery.</>
             ) : (
               <strong className="text-emerald-800">You have unlocked free delivery!</strong>
             )}
@@ -1152,8 +1152,9 @@ export const CheckoutPage: React.FC<CheckoutPageProps> = ({
                       value={orderNotes}
                       onChange={(e) => setOrderNotes(e.target.value)}
                       placeholder="Special delivery instructions or personal message for gift wrap..."
-                      rows={2}
-                      className="w-full bg-[#FAF8F5] border border-[#1C1917]/20 text-xs p-2 rounded-xs focus:outline-none focus:border-[#967029]"
+                      rows={4}
+                      maxLength={500}
+                      className="block w-full min-h-[96px] resize-y bg-[#FAF8F5] border border-[#1C1917]/20 text-sm leading-relaxed px-3 py-2.5 rounded-xs placeholder:text-[#A8A29E] focus:outline-none focus:border-[#967029]"
                     />
                   </div>
 
@@ -1310,8 +1311,8 @@ export const CheckoutPage: React.FC<CheckoutPageProps> = ({
                         : submitting
                         ? 'Processing Order...'
                         : paymentMethod === 'online'
-                        ? `Pay ${formatPrice(Math.max(0, subtotal - couponDiscount))} with Razorpay`
-                        : `Place COD Order (${formatPrice(Math.max(0, subtotal - couponDiscount))})`}
+                        ? `Pay ${formatPrice(Math.max(0, subtotal - couponDiscount) + shippingAmount)} with Razorpay`
+                        : `Place COD Order (${formatPrice(Math.max(0, subtotal - couponDiscount) + shippingAmount)})`}
                     </Button>
                   </div>
                 </div>

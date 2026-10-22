@@ -66,6 +66,7 @@ import { adminService, HomepageSectionData, CollectionAdminData } from './servic
 
 import { sanitizeQuantity, MAX_CART_ITEM_QUANTITY } from './lib/validation';
 import { resolveVariantCartImage } from './lib/cartVariantImage';
+import { MostLovedStyles } from './components/home/MostLovedStyles';
 
 // Client-side URL Path/SPA Routing helper maps
 const getPathFromPage = (page: PageView): string => {
@@ -165,6 +166,9 @@ const getPageFromPath = (path: string, search = ''): PageView => {
 export default function App() {
   const [currentPage, setCurrentPage] = useState<PageView>(() => getPageFromPath(window.location.pathname, window.location.search));
   const [products, setProducts] = useState<Product[]>([]);
+  // false until the first product fetch has finished (success or failure). Prevents the
+  // "Coming soon" message from flashing on refresh before products arrive.
+  const [productsLoaded, setProductsLoaded] = useState(false);
   const [categories, setCategories] = useState<any[]>([]);
 
   // Customer Auth state
@@ -261,6 +265,8 @@ export default function App() {
       }
     } catch {
       // fallback preserved
+    } finally {
+      setProductsLoaded(true);
     }
   }, []);
 
@@ -941,41 +947,16 @@ export default function App() {
             {isHomepageSectionActive('hero') && <HeroSection onNavigate={handleNavigate} />}
             {isHomepageSectionActive('categories') && <CategoryShowcase categories={categories} onNavigate={handleNavigate} />}
 
-            {/* Curated Heritage is editorial, not the full saree catalogue.
-                Products appear here only when the admin marks them Featured. */}
-            {featuredSarees.length > 0 && <section className="py-10 sm:py-16 lg:py-20 bg-[#FAF8F5]">
-              <Container>
-                <ScrollReveal distance={16} duration={550}>
-                  <SectionHeading
-                    kicker="Handloom Masterpieces"
-                    title="Curated Heritage Sarees"
-                    subtitle="Handwoven pure katan silks, Banarasi brocades, and ceremonial temple drapes."
-                    action={
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => handleNavigate({ type: 'collection', category: 'sarees' })}
-                        rightIcon={<ArrowRight className="w-4 h-4" />}
-                        className="vk-cta-blink"
-                      >
-                        View All Sarees
-                      </Button>
-                    }
-                  />
-                </ScrollReveal>
-
-                <ProductGrid
-                  products={featuredSarees}
-                  wishlistIds={wishlistIds}
-                  columns={4}
-                  mobileCarousel
-                  onToggleWishlist={handleToggleWishlist}
-                  onSelectProduct={(slug) => handleNavigate({ type: 'product', slug })}
-                  onQuickView={(p) => setQuickViewProduct(p)}
-                  onAddToCart={(p, quantity, color, size, variantId) => handleAddToCart(p, quantity ?? 1, color, size, variantId)}
-                />
-              </Container>
-            </section>}
+            {/* Most Loved Styles: a rotating selection of sarees, changes every 2 minutes. */}
+            <MostLovedStyles
+              products={activeProducts}
+              wishlistIds={wishlistIds}
+              onToggleWishlist={handleToggleWishlist}
+              onSelectProduct={(slug) => handleNavigate({ type: 'product', slug })}
+              onQuickView={(p) => setQuickViewProduct(p)}
+              onAddToCart={(p, quantity, color, size, variantId) => handleAddToCart(p, quantity ?? 1, color, size, variantId)}
+              onViewAll={() => handleNavigate({ type: 'collection', category: 'sarees' })}
+            />
 
             <BudgetDiscovery products={activeProducts} onNavigate={handleNavigate} />
             <SareeTraditions products={activeProducts} onNavigate={handleNavigate} />
@@ -1097,6 +1078,7 @@ export default function App() {
               onQuickView={(p) => setQuickViewProduct(p)}
               onAddToCart={(p, quantity, color, size, variantId) => handleAddToCart(p, quantity ?? 1, color, size, variantId)}
               products={products}
+              productsLoading={!productsLoaded}
               categories={categories}
             />
           );

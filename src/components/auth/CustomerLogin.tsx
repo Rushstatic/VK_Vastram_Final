@@ -21,6 +21,14 @@ export const CustomerLogin: React.FC<CustomerLoginProps> = ({
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
+  const [unverifiedEmail, setUnverifiedEmail] = useState<string | null>(null);
+  const [resendNote, setResendNote] = useState<string | null>(null);
+
+  const resendFromLogin = async () => {
+    if (!unverifiedEmail) return;
+    const { error } = await supabase.auth.resend({ type: 'signup', email: unverifiedEmail });
+    setResendNote(error ? 'Could not send right now. Please try again in a few minutes.' : 'Verification email sent. Check your inbox and spam folder.');
+  };
 
   const { settings } = useSiteSettings();
   const storeName = settings?.storeName || 'VK VASTRAM';
@@ -49,6 +57,7 @@ export const CustomerLogin: React.FC<CustomerLoginProps> = ({
         if (error.message.includes('Invalid login credentials')) {
           setErrorMessage('Incorrect email or password. Please check your credentials and try again.');
         } else if (error.message.includes('Email not confirmed')) {
+          setUnverifiedEmail(email.trim());
           setErrorMessage('Please confirm your email address via the verification link sent to your inbox.');
         } else {
           setErrorMessage(error.message);
@@ -94,6 +103,14 @@ export const CustomerLogin: React.FC<CustomerLoginProps> = ({
         </div>
 
         {/* Error notification */}
+        {unverifiedEmail && errorMessage.includes('confirm your email') && (
+          <div className="mb-4 text-xs text-[#57534E] space-y-2">
+            <button type="button" onClick={resendFromLogin} className="px-4 py-2 border border-[#967029] text-[#967029] hover:bg-[#967029]/10 cursor-pointer">
+              Resend verification email
+            </button>
+            {resendNote && <p>{resendNote}</p>}
+          </div>
+        )}
         {errorMessage && (
           <div className="p-3 bg-red-50 border border-red-200 text-red-700 text-xs rounded-xs flex items-start gap-2">
             <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />

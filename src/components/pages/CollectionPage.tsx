@@ -28,10 +28,12 @@ interface CollectionPageProps {
   onQuickView: (product: Product) => void;
   onAddToCart: (product: Product, quantity?: number, color?: string, size?: string, variantId?: string) => void;
   products?: Product[];
+  productsLoading?: boolean;
   categories?: CollectionCategory[];
 }
 
 export const CollectionPage: React.FC<CollectionPageProps> = ({
+  productsLoading = false,
   category,
   subCategoryFilter,
   collectionId,
@@ -471,7 +473,17 @@ export const CollectionPage: React.FC<CollectionPageProps> = ({
 
           {/* Product Grid Area (Col 9 or 12) */}
           <div className="lg:col-span-9">
-            {categoryPool.length === 0 ? (
+            {categoryPool.length === 0 && productsLoading ? (
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-4 sm:gap-6" aria-busy="true" aria-label="Loading collection">
+                {Array.from({ length: 6 }).map((_, i) => (
+                  <div key={i} className="animate-pulse">
+                    <div className="aspect-[3/4] bg-[#E7E0D3] rounded-xs" />
+                    <div className="mt-3 h-3 w-2/3 bg-[#E7E0D3] rounded-xs" />
+                    <div className="mt-2 h-3 w-1/3 bg-[#E7E0D3] rounded-xs" />
+                  </div>
+                ))}
+              </div>
+            ) : categoryPool.length === 0 ? (
               <div className="min-h-[340px] sm:min-h-[420px] flex flex-col items-center justify-center text-center px-5 py-12 border border-[#1C1917]/10 bg-[#F4EFE6]/50">
                 <span className="text-[10px] uppercase tracking-[0.24em] text-[#967029] font-semibold mb-3">A new collection is being prepared</span>
                 <h2 className="font-serif text-3xl sm:text-4xl text-[#1C1917] font-normal">Coming Soon</h2>

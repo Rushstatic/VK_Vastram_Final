@@ -182,3 +182,27 @@ Verify after deploy:
   2. Enable alerts, lock the phone, place a COD order: notification with vibration should appear; tap opens that order.
   3. With /admin open, place a COD order: chime, vibration and banner.
   4. Check Realtime works: if no banner appears, confirm orders is in supabase_realtime and admin RLS allows SELECT on orders.
+
+---
+# Saree "Coming soon" flash, signup verification, resend (Oct 22)
+1. Products loaded asynchronously and the collection page showed "Coming soon" while the list was still empty.
+   App.tsx now tracks productsLoaded; CollectionPage shows a loading skeleton until the first fetch finishes,
+   and "Coming soon" only when the load succeeded and the category really is empty.
+2. Signup: Supabase creates the account before the verification email is sent. If the email fails, the
+   customer now sees a clear message and a "Resend verification email" button (CustomerRegister). The account
+   cannot sign in until verified; the login page offers the same resend button.
+3. Branded emails: configure in Supabase dashboard (Authentication > SMTP Settings with Resend, and Email Templates).
+   Fully custom emails from our server are a separate later step.
+Test: refresh /collection/sarees (should show skeleton, then sarees); sign up with SMTP disabled (should show
+resend message); sign up normally and verify.
+
+---
+# Homepage: Most Loved Styles (Oct 22)
+- "Curated Heritage Sarees" replaced by "Most Loved Styles" (src/components/home/MostLovedStyles.tsx).
+- Shows 6 sarees: 2 per row on phones, 6 in a row on desktop, with a centred "View All" button (blinking).
+- The selection rotates every 2 minutes. The order is a hash of (time slot, product id), so every visitor sees the same
+  set within a slot and nothing is stored in the database. Only sarees with a photo are used. If none exist, the
+  section is hidden (no "coming soon").
+- Hero: the "The Heritage Loom" eyebrow line above the headline was removed (HeroSection.tsx).
+- Count changed to 12: phones show 2 columns x 6 rows, desktop shows 6 columns x 2 rows (SHOWN_COUNT = 12).
+- Hero: removed the subheading paragraph and the 100% Pure Silk / Regional / Direct stat tags. Headline and buttons kept.

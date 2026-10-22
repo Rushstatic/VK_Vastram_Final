@@ -27,6 +27,20 @@ export const CustomerRegister: React.FC<CustomerRegisterProps> = ({
   const [loading, setLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
   const [successInfo, setSuccessInfo] = useState<string | null>(null);
+  const [pendingVerificationEmail, setPendingVerificationEmail] = useState<string | null>(null);
+  const [resendMessage, setResendMessage] = useState<string | null>(null);
+  const [resending, setResending] = useState(false);
+
+  // Sends the verification email again. Works even if the first email failed to send.
+  const resendVerification = async (address: string) => {
+    setResending(true);
+    setResendMessage(null);
+    const { error } = await supabase.auth.resend({ type: 'signup', email: address.trim() });
+    setResendMessage(error
+      ? 'We could not send the verification email just now. Please wait a few minutes and try again.'
+      : 'Verification email sent. Please check your inbox and spam folder, then sign in.');
+    setResending(false);
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -82,6 +96,11 @@ export const CustomerRegister: React.FC<CustomerRegisterProps> = ({
       if (error) {
         if (error.message.includes('User already registered')) {
           setErrorMessage('An account with this email address already exists. Please sign in instead.');
+        } else if (/sending|send.*email|confirmation email/i.test(error.message)) {
+          // The account row was created, but the verification email could not be sent.
+          // Say so plainly instead of showing a raw error, and let the customer resend it.
+          setPendingVerificationEmail(email.trim());
+          setErrorMessage('Your account was created, but the verification email could not be sent. Use the button below to send it again. You cannot sign in until your email is verified.');
         } else {
           setErrorMessage(error.message);
         }
@@ -96,6 +115,7 @@ export const CustomerRegister: React.FC<CustomerRegisterProps> = ({
           onNavigate(redirectAfter || { type: 'account' });
         } else {
           // Email verification requirement active in Supabase project
+          setPendingVerificationEmail(email.trim());
           setSuccessInfo(
             'Account created successfully! Please check your email to confirm your account, then sign in.'
           );
@@ -134,6 +154,19 @@ export const CustomerRegister: React.FC<CustomerRegisterProps> = ({
         </div>
 
         {/* Success notification */}
+        {pendingVerificationEmail && (
+          <div className="mb-4 text-xs text-[#57534E] space-y-2">
+            <button
+              type="button"
+              disabled={resending}
+              onClick={() => resendVerification(pendingVerificationEmail)}
+              className="px-4 py-2 border border-[#967029] text-[#967029] hover:bg-[#967029]/10 transition-colors disabled:opacity-50 cursor-pointer"
+            >
+              {resending ? 'Sending...' : 'Resend verification email'}
+            </button>
+            {resendMessage && <p>{resendMessage}</p>}
+          </div>
+        )}
         {successInfo ? (
           <div className="space-y-4">
             <div className="p-4 bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs rounded-xs flex items-start gap-2.5">

@@ -357,20 +357,11 @@ export const HeroSection: React.FC<HeroSectionProps> = ({ onNavigate }) => {
               ref={narrativeRef}
               className="animate-hero-text"
             >
-              <div className="gsap-hero-anim inline-flex items-center gap-2 mb-4">
-                <span className="w-6 h-[1px] bg-[#B88E3E]" />
-                <span className="text-[11px] uppercase tracking-[0.25em] text-[#967029] font-medium">
-                  {currentSlide.eyebrow || 'The Heritage Loom'}
-                </span>
-              </div>
 
               <h1 className="font-serif text-3xl sm:text-4xl lg:text-5xl font-normal text-[#1C1917] tracking-tight leading-[1.15] text-balance" aria-label={currentSlide.heading}>
                 {currentSlide.heading.split(/(\s+)/).map((part, index) => part.trim() ? <span key={`${index}-${part}`} className="gsap-hero-word inline-block" aria-hidden="true">{part}</span> : part)}
               </h1>
 
-              <p className="gsap-hero-anim mt-4 sm:mt-5 text-sm sm:text-base text-[#57534E] leading-relaxed max-w-lg font-normal text-balance">
-                {currentSlide.description}
-              </p>
 
               <div className="gsap-hero-anim mt-6 sm:mt-8 flex flex-wrap items-center gap-3 sm:gap-4">
                 <Button
@@ -394,23 +385,6 @@ export const HeroSection: React.FC<HeroSectionProps> = ({ onNavigate }) => {
               </div>
             </div>
 
-            {/* Subtle Editorial Assurance */}
-            <div className={`mt-10 pt-6 border-t border-[#1C1917]/10 flex items-center gap-6 text-xs text-[#78716C] transition-all duration-700 delay-[400ms] ease-out ${prefersReducedMotion ? '' : animateEntrance ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4'}`}>
-              <div>
-                <span className="font-serif text-base text-[#1C1917] block">100%</span>
-                <span>Pure Silk & Cotton</span>
-              </div>
-              <div className="w-[1px] h-8 bg-[#1C1917]/10" />
-              <div>
-                <span className="font-serif text-base text-[#1C1917] block">Regional</span>
-                <span>Weaving Clusters</span>
-              </div>
-              <div className="w-[1px] h-8 bg-[#1C1917]/10" />
-              <div>
-                <span className="font-serif text-base text-[#1C1917] block">Direct</span>
-                <span>From Master Artisans</span>
-              </div>
-            </div>
           </div>
 
           {/* Right Hero Visual Stage with Multi-Slide Crossfade */}

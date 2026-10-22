@@ -956,6 +956,7 @@ export default function App() {
                         size="sm"
                         onClick={() => handleNavigate({ type: 'collection', category: 'sarees' })}
                         rightIcon={<ArrowRight className="w-4 h-4" />}
+                        className="vk-cta-blink"
                       >
                         View All Sarees
                       </Button>
@@ -1037,6 +1038,7 @@ export default function App() {
                         size="sm"
                         onClick={() => handleNavigate({ type: 'collection', category: 'bedsheets' })}
                         rightIcon={<ArrowRight className="w-4 h-4" />}
+                        className="vk-cta-blink"
                       >
                         View All Bedsheets
                       </Button>

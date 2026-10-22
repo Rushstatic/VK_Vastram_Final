@@ -30,7 +30,7 @@ export const WishlistDrawer: React.FC<WishlistDrawerProps> = ({
         onClick={onClose}
       />
 
-      <div className="fixed inset-y-0 right-0 max-w-full flex pl-10">
+      <div className="fixed inset-y-0 right-0 w-screen max-w-md overflow-hidden flex">
         <div className="w-screen max-w-md bg-[#FAF8F5] shadow-2xl flex flex-col border-l border-[#1C1917]/10">
           {/* Header */}
           <div className="flex items-center justify-between px-6 py-5 border-b border-[#1C1917]/10 bg-[#FAF8F5]">

@@ -149,3 +149,21 @@ Fix: the function now stores the guest email (customer_email_for_coupon / custom
 guest coupon order that has no email with GUEST_EMAIL_REQUIRED. The migration also adds the guest_email
 column and the check so a fresh database matches production (they existed only in the live database).
 Run 20261022000001_coupon_guest_identity_fix.sql after 20261021000001. Safe to re-run.
+
+---
+# Round: sold count, bag drawer, viewer zoom, blinking "View all"
+
+1. Inventory "Sold" / "Total sold" counted every order line, including unpaid, failed and cancelled checkouts
+   (28 shown vs 2 real sales). server.ts /api/admin/inventory now counts only order lines whose order is not
+   'pending' and not 'cancelled'. Pending online checkouts and cancelled orders are excluded.
+2. Bag (CartDrawer) and wishlist drawers: the wrapper had 40px left padding and no clipping, so the panel could
+   show past the right edge on phones. Wrapper is now w-screen max-w-md with overflow-hidden.
+3. Fullscreen image viewer: pinch to zoom (up to 4x), drag to pan while zoomed, double-tap or double-click to
+   zoom to 2.5x / back to 1x, zoom buttons capped at 4x, every new photo opens at 1x. The image no longer gets
+   a GSAP transform, which previously conflicted with zoom.
+4. "View All Sarees", "View All Bedsheets" and the rail "View Collection" links blink gently (class vk-cta-blink);
+   reduced-motion users get a static highlight instead.
+Files: server.ts, src/components/product/MobileImageViewer.tsx, src/components/cart/CartDrawer.tsx,
+src/components/wishlist/WishlistDrawer.tsx, src/components/catalog/HorizontalProductRail.tsx, src/App.tsx, src/index.css
+No database migration in this round.
+Not run: TypeScript only syntax/scope checked here; test pinch and drawer on a real phone.

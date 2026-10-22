@@ -3364,9 +3364,15 @@ const orderPayload = {
 
         if (!varError && variants) {
           // Fetch sold quantities from confirmed order_items
-          const { data: soldRows } = await db
+          // Sold = units on CONFIRMED orders only. Unpaid checkouts (order_status 'pending'),
+          // failed or closed payments and cancelled orders are not sales and must not be counted.
+          const { data: soldRowsRaw } = await db
             .from('order_items')
-            .select('product_variant_id, quantity');
+            .select('product_variant_id, quantity, order:orders(order_status)');
+          const soldRows = (soldRowsRaw || []).filter((r: any) => {
+            const status = String(r?.order?.order_status || '').toLowerCase();
+            return status !== '' && status !== 'pending' && status !== 'cancelled';
+          });
 
           const soldMap = new Map<string, number>();
           if (soldRows) {

@@ -72,7 +72,7 @@ export const HorizontalProductRail: React.FC<HorizontalProductRailProps> = ({
             {actionText && onActionClick && (
               <button
                 onClick={onActionClick}
-                className="text-xs text-[#967029] hover:text-[#1C1917] transition-colors cursor-pointer font-medium whitespace-nowrap"
+                className="vk-cta-blink px-2.5 py-1 text-xs text-[#967029] hover:text-[#1C1917] transition-colors cursor-pointer font-medium whitespace-nowrap"
               >
                 {actionText}
               </button>

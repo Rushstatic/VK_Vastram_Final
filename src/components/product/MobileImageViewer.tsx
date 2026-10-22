@@ -23,6 +23,7 @@ export const MobileImageViewer: React.FC<MobileImageViewerProps> = ({
 }) => {
   const [currentIndex, setCurrentIndex] = useState(initialIndex);
   const [zoomScale, setZoomScale] = useState(1);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
   const [imageLoadError, setImageLoadError] = useState(false);
   const [imageLoaded, setImageLoaded] = useState(false);
   const [activeImageUrl, setActiveImageUrl] = useState('');
@@ -37,7 +38,15 @@ export const MobileImageViewer: React.FC<MobileImageViewerProps> = ({
   const touchStartXRef = useRef<number | null>(null);
   const touchEndXRef = useRef<number | null>(null);
   const touchStartYRef = useRef<number | null>(null);
+  const pinchRef = useRef<{ distance: number; scale: number } | null>(null);
+  const panRef = useRef<{ x: number; y: number; px: number; py: number } | null>(null);
   const touchEndYRef = useRef<number | null>(null);
+
+  // A different photo always opens at 1x, centred.
+  useEffect(() => {
+    setZoomScale(1);
+    setPan({ x: 0, y: 0 });
+  }, [currentIndex]);
 
   // Sync initialIndex
   useEffect(() => {
@@ -103,11 +112,6 @@ export const MobileImageViewer: React.FC<MobileImageViewerProps> = ({
   const handleImageLoaded = (event: React.SyntheticEvent<HTMLImageElement>) => {
     setImageLoaded(true);
     setImageLoadError(false);
-    if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return;
-    gsap.fromTo(event.currentTarget,
-      { opacity: 0, scale: 0.94, rotationY: 7, transformPerspective: 900 },
-      { opacity: 1, scale: 1, rotationY: 0, duration: 0.65, ease: 'back.out(1.25)', clearProps: 'transform' }
-    );
   };
 
   const handleNext = () => {
@@ -124,32 +128,84 @@ export const MobileImageViewer: React.FC<MobileImageViewerProps> = ({
     setCurrentIndex((prev) => (prev - 1 + images.length) % images.length);
   };
 
+  // ---- Zoom & pan -------------------------------------------------------
+  // Pinch with two fingers, drag with one finger while zoomed, double-tap / double-click to toggle,
+  // buttons in the bottom bar. Swiping to change photos is only active when not zoomed.
+  const MAX_ZOOM = 4;
+  const distanceBetween = (touches: React.TouchList) => {
+    const dx = touches[0].clientX - touches[1].clientX;
+    const dy = touches[0].clientY - touches[1].clientY;
+    return Math.hypot(dx, dy);
+  };
+  const clampPan = (x: number, y: number, scale: number) => {
+    const el = imageContainerRef.current;
+    if (!el || scale <= 1) return { x: 0, y: 0 };
+    const maxX = (el.clientWidth * (scale - 1)) / 2;
+    const maxY = (el.clientHeight * (scale - 1)) / 2;
+    return { x: Math.max(-maxX, Math.min(maxX, x)), y: Math.max(-maxY, Math.min(maxY, y)) };
+  };
+  const setZoom = (next: number) => {
+    const clamped = Math.max(1, Math.min(MAX_ZOOM, next));
+    setZoomScale(clamped);
+    setPan((current) => (clamped === 1 ? { x: 0, y: 0 } : clampPan(current.x, current.y, clamped)));
+  };
+
   const handleTouchStart = (e: React.TouchEvent) => {
-    if (zoomScale > 1) return; // Don't swipe while zoomed in
-    touchStartXRef.current = e.touches[0].clientX;
-    touchStartYRef.current = e.touches[0].clientY;
+    if (e.touches.length === 2) {
+      pinchRef.current = { distance: distanceBetween(e.touches), scale: zoomScale };
+      panRef.current = null;
+      touchStartXRef.current = null;
+      touchEndXRef.current = null;
+      return;
+    }
+    if (e.touches.length !== 1) return;
+    const touch = e.touches[0];
+    if (zoomScale > 1) {
+      panRef.current = { x: pan.x, y: pan.y, px: touch.clientX, py: touch.clientY };
+      return;
+    }
+    touchStartXRef.current = touch.clientX;
+    touchStartYRef.current = touch.clientY;
     touchEndXRef.current = null;
     touchEndYRef.current = null;
   };
 
   const handleTouchMove = (e: React.TouchEvent) => {
-    if (zoomScale > 1) return;
-    touchEndXRef.current = e.touches[0].clientX;
-    touchEndYRef.current = e.touches[0].clientY;
+    if (e.touches.length === 2 && pinchRef.current) {
+      const ratio = distanceBetween(e.touches) / Math.max(1, pinchRef.current.distance);
+      setZoom(pinchRef.current.scale * ratio);
+      return;
+    }
+    if (e.touches.length === 1 && zoomScale > 1 && panRef.current) {
+      const touch = e.touches[0];
+      setPan(clampPan(
+        panRef.current.x + (touch.clientX - panRef.current.px),
+        panRef.current.y + (touch.clientY - panRef.current.py),
+        zoomScale
+      ));
+      return;
+    }
+    if (zoomScale <= 1 && e.touches.length === 1) {
+      touchEndXRef.current = e.touches[0].clientX;
+      touchEndYRef.current = e.touches[0].clientY;
+    }
   };
 
-  const handleTouchEnd = () => {
-    if (zoomScale > 1 || touchStartXRef.current === null || touchEndXRef.current === null) return;
+  const handleTouchEnd = (e: React.TouchEvent) => {
+    if (e.touches.length < 2) pinchRef.current = null;
+    if (e.touches.length === 0) panRef.current = null;
+    if (zoomScale > 1) return;
+    if (touchStartXRef.current === null || touchEndXRef.current === null) {
+      touchStartXRef.current = null;
+      touchStartYRef.current = null;
+      return;
+    }
     const distance = touchStartXRef.current - touchEndXRef.current;
     const verticalDistance = Math.abs((touchStartYRef.current ?? 0) - (touchEndYRef.current ?? 0));
-    const minSwipeDistance = 40;
-
-    // Only a mostly-horizontal swipe changes the image (ignore vertical drags).
-    if (Math.abs(distance) > minSwipeDistance && Math.abs(distance) > verticalDistance * 1.2) {
+    if (Math.abs(distance) > 40 && Math.abs(distance) > verticalDistance * 1.2) {
       if (distance > 0) handleNext();
       else handlePrev();
     }
-
     touchStartXRef.current = null;
     touchEndXRef.current = null;
     touchStartYRef.current = null;
@@ -157,7 +213,8 @@ export const MobileImageViewer: React.FC<MobileImageViewerProps> = ({
   };
 
   const handleDoubleTap = () => {
-    setZoomScale((prev) => (prev === 1 ? 2.2 : 1));
+    if (zoomScale > 1) setZoom(1);
+    else setZoom(2.5);
   };
 
   const handleClose = () => {
@@ -219,7 +276,7 @@ export const MobileImageViewer: React.FC<MobileImageViewerProps> = ({
         onTouchMove={handleTouchMove}
         onTouchEnd={handleTouchEnd}
         onDoubleClick={handleDoubleTap}
-        className="relative flex-1 flex items-center justify-center p-2 sm:p-6 overflow-hidden touch-pan-y"
+        className={`relative flex-1 flex items-center justify-center p-2 sm:p-6 overflow-hidden ${zoomScale > 1 ? 'touch-none' : 'touch-pan-y'}`}
       >
         {activeImageUrl && !imageLoadError && !imageLoaded && (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-[#FAF8F5]/80" role="status" aria-live="polite">
@@ -247,7 +304,7 @@ export const MobileImageViewer: React.FC<MobileImageViewerProps> = ({
             loading="eager"
             decoding="async"
             className={`max-h-[85vh] max-w-[95vw] object-contain transition-opacity duration-200 cursor-grab active:cursor-grabbing ${imageLoaded ? 'opacity-100' : 'opacity-0'}`}
-            style={{ transform: zoomScale > 1 ? `scale(${zoomScale})` : undefined }}
+            style={{ transform: `translate3d(${pan.x}px, ${pan.y}px, 0) scale(${zoomScale})`, transition: 'transform 120ms ease-out' }}
             draggable={false}
           />
         ) : (
@@ -288,7 +345,7 @@ export const MobileImageViewer: React.FC<MobileImageViewerProps> = ({
           {/* Zoom In */}
           <button
             type="button"
-            onClick={() => setZoomScale((s) => Math.min(3, s + 0.5))}
+            onClick={() => setZoom(zoomScale + 0.5)}
             className="p-1.5 rounded-xs hover:bg-white/10 text-[#FAF8F5]/80 hover:text-white transition-colors cursor-pointer"
             title="Zoom In"
           >
@@ -297,7 +354,7 @@ export const MobileImageViewer: React.FC<MobileImageViewerProps> = ({
           {/* Zoom Out */}
           <button
             type="button"
-            onClick={() => setZoomScale((s) => Math.max(1, s - 0.5))}
+            onClick={() => setZoom(zoomScale - 0.5)}
             className="p-1.5 rounded-xs hover:bg-white/10 text-[#FAF8F5]/80 hover:text-white transition-colors cursor-pointer"
             title="Zoom Out"
           >
@@ -306,7 +363,7 @@ export const MobileImageViewer: React.FC<MobileImageViewerProps> = ({
           {zoomScale > 1 && (
             <button
               type="button"
-              onClick={() => setZoomScale(1)}
+              onClick={() => setZoom(1)}
               className="p-1.5 rounded-xs hover:bg-white/10 text-[#B88E3E] transition-colors cursor-pointer"
               title="Reset Zoom"
             >

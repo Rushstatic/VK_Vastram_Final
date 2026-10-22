@@ -71,7 +71,7 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
         onClick={handleSmoothClose}
       />
 
-      <div className="fixed inset-y-0 right-0 max-w-full flex pl-10 pointer-events-none">
+      <div className="fixed inset-y-0 right-0 w-screen max-w-md overflow-hidden flex pointer-events-none">
         <div
           className={`w-screen max-w-md vk-glass-surface rounded-l-2xl overflow-hidden flex flex-col border-l pointer-events-auto transform transition-transform duration-320 ease-[cubic-bezier(0.16,1,0.3,1)] ${
             isClosing ? 'translate-x-full' : 'translate-x-0'

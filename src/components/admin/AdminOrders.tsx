@@ -79,7 +79,7 @@ export const AdminOrders: React.FC = () => {
   const [limit] = useState(10);
 
   // Search & Filter state
-  const [search, setSearch] = useState('');
+  const [search, setSearch] = useState(() => new URLSearchParams(window.location.search).get('order') || '');
   const [orderStatus, setOrderStatus] = useState('all');
   const [paymentStatus, setPaymentStatus] = useState('all');
   const [customerType, setCustomerType] = useState('all');

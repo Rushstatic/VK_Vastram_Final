@@ -167,3 +167,18 @@ Files: server.ts, src/components/product/MobileImageViewer.tsx, src/components/c
 src/components/wishlist/WishlistDrawer.tsx, src/components/catalog/HorizontalProductRail.tsx, src/App.tsx, src/index.css
 No database migration in this round.
 Not run: TypeScript only syntax/scope checked here; test pinch and drawer on a real phone.
+
+---
+# Admin app & order alerts (Oct 22)
+- Admin is installable: public/admin.webmanifest (start /admin), icons admin-icon-192/512 (+ maskable).
+  AdminLayout injects the manifest and iPhone home-screen tags, so the storefront is not installed as admin.
+- Push: service worker vibrates, stays on screen until tapped, and opens the exact order (/admin?order=VKV-...).
+  Server push payload now carries the order number in the URL.
+- Live alert while the admin page is open: chime + vibration + banner for a new real order (COD or payment captured).
+  Uses Supabase Realtime on public.orders. Migration 20261022000002 adds orders to the realtime publication.
+- Browsers allow sound only after the admin taps the page once.
+Verify after deploy:
+  1. Install from /admin on Android (Chrome menu > Install app) and on iPhone (Share > Add to Home Screen).
+  2. Enable alerts, lock the phone, place a COD order: notification with vibration should appear; tap opens that order.
+  3. With /admin open, place a COD order: chime, vibration and banner.
+  4. Check Realtime works: if no banner appears, confirm orders is in supabase_realtime and admin RLS allows SELECT on orders.

@@ -69,7 +69,7 @@ async function dispatchAdminOrderAlert(orderId: string, eventType: 'new_order' |
     const isRefundAlert = eventType === 'refund_required';
     const title = isRefundAlert ? 'ACTION REQUIRED: VK VASTRAM refund review' : (isNew ? 'New VK VASTRAM order' : 'VK VASTRAM order updated');
     const body = isNew ? `${orderNumber} · ₹${Number(order.total_amount || 0).toLocaleString('en-IN')} · ${paymentMethod}` : `${orderNumber} · ${String(status || order.order_status || 'status updated').replace(/_/g, ' ')}`;
-    const payload = JSON.stringify({ title, body, url: '/admin', tag: `vkv-${order.id}-${eventType}-${status || ''}` });
+    const payload = JSON.stringify({ title, body, url: `/admin?order=${encodeURIComponent(orderNumber)}`, tag: `vkv-${order.id}-${eventType}-${status || ''}` });
     if (process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY) {
       try {
         webpush.setVapidDetails(process.env.VAPID_SUBJECT || 'mailto:support@vkvastram.in', process.env.VAPID_PUBLIC_KEY, process.env.VAPID_PRIVATE_KEY);

@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { BellRing, BellOff, Volume2 } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
+import { playOrderChime } from '../../lib/adminAlerts';
 
 function decodeVapidKey(base64: string): Uint8Array {
   const padded = base64 + '='.repeat((4 - base64.length % 4) % 4);
@@ -57,20 +58,8 @@ export const AdminOrderNotifications: React.FC = () => {
   };
 
   const testSound = () => {
-    try {
-      const Ctx = window.AudioContext || (window as any).webkitAudioContext;
-      const ctx = new Ctx();
-      [880, 1174.66].forEach((frequency, index) => {
-        const oscillator = ctx.createOscillator(); const gain = ctx.createGain();
-        oscillator.type = 'sine'; oscillator.frequency.value = frequency;
-        gain.gain.setValueAtTime(0.0001, ctx.currentTime + index * 0.16);
-        gain.gain.exponentialRampToValueAtTime(0.12, ctx.currentTime + index * 0.16 + 0.025);
-        gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + index * 0.16 + 0.13);
-        oscillator.connect(gain); gain.connect(ctx.destination);
-        oscillator.start(ctx.currentTime + index * 0.16); oscillator.stop(ctx.currentTime + index * 0.16 + 0.14);
-      });
-      setMessage('Previewed the VK VASTRAM alert sound. Custom sound only plays while this page is active and audio is permitted.');
-    } catch { setMessage('This browser could not play the sound preview.'); }
+    playOrderChime();
+    setMessage('Previewed the VK VASTRAM alert sound. Custom sound only plays while this page is active and audio is permitted.');
   };
 
   return <div className="w-full max-w-lg rounded border border-[#B88E3E]/40 bg-[#FAF8F5] p-4 sm:p-5 space-y-3">

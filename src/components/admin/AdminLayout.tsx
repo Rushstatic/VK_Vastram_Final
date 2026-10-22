@@ -31,6 +31,8 @@ import { adminService } from '../../services/adminService';
 import { formatPrice } from '../ui/PriceDisplay';
 import { AdminSareeTypes } from './AdminSareeTypes';
 import { AdminOrderNotifications } from './AdminOrderNotifications';
+import { supabase, isSupabaseConfigured } from '../../lib/supabase';
+import { playOrderChime, vibrateForOrder, ensureAdminAppInstallTags } from '../../lib/adminAlerts';
 
 interface AdminLayoutProps {
   currentSubView: AdminSubView;
@@ -56,6 +58,45 @@ export const AdminLayout: React.FC<AdminLayoutProps> = ({
 
   // Global Search State
   const [searchQuery, setSearchQuery] = useState('');
+  // Live "new order" alert while this admin page is open: chime, vibration and an on-screen banner.
+  const [liveAlert, setLiveAlert] = useState<{ orderNumber: string; amount: number; kind: 'new' | 'paid' } | null>(null);
+
+  // Install support: manifest + iPhone home-screen tags, and open the order from a notification link.
+  useEffect(() => {
+    ensureAdminAppInstallTags();
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('order')) onNavigateSubView('orders');
+    const onMessage = (event: MessageEvent) => {
+      if (event.data?.type === 'vk-open-order') onNavigateSubView('orders');
+    };
+    navigator.serviceWorker?.addEventListener('message', onMessage);
+    return () => navigator.serviceWorker?.removeEventListener('message', onMessage);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Realtime: a new real order (COD, or online payment captured) alerts the open admin page.
+  useEffect(() => {
+    if (!isSupabaseConfigured()) return;
+    const announce = (row: any, kind: 'new' | 'paid') => {
+      playOrderChime();
+      vibrateForOrder();
+      setLiveAlert({ orderNumber: String(row.order_number || ''), amount: Number(row.total_amount || 0), kind });
+    };
+    const channel = (supabase as any)
+      .channel('admin-live-orders')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'orders' }, (payload: any) => {
+        const row = payload.new || {};
+        if (row.order_status && row.order_status !== 'pending') announce(row, 'new');
+      })
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'orders' }, (payload: any) => {
+        const row = payload.new || {};
+        const before = String(payload.old?.payment_status || '').toLowerCase();
+        const now = String(row.payment_status || '').toLowerCase();
+        if (['captured', 'paid'].includes(now) && !['captured', 'paid'].includes(before)) announce(row, 'paid');
+      })
+      .subscribe();
+    return () => { void (supabase as any).removeChannel(channel); };
+  }, []);
   const [isSearching, setIsSearching] = useState(false);
   const [searchResults, setSearchResults] = useState<{
     products: any[];
@@ -488,6 +529,31 @@ export const AdminLayout: React.FC<AdminLayoutProps> = ({
         </header>
 
         {/* Content Body Container */}
+        {liveAlert && (
+          <div role="alert" className="fixed top-3 left-1/2 -translate-x-1/2 z-[200] w-[min(92vw,28rem)] bg-[#1C1917] text-[#FAF8F5] rounded-xs shadow-xl px-4 py-3 flex items-center gap-3">
+            <button
+              type="button"
+              onClick={() => { onNavigateSubView('orders'); setLiveAlert(null); }}
+              className="flex-1 text-left min-w-0 cursor-pointer"
+            >
+              <span className="block text-[11px] uppercase tracking-wider text-[#B88E3E]">
+                {liveAlert.kind === 'paid' ? 'Payment received' : 'New order'}
+              </span>
+              <span className="block text-sm font-medium truncate">
+                {liveAlert.orderNumber} · ₹{liveAlert.amount.toLocaleString('en-IN')}
+              </span>
+              <span className="block text-[11px] text-[#FAF8F5]/70">Tap to open orders</span>
+            </button>
+            <button
+              type="button"
+              aria-label="Dismiss alert"
+              onClick={() => setLiveAlert(null)}
+              className="text-[#FAF8F5]/70 hover:text-white px-2 py-1 cursor-pointer"
+            >
+              ✕
+            </button>
+          </div>
+        )}
         <main className="flex-1 overflow-y-auto p-4 sm:p-8">
           {children}
         </main>

@@ -1423,9 +1423,6 @@ export const AdminProductForm: React.FC<AdminProductFormProps> = ({
                               Primary
                             </span>
                           )}
-                          <span className="bg-[#1C1917]/80 backdrop-blur-xs text-[#FAF8F5] text-[9px] uppercase tracking-wider font-medium px-1.5 py-0.5 rounded-xs shadow-2xs">
-                            {roleBadgeLabels[img.role || ''] || img.role || 'Gallery'}
-                          </span>
                         </div>
 
                         {/* Action buttons overlay (Move Left, Right, Delete, Tune) */}

@@ -226,11 +226,6 @@ export const ProductGallery: React.FC<ProductGalleryProps> = ({
                   loading="lazy"
                   className="w-full h-full object-cover"
                 />
-                {img.role && (
-                  <span className="absolute bottom-0 inset-x-0 bg-[#1C1917]/80 text-[#FAF8F5] text-[8px] font-sans uppercase tracking-wider text-center py-0.5 truncate px-0.5">
-                    {img.role === 'full_saree' ? 'full saree' : img.role}
-                  </span>
-                )}
               </button>
             );
           })}
@@ -258,7 +253,6 @@ export const ProductGallery: React.FC<ProductGalleryProps> = ({
             src={activeImage.imageUrl}
             fallbackSrc={activeImage.fallbackImageUrl}
             alt={`${productName} — ${activeImage.role || 'Main View'}`}
-            roleTag={getRoleDisplayName(activeImage.role)}
             onOpenFullscreen={() => setIsFullscreenOpen(true)}
             aspectRatio="3/4"
             fit={activeImage.fit}

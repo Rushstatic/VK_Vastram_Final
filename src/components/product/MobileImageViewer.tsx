@@ -90,7 +90,6 @@ export const MobileImageViewer: React.FC<MobileImageViewerProps> = ({
   const currentItem = images[currentIndex] || images[0];
   const currentUrl = typeof currentItem === 'string' ? currentItem : currentItem?.imageUrl;
   const currentFallbackUrl = typeof currentItem === 'object' ? currentItem?.fallbackImageUrl : undefined;
-  const currentRole = currentItem && typeof currentItem === 'object' ? currentItem.role : undefined;
   const normalizedCurrentUrl = normalizeImageUrl(currentUrl);
   const normalizedFallbackUrl = normalizeImageUrl(currentFallbackUrl);
 
@@ -247,11 +246,6 @@ export const MobileImageViewer: React.FC<MobileImageViewerProps> = ({
           <span className="font-serif text-sm tracking-wide text-[#FAF8F5]/90 truncate max-w-xs sm:max-w-md">
             {productName}
           </span>
-          {currentRole && (
-            <span className="inline-block text-[10px] uppercase tracking-wider px-2 py-0.5 rounded-2xs bg-[#B88E3E]/20 text-[#B88E3E] border border-[#B88E3E]/30 font-medium">
-              {currentRole}
-            </span>
-          )}
         </div>
 
         <div className="flex items-center gap-4">

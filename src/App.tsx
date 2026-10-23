@@ -945,7 +945,7 @@ export default function App() {
         {currentPage.type === 'home' && (
           <div className="space-y-0">
             {isHomepageSectionActive('hero') && <HeroSection onNavigate={handleNavigate} />}
-            {isHomepageSectionActive('categories') && <CategoryShowcase categories={categories} onNavigate={handleNavigate} />}
+            {isHomepageSectionActive('categories') && <CategoryShowcase categories={categories} loading={!productsLoaded} onNavigate={handleNavigate} />}
 
             {/* Most Loved Styles: a rotating selection of sarees, changes every 2 minutes. */}
             <MostLovedStyles

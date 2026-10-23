@@ -123,6 +123,10 @@ export const HeroSection: React.FC<HeroSectionProps> = ({ onNavigate }) => {
     };
   }, [loadHeroSection]);
 
+  // While the homepage settings are still loading, show a neutral placeholder instead of the
+  // built-in photo, so the default image never flashes before the real one.
+  const awaitingCms = isLoading && !heroData;
+
   // 3. Derive active slides array with backward compatibility
   const slides: HeroSlide[] = React.useMemo(() => {
     if (!heroData) {
@@ -363,10 +367,11 @@ export const HeroSection: React.FC<HeroSectionProps> = ({ onNavigate }) => {
               </h1>
 
 
-              <div className="gsap-hero-anim mt-6 sm:mt-8 flex flex-wrap items-center gap-3 sm:gap-4">
+              <div className="gsap-hero-anim mt-6 sm:mt-8 flex flex-row flex-nowrap items-center gap-3 sm:gap-4">
                 <Button
                   variant="primary"
                   size="md"
+                  className="whitespace-nowrap px-4 sm:px-6 text-sm sm:text-base"
                   onClick={() => handleNavigateCta(currentSlide.primaryCtaUrl)}
                   rightIcon={<ArrowRight className="w-4 h-4" />}
                 >
@@ -376,6 +381,7 @@ export const HeroSection: React.FC<HeroSectionProps> = ({ onNavigate }) => {
                 {currentSlide.secondaryCtaText && (
                   <Button
                     variant="secondary"
+                    className="whitespace-nowrap px-4 sm:px-6 text-sm sm:text-base"
                     size="md"
                     onClick={() => handleNavigateCta(currentSlide.secondaryCtaUrl || '/bedsheets')}
                   >
@@ -405,7 +411,9 @@ export const HeroSection: React.FC<HeroSectionProps> = ({ onNavigate }) => {
 
               {/* Aspect Ratio Container */}
               <div className="relative w-full aspect-[4/3] sm:aspect-[16/7]">
-                {slides.map((slide, index) => {
+                {awaitingCms ? (
+                  <div className="absolute inset-0 bg-[#EFE9DC] animate-pulse" aria-hidden="true" />
+                ) : slides.map((slide, index) => {
                   const isActive = index === currentSlideIndex;
                   const desktopSrc = normalizeImageUrl(slide.desktopImage || HERO_IMAGE);
                   const mobileSrc = normalizeImageUrl(slide.mobileImage || slide.desktopImage || HERO_IMAGE);

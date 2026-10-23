@@ -8,13 +8,31 @@ import { ArrowUpRight } from 'lucide-react';
 
 interface CategoryShowcaseProps {
   categories?: any[];
+  /** True until the live categories have been fetched. Shows a skeleton instead of built-in images. */
+  loading?: boolean;
   onNavigate: (page: PageView) => void;
 }
 
 export const CategoryShowcase: React.FC<CategoryShowcaseProps> = ({
   categories,
+  loading = false,
   onNavigate,
 }) => {
+  const hasLiveCategories = Boolean(categories && categories.length > 0);
+  if (loading && !hasLiveCategories) {
+    return (
+      <section className="py-7 sm:py-14 lg:py-20 bg-[#FAF8F5]" aria-busy="true">
+        <Container>
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-6">
+            {Array.from({ length: 4 }).map((_, i) => (
+              <div key={i} className="aspect-[4/5] bg-[#EFE9DC] rounded-xs animate-pulse" />
+            ))}
+          </div>
+        </Container>
+      </section>
+    );
+  }
+
   const displayCategories = (categories && categories.length > 0)
     ? categories
     : CATEGORIES.map((c, i) => ({

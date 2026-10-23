@@ -206,3 +206,11 @@ resend message); sign up normally and verify.
 - Hero: the "The Heritage Loom" eyebrow line above the headline was removed (HeroSection.tsx).
 - Count changed to 12: phones show 2 columns x 6 rows, desktop shows 6 columns x 2 rows (SHOWN_COUNT = 12).
 - Hero: removed the subheading paragraph and the 100% Pure Silk / Regional / Direct stat tags. Headline and buttons kept.
+
+---
+# Hero buttons, fallback images, role labels (Oct 22)
+- Hero buttons sit side by side on phones (flex-row, nowrap, slightly smaller text on phones).
+- Homepage images no longer flash: while settings load, the hero shows a neutral placeholder, and the category
+  section shows skeleton tiles instead of the built-in images. Built-in images only appear if the live data is empty.
+- Role labels ("hero", "gallery", "full saree", "primary", etc.) removed from the product gallery, the fullscreen viewer
+  and the admin product image list. Image roles still exist in data for future use.

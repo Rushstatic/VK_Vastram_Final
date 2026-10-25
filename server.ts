@@ -175,11 +175,47 @@ async function dispatchOrderStatusEmail(orderId: string, status: string): Promis
       <p style="margin:26px 0 0;font-size:12px;color:#78716c;text-align:center">Questions? Reply to this email and our studio team will help.</p>
     </div>`;
 
-    const subject = `${copy.headline} · Order ${orderNo}`;
+    // Prefer published Resend templates when their IDs are configured. If an ID is not
+    // configured, retain the existing inline HTML so deploying this patch is backward-compatible.
+    const templateEnvByStatus: Record<string, string | undefined> = {
+      packed: process.env.RESEND_TEMPLATE_PACKED,
+      shipped: process.env.RESEND_TEMPLATE_SHIPPED,
+      delivered: process.env.RESEND_TEMPLATE_DELIVERED,
+    };
+    const templateId = String(templateEnvByStatus[status] || '').trim();
+    const safeHttpUrl = (value: unknown, fallback: string) => {
+      try {
+        const parsed = new URL(String(value || fallback));
+        return parsed.protocol === 'https:' || parsed.protocol === 'http:' ? parsed.toString() : fallback;
+      } catch {
+        return fallback;
+      }
+    };
+    const reviewUrl = `${baseUrl}/account?review=${encodeURIComponent(orderNo)}`;
+    const trackingUrl = safeHttpUrl(order.tracking_url, baseUrl);
+    const templateVariables = {
+      CUSTOMER_NAME: String(order.customer_name || 'Valued Customer'),
+      ORDER_ID: orderNo,
+      TRACKING_NUMBER: String(order.tracking_number || 'Tracking details will be updated soon'),
+      TRACKING_URL: trackingUrl,
+      REVIEW_URL: reviewUrl,
+      ORDER_URL: reviewUrl,
+    };
+    const emailPayload: Record<string, unknown> = {
+      from: process.env.RESEND_FROM_EMAIL,
+      to: [order.customer_email],
+    };
+    if (templateId) {
+      // Configure the subject in the published Resend template itself.
+      emailPayload.template = { id: templateId, variables: templateVariables };
+    } else {
+      emailPayload.subject = `${copy.headline} · Order ${orderNo}`;
+      emailPayload.html = html;
+    }
     const response = await fetch('https://api.resend.com/emails', {
       method: 'POST',
       headers: { Authorization: `Bearer ${process.env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ from: process.env.RESEND_FROM_EMAIL, to: [order.customer_email], subject, html }),
+      body: JSON.stringify(emailPayload),
     });
     if (!response.ok) throw new Error(`Resend rejected the email (${response.status})`);
     console.info(`[order-status-email] ${status} email accepted for order ${orderNo}`);

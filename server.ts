@@ -96,6 +96,100 @@ async function dispatchAdminOrderAlert(orderId: string, eventType: 'new_order' |
 
 
 /** Customer order email: order summary/invoice details plus a direct link to the tracking page. */
+/**
+ * Branded order-status emails. Sent once per order and status (guarded by order_email_log), so
+ * repeated clicks or retries never send duplicates. The delivered email is also the review request.
+ */
+const ORDER_STATUS_EMAIL_EVENTS = ['packed', 'shipped', 'delivered'] as const;
+async function dispatchOrderStatusEmail(orderId: string, status: string): Promise<void> {
+  if (!db || !process.env.RESEND_API_KEY || !process.env.RESEND_FROM_EMAIL) return;
+  if (!(ORDER_STATUS_EMAIL_EVENTS as readonly string[]).includes(status)) return;
+  const baseUrl = String(process.env.SITE_URL || process.env.APP_URL || '').replace(/\/$/, '');
+  if (!baseUrl) return;
+
+  // Claim the send first. A duplicate claim (unique key) means it was already sent.
+  const { error: claimError } = await db.from('order_email_log').insert({ order_id: orderId, event: status });
+  if (claimError) return;
+
+  try {
+    const { data: order, error } = await db
+      .from('orders')
+      .select('id,order_number,customer_name,customer_email,order_status,courier_name,tracking_number,tracking_url,items:order_items(product_name_snapshot,quantity)')
+      .eq('id', orderId)
+      .maybeSingle();
+    if (error || !order?.customer_email) throw new Error('order or customer email not found');
+    if (String(order.order_status) !== status) throw new Error('order is no longer in this status');
+
+    const esc = (v: unknown) => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] || c));
+    const orderNo = String(order.order_number || order.id);
+    const name = esc(order.customer_name || 'there');
+    const itemRows = (order.items || []).map((item: any) =>
+      `<tr><td style="padding:10px 0;border-bottom:1px solid #ece6da;color:#1c1917">${esc(item.product_name_snapshot || 'VK VASTRAM piece')}</td><td style="padding:10px 0;border-bottom:1px solid #ece6da;text-align:right;color:#57534e">× ${Number(item.quantity || 1)}</td></tr>`
+    ).join('');
+
+    const copy = {
+      packed: {
+        eyebrow: 'Packed with care',
+        headline: 'Your order is packed',
+        body: 'Each piece has been folded, wrapped and checked by hand. It will be with the courier soon.',
+        cta: null as null | { label: string; url: string },
+        extra: '',
+      },
+      shipped: {
+        eyebrow: 'On its way',
+        headline: 'Your order has shipped',
+        body: 'Your handloom pieces have left our studio and are on their way to you.',
+        cta: order.tracking_url ? { label: 'Track your shipment', url: String(order.tracking_url) } : null,
+        extra: [
+          order.courier_name ? `<p style="margin:6px 0;color:#57534e">Courier: <strong>${esc(order.courier_name)}</strong></p>` : '',
+          order.tracking_number ? `<p style="margin:6px 0;color:#57534e">Tracking number: <strong>${esc(order.tracking_number)}</strong></p>` : '',
+        ].join(''),
+      },
+      delivered: {
+        eyebrow: 'Delivered',
+        headline: 'We hope you love it',
+        body: 'Your order has been delivered. We would be grateful if you shared how it feels: your experience helps other customers choose with confidence.',
+        cta: { label: 'Share your experience', url: `${baseUrl}/account?review=${encodeURIComponent(orderNo)}` },
+        extra: '<p style="margin:12px 0 0;color:#57534e;font-size:13px">One short review covers delivery, packaging and each piece you bought.</p>',
+      },
+    }[status as 'packed' | 'shipped' | 'delivered'];
+
+    const button = copy.cta
+      ? `<p style="text-align:center;margin:28px 0 8px"><a href="${esc(copy.cta.url)}" style="display:inline-block;background:#78281f;color:#faf8f5;text-decoration:none;padding:14px 28px;border-radius:2px;letter-spacing:1px;font-size:13px">${esc(copy.cta.label)}</a></p>`
+      : '';
+
+    const html = `<div style="margin:0 auto;max-width:640px;background:#faf8f5;padding:32px 28px;font-family:Georgia,'Times New Roman',serif;color:#1c1917">
+      <div style="text-align:center;padding:18px 8px 26px;border-bottom:1px solid #d9cdb4">
+        <p style="margin:0;letter-spacing:5px;color:#b88e3e;font-size:11px">VK VASTRAM</p>
+        <h1 style="margin:10px 0 0;font-weight:400;font-size:26px">${esc(copy.headline)}</h1>
+      </div>
+      <p style="margin:26px 0 4px;color:#b88e3e;font-size:11px;letter-spacing:3px;text-transform:uppercase">${esc(copy.eyebrow)}</p>
+      <p style="margin:0 0 14px">Dear ${name},</p>
+      <p style="margin:0 0 18px;line-height:1.7;color:#44403c">${esc(copy.body)}</p>
+      <div style="background:#f3eee4;border:1px solid #e4dccb;padding:16px 18px">
+        <p style="margin:0 0 10px;font-size:12px;letter-spacing:2px;color:#78716c">ORDER ${esc(orderNo)}</p>
+        <table style="width:100%;border-collapse:collapse;font-size:14px">${itemRows}</table>
+        ${copy.extra}
+      </div>
+      ${button}
+      <p style="margin:26px 0 0;font-size:12px;color:#78716c;text-align:center">Questions? Reply to this email and our studio team will help.</p>
+    </div>`;
+
+    const subject = `${copy.headline} · Order ${orderNo}`;
+    const response = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${process.env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ from: process.env.RESEND_FROM_EMAIL, to: [order.customer_email], subject, html }),
+    });
+    if (!response.ok) throw new Error(`Resend rejected the email (${response.status})`);
+    console.info(`[order-status-email] ${status} email accepted for order ${orderNo}`);
+  } catch (err: any) {
+    // Release the claim so the next status update can retry this email.
+    await db.from('order_email_log').delete().eq('order_id', orderId).eq('event', status);
+    console.warn(`[order-status-email] ${status} email not sent: ${err?.message || 'unknown error'}`);
+  }
+}
+
 async function dispatchCustomerOrderEmail(orderId: string): Promise<void> {
   if (!db || !process.env.RESEND_API_KEY || !process.env.RESEND_FROM_EMAIL) return;
   const baseUrl = String(process.env.SITE_URL || process.env.APP_URL || '').replace(/\/$/, '');
@@ -2838,6 +2932,7 @@ const orderPayload = {
         }
 
         void dispatchAdminOrderAlert(id, 'status_update', String(orderStatus));
+        if (db) void dispatchOrderStatusEmail(id, String(orderStatus));
         res.json({
           success: true,
           message: `Order status successfully transitioned to "${orderStatus}".`,
@@ -3036,6 +3131,176 @@ const orderPayload = {
   });
 
   // POST /api/reviews/submit (CUSTOMER SUBMIT ELIGIBLE REVIEW)
+  // ---------------------------------------------------------------------------
+  // ORDER REVIEW FEEDBACK (one form per delivered order)
+  // Eligibility is the same as product reviews: the order must belong to the signed-in
+  // customer and be delivered, and each product gets at most one review per customer.
+  // ---------------------------------------------------------------------------
+  const loadOwnedDeliveredOrder = async (userId: string, orderNumber: string) => {
+    const { data: order, error } = await db!
+      .from('orders')
+      .select('id,order_number,order_status,user_id,items:order_items(product_variant_id,product_name_snapshot,quantity)')
+      .eq('order_number', orderNumber)
+      .eq('user_id', userId)
+      .maybeSingle();
+    if (error) throw error;
+    if (!order) return { status: 404, error: 'Order not found.' as const, order: null };
+    if (order.order_status !== 'delivered') return { status: 403, error: 'Reviews open once your order is delivered.' as const, order: null };
+    const variantIds = (order.items || []).map((i: any) => i.product_variant_id).filter(Boolean);
+    let productByVariant = new Map<string, string>();
+    if (variantIds.length) {
+      const { data: variants, error: variantError } = await db!.from('product_variants').select('id,product_id').in('id', variantIds);
+      if (variantError) throw variantError;
+      productByVariant = new Map((variants || []).map((v: any) => [v.id, v.product_id]));
+    }
+    const lines = (order.items || []).map((i: any) => ({
+      productId: productByVariant.get(i.product_variant_id) || '',
+      name: String(i.product_name_snapshot || 'VK VASTRAM piece'),
+      quantity: Number(i.quantity || 1),
+    })).filter((l: any) => l.productId);
+    const products = new Map<string, { productId: string; name: string; quantity: number }>();
+    for (const line of lines) {
+      const existing = products.get(line.productId);
+      if (existing) existing.quantity += line.quantity;
+      else products.set(line.productId, { ...line });
+    }
+    return { status: 200, error: null, order, products: Array.from(products.values()) };
+  };
+
+  // GET /api/orders/:orderNumber/review-form
+  app.get('/api/orders/:orderNumber/review-form', authenticateUser, async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const userId = req.user?.id;
+      if (!userId || !db) { res.status(503).json({ success: false, error: 'Reviews are unavailable right now.' }); return; }
+      const loaded = await loadOwnedDeliveredOrder(userId, String(req.params.orderNumber || '').trim());
+      if (!loaded.order) { res.status(loaded.status).json({ success: false, error: loaded.error }); return; }
+
+      const productIds = loaded.products!.map((p) => p.productId);
+      const { data: existingReviews, error: reviewError } = productIds.length
+        ? await db!.from('reviews').select('product_id').eq('user_id', userId).in('product_id', productIds)
+        : { data: [], error: null as any };
+      if (reviewError) throw reviewError;
+      const alreadyReviewed = new Set((existingReviews || []).map((r: any) => r.product_id));
+      const { data: submitted } = await db!.from('order_reviews').select('id').eq('order_id', loaded.order.id).maybeSingle();
+
+      res.json({
+        success: true,
+        orderNumber: loaded.order.order_number,
+        submitted: Boolean(submitted),
+        products: loaded.products!.map((p) => ({ ...p, alreadyReviewed: alreadyReviewed.has(p.productId) })),
+      });
+    } catch (err: any) {
+      console.error('[order-review] form load failed');
+      res.status(500).json({ success: false, error: 'Could not load the review form.' });
+    }
+  });
+
+  // POST /api/orders/:orderNumber/review
+  app.post('/api/orders/:orderNumber/review', authenticateUser, async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const userId = req.user?.id;
+      if (!userId || !db) { res.status(503).json({ success: false, error: 'Reviews are unavailable right now.' }); return; }
+      const body = req.body || {};
+      const isRating = (v: unknown) => Number.isInteger(v) && (v as number) >= 1 && (v as number) <= 5;
+      const feedback = String(body.feedback || '').trim();
+      if (!isRating(body.deliveryRating) || !isRating(body.packagingRating)) {
+        res.status(400).json({ success: false, error: 'Please rate delivery and packaging from 1 to 5 stars.' });
+        return;
+      }
+      if (feedback.length < 10 || feedback.length > 2000) {
+        res.status(400).json({ success: false, error: 'Please write between 10 and 2000 characters of feedback.' });
+        return;
+      }
+
+      const loaded = await loadOwnedDeliveredOrder(userId, String(req.params.orderNumber || '').trim());
+      if (!loaded.order) { res.status(loaded.status).json({ success: false, error: loaded.error }); return; }
+      if (loaded.order && (await db!.from('order_reviews').select('id').eq('order_id', loaded.order.id).maybeSingle()).data) {
+        res.status(409).json({ success: false, error: 'You have already reviewed this order.' });
+        return;
+      }
+
+      const orderProductIds = new Set(loaded.products!.map((p) => p.productId));
+      const ratingsInput: Array<{ productId: string; rating: unknown }> = Array.isArray(body.productRatings) ? body.productRatings : [];
+      const ratingByProduct = new Map<string, number>();
+      for (const entry of ratingsInput) {
+        if (!entry || !orderProductIds.has(String(entry.productId))) {
+          res.status(400).json({ success: false, error: 'A rated product does not belong to this order.' });
+          return;
+        }
+        if (!isRating(entry.rating)) {
+          res.status(400).json({ success: false, error: 'Every product rating must be from 1 to 5 stars.' });
+          return;
+        }
+        ratingByProduct.set(String(entry.productId), Number(entry.rating));
+      }
+
+      const productIds = Array.from(orderProductIds);
+      const { data: existingReviews, error: existingError } = productIds.length
+        ? await db!.from('reviews').select('product_id').eq('user_id', userId).in('product_id', productIds)
+        : { data: [], error: null as any };
+      if (existingError) throw existingError;
+      const alreadyReviewed = new Set((existingReviews || []).map((r: any) => r.product_id));
+      const toReview = productIds.filter((pid) => !alreadyReviewed.has(pid));
+      const missing = toReview.filter((pid) => !ratingByProduct.has(pid));
+      if (missing.length) {
+        res.status(400).json({ success: false, error: 'Please give every purchased product a star rating.' });
+        return;
+      }
+
+      // Insert the order-level review first. Its unique order_id blocks double submission.
+      const { data: orderReview, error: orderReviewError } = await db!
+        .from('order_reviews')
+        .insert({
+          order_id: loaded.order.id,
+          user_id: userId,
+          delivery_rating: Number(body.deliveryRating),
+          packaging_rating: Number(body.packagingRating),
+          feedback,
+        })
+        .select('id')
+        .single();
+      if (orderReviewError) {
+        const duplicate = (orderReviewError as any).code === '23505';
+        res.status(duplicate ? 409 : 500).json({ success: false, error: duplicate ? 'You have already reviewed this order.' : 'Could not save your review. Please try again.' });
+        return;
+      }
+
+      // One product review per purchased product: each keeps its own star rating and the shared feedback.
+      if (toReview.length) {
+        const rows = toReview.map((pid) => ({
+          product_id: pid,
+          user_id: userId,
+          order_id: loaded.order!.id,
+          rating: ratingByProduct.get(pid)!,
+          title: '',
+          body: feedback,
+          status: 'approved',
+          verified_purchase: true,
+          moderation_metadata: { source: 'order_review', order_number: loaded.order!.order_number, order_review_id: orderReview?.id },
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        }));
+        const { error: insertError } = await db!.from('reviews').insert(rows);
+        if (insertError) {
+          // Roll back the order review so the customer can try again.
+          await db!.from('order_reviews').delete().eq('id', orderReview!.id);
+          res.status(500).json({ success: false, error: 'Could not save your product reviews. Please try again.' });
+          return;
+        }
+      }
+
+      res.json({
+        success: true,
+        message: 'Thank you. Your review has been published.',
+        productsReviewed: toReview.length,
+        productsAlreadyReviewed: productIds.filter((pid) => alreadyReviewed.has(pid)).length,
+      });
+    } catch (err: any) {
+      console.error('[order-review] submit failed');
+      res.status(500).json({ success: false, error: 'Could not save your review. Please try again.' });
+    }
+  });
+
   app.post('/api/reviews/submit', authenticateUser, async (req: AuthenticatedRequest, res: Response) => {
     try {
       const { productId, rating, title, body } = req.body;

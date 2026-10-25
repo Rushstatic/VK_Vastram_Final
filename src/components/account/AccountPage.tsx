@@ -23,6 +23,7 @@ import { orderService } from '../../services/orderService';
 import { paymentService } from '../../services/paymentService';
 import { AddressModal } from './AddressModal';
 import { CustomerProfile, CustomerAddress, Product, PageView, OrderData } from '../../types';
+import { OrderReviewModal } from './OrderReviewModal';
 import { formatPrice } from '../ui/PriceDisplay';
 import { Button } from '../ui/Button';
 import { Container } from '../ui/Container';
@@ -70,6 +71,15 @@ export const AccountPage: React.FC<AccountPageProps> = ({
 
   // Orders State
   const [orders, setOrders] = useState<OrderData[]>([]);
+  // Review form opened from a "Share your experience" email link (/account?review=VKV-...) or the orders list.
+  const [reviewOrderNumber, setReviewOrderNumber] = useState<string | null>(null);
+  useEffect(() => {
+    const requested = new URLSearchParams(window.location.search).get('review');
+    if (requested) {
+      setActiveTab('orders');
+      setReviewOrderNumber(requested);
+    }
+  }, []);
 
   // Loading
   const [loading, setLoading] = useState(true);
@@ -735,6 +745,28 @@ export const AccountPage: React.FC<AccountPageProps> = ({
                   </>
                 ) : (
                   <div className="space-y-4">
+                    {confirmedOrders.some((o) => String(o.orderStatus) === 'delivered') && (
+                      <div className="mb-4 space-y-2">
+                        <p className="text-[11px] uppercase tracking-[0.15em] text-[#78716C]">Share your experience</p>
+                        {confirmedOrders
+                          .filter((o) => String(o.orderStatus) === 'delivered')
+                          .map((o) => (
+                            <div key={`review-${o.id}`} className="flex items-center justify-between gap-3 bg-[#FAF8F5] border border-[#1C1917]/10 px-4 py-3">
+                              <span className="font-mono text-sm text-[#1C1917]">{o.orderNumber}</span>
+                              <button
+                                type="button"
+                                onClick={() => setReviewOrderNumber(o.orderNumber)}
+                                className="text-xs text-[#967029] underline underline-offset-2 cursor-pointer"
+                              >
+                                Write a review
+                              </button>
+                            </div>
+                          ))}
+                      </div>
+                    )}
+                    {reviewOrderNumber && (
+                      <OrderReviewModal orderNumber={reviewOrderNumber} onClose={() => setReviewOrderNumber(null)} />
+                    )}
                     {confirmedOrders.map((ord) => (
                       <div
                         key={ord.id}

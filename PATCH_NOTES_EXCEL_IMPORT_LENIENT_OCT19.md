@@ -214,3 +214,17 @@ resend message); sign up normally and verify.
   section shows skeleton tiles instead of the built-in images. Built-in images only appear if the live data is empty.
 - Role labels ("hero", "gallery", "full saree", "primary", etc.) removed from the product gallery, the fullscreen viewer
   and the admin product image list. Image roles still exist in data for future use.
+
+---
+# Order status emails and post-delivery review (Oct 23)
+- Branded emails via Resend when an order becomes Packed, Shipped or Delivered (triggered by the admin status update).
+  Each email is sent once per order and status (table order_email_log). If sending fails, the claim is released so
+  the next status update retries it. The Delivered email is also the review request (no second email).
+- Review form (customer account > orders > "Write a review", or the email link /account?review=VKV-...):
+  delivery stars, packaging stars, one star rating per purchased product, one shared feedback text.
+- Storage: order_reviews (one per order, delivery + packaging ratings, feedback) and one public.reviews row per product
+  (rating + the shared feedback), so each product page shows the same feedback with that product's rating.
+- Eligibility is unchanged: the order must belong to the signed-in customer and be delivered; one review per product per
+  customer. Products already reviewed are skipped and not overwritten.
+- Migration: 20261023000001_order_review_feedback_and_status_emails.sql (run it).
+- Needs SITE_URL (or APP_URL), RESEND_API_KEY and RESEND_FROM_EMAIL set, as for the other emails.

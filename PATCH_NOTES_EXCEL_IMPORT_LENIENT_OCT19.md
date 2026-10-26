@@ -228,3 +228,20 @@ resend message); sign up normally and verify.
   customer. Products already reviewed are skipped and not overwritten.
 - Migration: 20261023000001_order_review_feedback_and_status_emails.sql (run it).
 - Needs SITE_URL (or APP_URL), RESEND_API_KEY and RESEND_FROM_EMAIL set, as for the other emails.
+
+---
+# "Buy from shop" (zero delivery) and swipe-up to leave the image viewer (Oct 25)
+1. Checkout step 2 now offers: "Deliver to my address" or "Buy from shop". Shop pickup needs no address, delivery charge is Rs 0,
+   the pickup address shown is Admin > Store Settings > Studio address, and the payment option reads "Pay at shop (when you collect)".
+   - Authoritative: the server sets the pickup address from the store settings (never from the browser) and the database function
+     (migration 20261024000001_store_pickup_zero_shipping.sql) sets shipping to 0 for these orders. Coupons, GST and stock hold unchanged.
+   - Orders carry fulfillmentMethod = 'store_pickup' in the address snapshot. Admin order view, customer account, order confirmation
+     and invoices show "Store pickup" instead of a city/pincode; GST on the invoice is split CGST+SGST (local sale).
+   - Status emails for pickup orders: Packed says "ready to collect", no "Shipped" email, Delivered says "Thank you for visiting us".
+2. Fullscreen image viewer: swipe up on the photo to close it and return to the product page. The photo follows the finger and
+   fades; past 90px it closes, otherwise it snaps back. The phone Back button and the X button still work. Swipe left/right and pinch zoom unchanged.
+Files: server.ts, supabase/migrations/20261024000001_store_pickup_zero_shipping.sql, src/lib/orderAddress.ts (new), src/types/index.ts,
+src/lib/invoiceTax.ts, src/components/checkout/CheckoutPage.tsx, OrderConfirmationPage.tsx, src/components/account/AccountPage.tsx,
+src/components/admin/AdminOrders.tsx, src/components/product/MobileImageViewer.tsx
+Run the migration, restart the server. Set the real shop address in Admin > Store Settings (the default is a placeholder).
+Not run: type/syntax checks only; no database or phone test.

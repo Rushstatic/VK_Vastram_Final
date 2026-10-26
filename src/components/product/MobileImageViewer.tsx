@@ -24,6 +24,10 @@ export const MobileImageViewer: React.FC<MobileImageViewerProps> = ({
   const [currentIndex, setCurrentIndex] = useState(initialIndex);
   const [zoomScale, setZoomScale] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
+  // Swipe up to leave the viewer: the photo follows the finger upwards, and past the threshold it closes.
+  const [dragY, setDragY] = useState(0);
+  const [isDragging, setIsDragging] = useState(false);
+  const SWIPE_UP_CLOSE_DISTANCE = 90;
   const [imageLoadError, setImageLoadError] = useState(false);
   const [imageLoaded, setImageLoaded] = useState(false);
   const [activeImageUrl, setActiveImageUrl] = useState('');
@@ -46,7 +50,9 @@ export const MobileImageViewer: React.FC<MobileImageViewerProps> = ({
   useEffect(() => {
     setZoomScale(1);
     setPan({ x: 0, y: 0 });
-  }, [currentIndex]);
+    setDragY(0);
+    setIsDragging(false);
+  }, [currentIndex, isOpen]);
 
   // Sync initialIndex
   useEffect(() => {
@@ -185,8 +191,22 @@ export const MobileImageViewer: React.FC<MobileImageViewerProps> = ({
       return;
     }
     if (zoomScale <= 1 && e.touches.length === 1) {
-      touchEndXRef.current = e.touches[0].clientX;
-      touchEndYRef.current = e.touches[0].clientY;
+      const touch = e.touches[0];
+      touchEndXRef.current = touch.clientX;
+      touchEndYRef.current = touch.clientY;
+      const startX = touchStartXRef.current;
+      const startY = touchStartYRef.current;
+      if (startX !== null && startY !== null) {
+        const dx = touch.clientX - startX;
+        const dy = touch.clientY - startY;
+        // Upward, mostly vertical: drag the photo up with the finger.
+        if (dy < 0 && Math.abs(dy) > Math.abs(dx) * 1.2) {
+          setIsDragging(true);
+          setDragY(dy);
+        } else if (dragY !== 0 && dy >= 0) {
+          setDragY(0);
+        }
+      }
     }
   };
 
@@ -194,6 +214,22 @@ export const MobileImageViewer: React.FC<MobileImageViewerProps> = ({
     if (e.touches.length < 2) pinchRef.current = null;
     if (e.touches.length === 0) panRef.current = null;
     if (zoomScale > 1) return;
+
+    // Swipe up: leave the viewer and show the product page again.
+    if (isDragging) {
+      const swipedUp = dragY <= -SWIPE_UP_CLOSE_DISTANCE;
+      setIsDragging(false);
+      touchStartXRef.current = null;
+      touchEndXRef.current = null;
+      touchStartYRef.current = null;
+      touchEndYRef.current = null;
+      if (swipedUp) {
+        handleClose();
+      } else {
+        setDragY(0);
+      }
+      return;
+    }
     if (touchStartXRef.current === null || touchEndXRef.current === null) {
       touchStartXRef.current = null;
       touchStartYRef.current = null;
@@ -270,7 +306,7 @@ export const MobileImageViewer: React.FC<MobileImageViewerProps> = ({
         onTouchMove={handleTouchMove}
         onTouchEnd={handleTouchEnd}
         onDoubleClick={handleDoubleTap}
-        className={`relative flex-1 flex items-center justify-center p-2 sm:p-6 overflow-hidden ${zoomScale > 1 ? 'touch-none' : 'touch-pan-y'}`}
+        className={`relative flex-1 flex items-center justify-center p-2 sm:p-6 overflow-hidden touch-none`}
       >
         {activeImageUrl && !imageLoadError && !imageLoaded && (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-[#FAF8F5]/80" role="status" aria-live="polite">
@@ -298,7 +334,11 @@ export const MobileImageViewer: React.FC<MobileImageViewerProps> = ({
             loading="eager"
             decoding="async"
             className={`max-h-[85vh] max-w-[95vw] object-contain transition-opacity duration-200 cursor-grab active:cursor-grabbing ${imageLoaded ? 'opacity-100' : 'opacity-0'}`}
-            style={{ transform: `translate3d(${pan.x}px, ${pan.y}px, 0) scale(${zoomScale})`, transition: 'transform 120ms ease-out' }}
+            style={{
+              transform: `translate3d(${pan.x}px, ${pan.y + dragY}px, 0) scale(${zoomScale})`,
+              opacity: dragY !== 0 ? Math.max(0.35, 1 + dragY / 400) : undefined,
+              transition: isDragging ? 'none' : 'transform 160ms ease-out, opacity 160ms ease-out',
+            }}
             draggable={false}
           />
         ) : (
@@ -370,7 +410,7 @@ export const MobileImageViewer: React.FC<MobileImageViewerProps> = ({
         </div>
 
         <div className="text-[11px] text-[#FAF8F5]/60 font-sans hidden sm:block">
-          Double-click or pinch to inspect weave · Swipe left/right
+          Pinch or double-tap to zoom · Swipe left/right · Swipe up to close
         </div>
 
         {/* Thumbnail Filmstrip */}

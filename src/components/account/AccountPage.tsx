@@ -24,6 +24,7 @@ import { paymentService } from '../../services/paymentService';
 import { AddressModal } from './AddressModal';
 import { CustomerProfile, CustomerAddress, Product, PageView, OrderData } from '../../types';
 import { OrderReviewModal } from './OrderReviewModal';
+import { formatCityLine, isStorePickup } from '../../lib/orderAddress';
 import { formatPrice } from '../ui/PriceDisplay';
 import { Button } from '../ui/Button';
 import { Container } from '../ui/Container';
@@ -249,7 +250,7 @@ export const AccountPage: React.FC<AccountPageProps> = ({
               <p style="margin: 0; color: #4B5563;">
                 ${ord.shippingAddressSnapshot?.addressLine1 || ''}<br/>
                 ${ord.shippingAddressSnapshot?.addressLine2 ? ord.shippingAddressSnapshot.addressLine2 + '<br/>' : ''}
-                ${ord.shippingAddressSnapshot?.city || ''}, ${ord.shippingAddressSnapshot?.state || ''} - ${ord.shippingAddressSnapshot?.pincode || ''}
+                ${formatCityLine(ord.shippingAddressSnapshot, ' - ')}
               </p>
             </div>
             <div style="text-align: right;">
@@ -881,7 +882,7 @@ export const AccountPage: React.FC<AccountPageProps> = ({
                           <div className="text-[11px] text-[#78716C]">
                             {ord.shippingAddressSnapshot && (
                               <p>
-                                Delivery to: <span className="text-[#1C1917] font-medium">{ord.shippingAddressSnapshot.recipientName}</span> ({ord.shippingAddressSnapshot.city} — {ord.shippingAddressSnapshot.pincode})
+                                {isStorePickup(ord.shippingAddressSnapshot) ? 'Pickup for: ' : 'Delivery to: '}<span className="text-[#1C1917] font-medium">{ord.shippingAddressSnapshot.recipientName}</span> ({isStorePickup(ord.shippingAddressSnapshot) ? 'collect from shop' : `${ord.shippingAddressSnapshot.city} — ${ord.shippingAddressSnapshot.pincode}`})
                               </p>
                             )}
                             <p className="text-[10px] text-[#78716C] mt-0.5">

@@ -161,6 +161,8 @@ export interface CustomerAddress {
   isDefault: boolean;
   createdAt?: string;
   guestAccessToken?: string;
+  /** 'store_pickup' = "Buy from shop": collected in person, no delivery charge. */
+  fulfillmentMethod?: 'delivery' | 'store_pickup';
 }
 
 export interface OrderItemData {

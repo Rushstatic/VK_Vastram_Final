@@ -100,6 +100,9 @@ export const CheckoutPage: React.FC<CheckoutPageProps> = ({
   const [profile, setProfile] = useState<CustomerProfile | null>(null);
   const [addresses, setAddresses] = useState<CustomerAddress[]>([]);
   const [selectedAddressId, setSelectedAddressId] = useState<string | null>(null);
+  // "Buy from shop": the customer collects the order in person. No delivery address, delivery charge is zero.
+  const [fulfillmentMethod, setFulfillmentMethod] = useState<'delivery' | 'store_pickup'>('delivery');
+  const isStorePickup = fulfillmentMethod === 'store_pickup';
   const [addressModalOpen, setAddressModalOpen] = useState(false);
 
   // Guest Contact State
@@ -259,6 +262,10 @@ export const CheckoutPage: React.FC<CheckoutPageProps> = ({
    * Validate Step 2 (Delivery Address for Guest)
    */
   const validateStep2 = (): boolean => {
+    if (isStorePickup) {
+      setStep2Errors({});
+      return true;
+    }
     if (userId) {
       if (!selectedAddressId) {
         setErrorMessage('Please select or add a delivery address to proceed.');
@@ -292,6 +299,23 @@ export const CheckoutPage: React.FC<CheckoutPageProps> = ({
    * Build effective shipping address snapshot
    */
   const getEffectiveShippingAddress = (): CustomerAddress | null => {
+    if (isStorePickup) {
+      // The server replaces the address with the shop address from the store settings; only the
+      // customer's contact details and the pickup choice matter here.
+      return {
+        id: 'store-pickup',
+        label: 'Other',
+        recipientName: ((userId ? profile?.fullName : guestName) || '').trim() || 'Valued Patron',
+        phone: ((userId ? profile?.phone : guestPhone) || '').trim(),
+        email: ((userId ? userEmail : guestEmail) || '').trim() || undefined,
+        addressLine1: settings?.studioAddress || 'VK VASTRAM shop',
+        city: 'Store pickup',
+        state: 'Store pickup',
+        pincode: '000000',
+        isDefault: false,
+        fulfillmentMethod: 'store_pickup',
+      };
+    }
     if (userId) {
       return addresses.find((a) => a.id === selectedAddressId) || null;
     }
@@ -597,7 +621,7 @@ export const CheckoutPage: React.FC<CheckoutPageProps> = ({
   const subtotal = baseSubtotal + fallPicoTotal;
   const selectedAddress = addresses.find((a) => a.id === selectedAddressId);
   const destinationState = selectedAddress?.state || guestState;
-  const shippingAmount = settings ? calculateShippingAmount(Math.max(0, subtotal - couponDiscount), destinationState, settings) : 0;
+  const shippingAmount = isStorePickup ? 0 : settings ? calculateShippingAmount(Math.max(0, subtotal - couponDiscount), destinationState, settings) : 0;
 
   return (
     <div className="py-12 bg-[#FAF8F5] min-h-[85vh]">
@@ -622,7 +646,7 @@ export const CheckoutPage: React.FC<CheckoutPageProps> = ({
         </div>
 
         {/* Free-delivery progress, driven by the admin-configured site setting. */}
-        {Number(settings?.freeShippingThreshold || 0) > 0 && (
+        {!isStorePickup && Number(settings?.freeShippingThreshold || 0) > 0 && (
           <div className="mb-5 rounded-xs border border-[#B88E3E]/30 bg-[#F4EFE6] px-4 py-3 text-xs text-[#57534E]">
             {Math.max(0, Number(settings?.freeShippingThreshold || 0) - Math.max(0, subtotal - couponDiscount)) > 0 ? (
               <>Add <strong className="text-[#78281F]">{formatPrice(Math.max(0, Number(settings?.freeShippingThreshold || 0) - Math.max(0, subtotal - couponDiscount)))}</strong> more (after discounts) to unlock free delivery.</>
@@ -844,7 +868,7 @@ export const CheckoutPage: React.FC<CheckoutPageProps> = ({
                     {currentStep > 2 ? '✓' : '2'}
                   </span>
                   <h2 className="font-serif text-base text-[#1C1917] font-medium">
-                    2. Delivery Address
+                    2. {isStorePickup ? 'Pickup Details' : 'Delivery Address'}
                   </h2>
                 </div>
                 {userId && currentStep >= 2 && (
@@ -858,7 +882,59 @@ export const CheckoutPage: React.FC<CheckoutPageProps> = ({
                 )}
               </div>
 
-              {userId ? (
+              {/* How the customer receives the order */}
+              <fieldset className="mb-4">
+                <legend className="sr-only">Delivery method</legend>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {([
+                    { value: 'delivery', title: 'Deliver to my address', desc: 'Shipping charges apply as shown in your order summary.' },
+                    { value: 'store_pickup', title: 'Buy from shop', desc: 'Collect in person. Delivery charge is ₹0.' },
+                  ] as const).map((option) => (
+                    <label
+                      key={option.value}
+                      className={`flex items-start gap-3 p-3 border rounded-xs cursor-pointer transition-colors ${
+                        fulfillmentMethod === option.value ? 'border-[#967029] bg-[#F4EFE6]/60' : 'border-[#1C1917]/15 hover:border-[#967029]/60'
+                      }`}
+                    >
+                      <input
+                        type="radio"
+                        name="fulfillmentMethod"
+                        value={option.value}
+                        checked={fulfillmentMethod === option.value}
+                        onChange={() => { setFulfillmentMethod(option.value); setErrorMessage(''); }}
+                        className="mt-1 accent-[#967029]"
+                      />
+                      <span>
+                        <span className="block text-xs font-semibold text-[#1C1917]">{option.title}</span>
+                        <span className="block text-[11px] text-[#57534E] mt-0.5">{option.desc}</span>
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              </fieldset>
+
+              {isStorePickup ? (
+                <div className="space-y-4">
+                  <div className="p-4 border border-[#967029]/40 bg-[#F4EFE6]/60 rounded-xs text-xs text-[#57534E] space-y-1.5">
+                    <p className="font-semibold text-sm text-[#1C1917]">Buy from shop</p>
+                    <p>Collect your order in person. There is no delivery charge.</p>
+                    <p className="text-[#1C1917]"><span className="font-medium">Pickup address:</span> {settings?.studioAddress || 'VK VASTRAM shop'}</p>
+                    <p>We will let you know when it is ready. Please bring your order number.</p>
+                  </div>
+                  {currentStep === 2 && (
+                    <div className="flex justify-end">
+                      <Button
+                        variant="primary"
+                        size="md"
+                        onClick={() => { if (validateStep2()) setCurrentStep(3); }}
+                        rightIcon={<ArrowRight className="w-3.5 h-3.5" />}
+                      >
+                        Proceed to Review & Payment
+                      </Button>
+                    </div>
+                  )}
+                </div>
+              ) : userId ? (
                 /* Authenticated Address Book */
                 addresses.length === 0 ? (
                   <div className="text-center py-6 border border-dashed border-[#1C1917]/20 rounded-xs space-y-2">
@@ -1263,7 +1339,7 @@ export const CheckoutPage: React.FC<CheckoutPageProps> = ({
                           />
                           <div>
                             <span className="font-semibold text-xs text-[#1C1917]">
-                              Cash on Delivery (COD)
+                              {isStorePickup ? 'Pay at shop (when you collect)' : 'Cash on Delivery (COD)'}
                             </span>
                             <p className="text-[11px] text-[#57534E] mt-0.5">
                               Pay in cash or UPI directly upon courier delivery.
@@ -1341,7 +1417,7 @@ export const CheckoutPage: React.FC<CheckoutPageProps> = ({
                 {fallPicoTotal > 0 && <div className="flex justify-between text-[#57534E]"><span>Fall & Pico finishing</span><span>{formatPrice(fallPicoTotal)}</span></div>}
 
                 <div className="flex justify-between text-[#57534E]">
-                  <span>Shipping ({destinationState || 'delivery state'})</span>
+                  <span>{isStorePickup ? 'Delivery (buy from shop)' : `Shipping (${destinationState || 'delivery state'})`}</span>
                   <span className="text-[#1C1917] font-medium">{shippingAmount === 0 ? 'FREE' : formatPrice(shippingAmount)}</span>
                 </div>
 

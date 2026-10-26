@@ -27,6 +27,7 @@ import {
 } from 'lucide-react';
 import { adminService } from '../../services/adminService';
 import { buildInvoiceTaxRows } from '../../lib/invoiceTax';
+import { formatCityLine, isStorePickup } from '../../lib/orderAddress';
 import { formatPrice } from '../ui/PriceDisplay';
 import { useSiteSettings } from '../../hooks/useSiteSettings';
 import { normalizeImageUrl } from '../../lib/imageHelper';
@@ -1195,12 +1196,12 @@ export const AdminOrders: React.FC = () => {
                       </div>
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs text-[#57534E] leading-relaxed pt-1">
                         <div>
-                          <p className="font-semibold text-[#1C1917]">Delivery Destination</p>
+                          <p className="font-semibold text-[#1C1917]">{isStorePickup(selectedOrder.shippingAddressSnapshot) ? 'Store Pickup (buy from shop, no delivery)' : 'Delivery Destination'}</p>
                           <p className="mt-0.5">{selectedOrder.shippingAddressSnapshot.recipientName}</p>
                           <p>{selectedOrder.shippingAddressSnapshot.addressLine1}</p>
                           {selectedOrder.shippingAddressSnapshot.addressLine2 && <p>{selectedOrder.shippingAddressSnapshot.addressLine2}</p>}
                           {selectedOrder.shippingAddressSnapshot.landmark && <p className="italic text-[#78716C]">Landmark: {selectedOrder.shippingAddressSnapshot.landmark}</p>}
-                          <p>{selectedOrder.shippingAddressSnapshot.city}, {selectedOrder.shippingAddressSnapshot.state} — {selectedOrder.shippingAddressSnapshot.pincode}</p>
+                          <p>{formatCityLine(selectedOrder.shippingAddressSnapshot)}</p>
                           <p className="mt-1 font-medium text-[#1C1917]">Phone: {selectedOrder.shippingAddressSnapshot.phone}</p>
                         </div>
                         <div>
@@ -1210,7 +1211,7 @@ export const AdminOrders: React.FC = () => {
                               <p className="mt-0.5">{selectedOrder.billingAddressSnapshot.recipientName}</p>
                               <p>{selectedOrder.billingAddressSnapshot.addressLine1}</p>
                               {selectedOrder.billingAddressSnapshot.addressLine2 && <p>{selectedOrder.billingAddressSnapshot.addressLine2}</p>}
-                              <p>{selectedOrder.billingAddressSnapshot.city}, {selectedOrder.billingAddressSnapshot.state} — {selectedOrder.billingAddressSnapshot.pincode}</p>
+                              <p>{formatCityLine(selectedOrder.billingAddressSnapshot)}</p>
                               <p className="mt-1 font-medium text-[#1C1917]">Phone: {selectedOrder.billingAddressSnapshot.phone}</p>
                             </>
                           ) : (

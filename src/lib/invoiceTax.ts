@@ -56,7 +56,9 @@ export function buildInvoiceTaxRows(
     const normalizedStateRaw = String(customerState || '').trim().toLowerCase();
     const normalizedState = normalizedStateRaw.replace(/^in[- ]/, '').replace(/,.*$/, '').trim();
     const stateAliases: Record<string, string> = { mh: '27', 'maharashtra state': '27', 'state of maharashtra': '27' };
-    const customerCode = /^\d{2}$/.test(normalizedState) ? normalizedState : (stateAliases[normalizedState] || STATE_CODES[normalizedState] || '');
+    // "Buy from shop" is collected at the shop, so it is taxed as a local sale (CGST + SGST).
+    const isShopPickup = normalizedState === 'store pickup';
+    const customerCode = isShopPickup ? sellerCode : (/^\d{2}$/.test(normalizedState) ? normalizedState : (stateAliases[normalizedState] || STATE_CODES[normalizedState] || ''));
     const interstateKnown = Boolean(sellerCode && customerCode);
     const intraState = interstateKnown && sellerCode === customerCode;
     const snapshotTaxTotal = Array.from(groups.values()).reduce((sum, g) => sum + g.tax, 0);

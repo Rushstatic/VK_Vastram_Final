@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { formatCityLine } from '../../lib/orderAddress';
 import {
   CheckCircle2,
   Clock,
@@ -166,7 +167,7 @@ export const OrderConfirmationPage: React.FC<OrderConfirmationPageProps> = ({
               <p style="margin: 0; color: #4B5563;">
                 ${order.shippingAddressSnapshot?.addressLine1 || ''}<br/>
                 ${order.shippingAddressSnapshot?.addressLine2 ? order.shippingAddressSnapshot.addressLine2 + '<br/>' : ''}
-                ${order.shippingAddressSnapshot?.city || ''}, ${order.shippingAddressSnapshot?.state || ''} - ${order.shippingAddressSnapshot?.pincode || ''}
+                ${formatCityLine(order.shippingAddressSnapshot, ' - ')}
               </p>
             </div>
             <div style="text-align: right;">
@@ -524,7 +525,7 @@ export const OrderConfirmationPage: React.FC<OrderConfirmationPageProps> = ({
                   {order.shippingAddressSnapshot.addressLine2 && `, ${order.shippingAddressSnapshot.addressLine2}`}
                 </p>
                 <p className="text-[#57534E]">
-                  {order.shippingAddressSnapshot.city}, {order.shippingAddressSnapshot.state} — {order.shippingAddressSnapshot.pincode}
+                  {formatCityLine(order.shippingAddressSnapshot)}
                 </p>
               </div>
             )}

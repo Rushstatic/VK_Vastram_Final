@@ -114,11 +114,18 @@ async function dispatchOrderStatusEmail(orderId: string, status: string): Promis
   try {
     const { data: order, error } = await db
       .from('orders')
-      .select('id,order_number,customer_name,customer_email,order_status,courier_name,tracking_number,tracking_url,items:order_items(product_name_snapshot,quantity)')
+      .select('id,order_number,customer_name,customer_email,order_status,courier_name,tracking_number,tracking_url,shipping_address_snapshot,items:order_items(product_name_snapshot,quantity)')
       .eq('id', orderId)
       .maybeSingle();
     if (error || !order?.customer_email) throw new Error('order or customer email not found');
     if (String(order.order_status) !== status) throw new Error('order is no longer in this status');
+
+    // "Buy from shop" orders are collected in person: there is no courier, so no "shipped" email.
+    const isPickupOrder = (order as any).shipping_address_snapshot?.fulfillmentMethod === 'store_pickup';
+    if (isPickupOrder && status === 'shipped') {
+      await db.from('order_email_log').delete().eq('order_id', orderId).eq('event', status);
+      return;
+    }
 
     const esc = (v: unknown) => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] || c));
     const orderNo = String(order.order_number || order.id);
@@ -154,6 +161,17 @@ async function dispatchOrderStatusEmail(orderId: string, status: string): Promis
       },
     }[status as 'packed' | 'shipped' | 'delivered'];
 
+    if (isPickupOrder && status === 'packed') {
+      copy.eyebrow = 'Ready for pickup';
+      copy.headline = 'Your order is ready to collect';
+      copy.body = 'Your order is packed and waiting for you at our shop. Please bring your order number when you visit.';
+    }
+    if (isPickupOrder && status === 'delivered') {
+      copy.eyebrow = 'Collected';
+      copy.headline = 'Thank you for visiting us';
+      copy.body = 'We hope you love your purchase. We would be grateful if you shared your experience: it helps other customers choose with confidence.';
+    }
+
     const button = copy.cta
       ? `<p style="text-align:center;margin:28px 0 8px"><a href="${esc(copy.cta.url)}" style="display:inline-block;background:#78281f;color:#faf8f5;text-decoration:none;padding:14px 28px;border-radius:2px;letter-spacing:1px;font-size:13px">${esc(copy.cta.label)}</a></p>`
       : '';
@@ -175,47 +193,11 @@ async function dispatchOrderStatusEmail(orderId: string, status: string): Promis
       <p style="margin:26px 0 0;font-size:12px;color:#78716c;text-align:center">Questions? Reply to this email and our studio team will help.</p>
     </div>`;
 
-    // Prefer published Resend templates when their IDs are configured. If an ID is not
-    // configured, retain the existing inline HTML so deploying this patch is backward-compatible.
-    const templateEnvByStatus: Record<string, string | undefined> = {
-      packed: process.env.RESEND_TEMPLATE_PACKED,
-      shipped: process.env.RESEND_TEMPLATE_SHIPPED,
-      delivered: process.env.RESEND_TEMPLATE_DELIVERED,
-    };
-    const templateId = String(templateEnvByStatus[status] || '').trim();
-    const safeHttpUrl = (value: unknown, fallback: string) => {
-      try {
-        const parsed = new URL(String(value || fallback));
-        return parsed.protocol === 'https:' || parsed.protocol === 'http:' ? parsed.toString() : fallback;
-      } catch {
-        return fallback;
-      }
-    };
-    const reviewUrl = `${baseUrl}/account?review=${encodeURIComponent(orderNo)}`;
-    const trackingUrl = safeHttpUrl(order.tracking_url, baseUrl);
-    const templateVariables = {
-      CUSTOMER_NAME: String(order.customer_name || 'Valued Customer'),
-      ORDER_ID: orderNo,
-      TRACKING_NUMBER: String(order.tracking_number || 'Tracking details will be updated soon'),
-      TRACKING_URL: trackingUrl,
-      REVIEW_URL: reviewUrl,
-      ORDER_URL: reviewUrl,
-    };
-    const emailPayload: Record<string, unknown> = {
-      from: process.env.RESEND_FROM_EMAIL,
-      to: [order.customer_email],
-    };
-    if (templateId) {
-      // Configure the subject in the published Resend template itself.
-      emailPayload.template = { id: templateId, variables: templateVariables };
-    } else {
-      emailPayload.subject = `${copy.headline} · Order ${orderNo}`;
-      emailPayload.html = html;
-    }
+    const subject = `${copy.headline} · Order ${orderNo}`;
     const response = await fetch('https://api.resend.com/emails', {
       method: 'POST',
       headers: { Authorization: `Bearer ${process.env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify(emailPayload),
+      body: JSON.stringify({ from: process.env.RESEND_FROM_EMAIL, to: [order.customer_email], subject, html }),
     });
     if (!response.ok) throw new Error(`Resend rejected the email (${response.status})`);
     console.info(`[order-status-email] ${status} email accepted for order ${orderNo}`);
@@ -270,6 +252,25 @@ async function isOrderPaymentCaptured(orderId: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/**
+ * Address customers collect "Buy from shop" orders from. Read from the admin-managed store settings
+ * (Admin > Store Settings > studio address), never from the browser.
+ */
+async function getStorePickupAddress(): Promise<string> {
+  try {
+    if (db) {
+      const { data } = await db.from('site_settings').select('value').eq('key', 'general').maybeSingle();
+      let general: any = data?.value;
+      if (typeof general === 'string') general = JSON.parse(general);
+      const address = String(general?.studio_address || '').trim();
+      if (address) return address.slice(0, 180);
+    }
+  } catch {
+    // fall through to the generic label
+  }
+  return 'VK VASTRAM shop';
 }
 
 /**
@@ -1386,6 +1387,27 @@ async function startServer() {
         if (!items || !Array.isArray(items) || items.length === 0) {
           res.status(400).json({ success: false, error: 'Cart items are required.' });
           return;
+        }
+
+        // "Buy from shop": the customer collects the order, so there is no delivery address or charge.
+        // The flag is the only thing taken from the browser; the pickup address is set here from the
+        // store settings, and any other value of the flag is discarded.
+        if (shippingAddress && typeof shippingAddress === 'object') {
+          if (shippingAddress.fulfillmentMethod === 'store_pickup') {
+            const pickupName = String(shippingAddress.recipientName || customerName || '').trim() || 'Customer';
+            Object.assign(shippingAddress, {
+              fulfillmentMethod: 'store_pickup',
+              recipientName: pickupName,
+              addressLine1: await getStorePickupAddress(),
+              addressLine2: undefined,
+              landmark: undefined,
+              city: 'Store pickup',
+              state: 'Store pickup',
+              pincode: '000000',
+            });
+          } else {
+            delete shippingAddress.fulfillmentMethod;
+          }
         }
 
         if (

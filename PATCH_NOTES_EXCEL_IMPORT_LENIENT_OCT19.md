@@ -260,3 +260,10 @@ Not run: type/syntax checks only; no database or phone test.
 - Emails sent before this change still carry the old /account link. Those orders can be reviewed by signed-in customers only;
   guests need a new delivered email (re-set the status to Delivered, which is allowed once per status, or resend manually).
 Run migration 20261025000001 before testing.
+
+---
+# Stock could not be updated for products without a variant (Oct 27)
+- Single-item products store their stock on one "Standard" variant row. Products saved before that rule, or
+  imported without one, had no variant row, so Inventory had nothing to adjust.
+- Migration 20261027000001 adds one Standard variant (stock 0) to every product that has none. Existing variants are untouched.
+- After running it, set the stock in the product form (single-item products) or in Inventory.

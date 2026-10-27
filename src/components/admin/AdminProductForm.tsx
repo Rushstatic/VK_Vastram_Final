@@ -250,25 +250,22 @@ export const AdminProductForm: React.FC<AdminProductFormProps> = ({
         }
 
         if (data.variants && data.variants.length > 0) {
-          const activeVariantRows = data.variants.filter((v: any) => v.is_active !== false);
-          const hasExplicitVariants = activeVariantRows.length > 1 || activeVariantRows.some((v: any) => {
-            const attrs = v.attributes || {};
-            return Boolean(
-              (v.variant_name && !['Standard', 'Standard Free Size'].includes(v.variant_name)) ||
-              v.color || v.size || v.bed_size || v.dimensions ||
-              attrs.colorHexPrimary || attrs.colorHexSecondary || attrs.colorSwatchUrl ||
-              (Array.isArray(attrs.images) && attrs.images.length > 0)
-            );
-          });
-          setVariantsEnabled(hasExplicitVariants);
+          // The first active row is the product's BASE variant: it holds the product's own stock and
+          // colour. Any further active rows are extra variants (other colours or sizes).
+          const activeRows = data.variants
+            .filter((v: any) => v.is_active !== false)
+            .sort((x: any, y: any) => String(x.created_at || '').localeCompare(String(y.created_at || '')));
+          const baseRow = activeRows[0];
+          const extraRows = activeRows.slice(1);
           setArchivedVariants([]);
-          if (activeVariantRows.length === 1) {
-            setSingleProductStock(Number(activeVariantRows[0].stock_quantity || 0));
-            setSingleProductVariantId(activeVariantRows[0].id || undefined);
-            setSingleProductVariantSku(activeVariantRows[0].sku || undefined);
+          if (baseRow) {
+            setSingleProductStock(Number(baseRow.stock_quantity || 0));
+            setSingleProductVariantId(baseRow.id || undefined);
+            setSingleProductVariantSku(baseRow.sku || undefined);
           }
+          setVariantsEnabled(extraRows.length > 0);
           setVariants(
-            hasExplicitVariants ? activeVariantRows.map((v: any) => ({
+            extraRows.map((v: any) => ({
               id: v.id,
               sku: v.sku,
               variantName: v.variant_name || 'Standard',
@@ -284,7 +281,7 @@ export const AdminProductForm: React.FC<AdminProductFormProps> = ({
               colorHexPrimary: v.attributes?.colorHexPrimary,
               colorHexSecondary: v.attributes?.colorHexSecondary,
               colorSwatchUrl: v.attributes?.colorSwatchUrl,
-            })) : []
+            }))
           );
         }
       }
@@ -614,10 +611,6 @@ export const AdminProductForm: React.FC<AdminProductFormProps> = ({
       // attributes that are not directly editable in this row.
       return Boolean(v.id) || hasColorName || hasColorHex || hasSize || hasCustomTitle;
     });
-    if (variantsEnabled && variants.length === 0) {
-      setErrorMessage('Create at least one active variant before saving, or switch to single-item stock.');
-      return;
-    }
     if (variantsEnabled && variants.length > 0 && !hasConfiguredVariant) {
       setErrorMessage('Add at least one variant title, colour name, size, or valid colour HEX before saving.');
       return;
@@ -687,18 +680,24 @@ export const AdminProductForm: React.FC<AdminProductFormProps> = ({
       const hasStock = Number(v.stockQuantity || 0) > 0;
       return hasStoredIdentity || hasColor || hasColorHex || hasSize || hasCustomTitle || hasStock;
     });
-    const rawVariants = variantsEnabled
-      ? (meaningfulVariants.length > 0 ? meaningfulVariants : variants.slice(0, 1))
-      : [{
-          id: singleProductVariantId,
-          sku: singleProductVariantSku || formatVariantSku(sku || 'VKV-SAR-001', 1),
-          variantName: category === 'bedsheets' ? `${bedSize} / Standard` : 'Standard Free Size',
-          color: color.trim() || undefined,
-          size: category === 'bedsheets' ? bedSize : undefined,
-          bedSize: category === 'bedsheets' ? bedSize : undefined,
-          stockQuantity: Number(singleProductStock) || 0,
-          isActive: true,
-        }];
+    // The base variant always exists and always comes first. Extra variants (other colours/sizes)
+    // follow only when the admin has added them.
+    
+const baseVariantRow = {
+  id: singleProductVariantId,
+  sku: singleProductVariantSku || formatVariantSku(sku || 'VKV-SAR-001', 1),
+  variantName: category === 'bedsheets' ? `${bedSize} / Standard` : 'Standard Free Size',
+  color: color.trim() || undefined,
+  size: category === 'bedsheets' ? bedSize : undefined,
+  bedSize: category === 'bedsheets' ? bedSize : undefined,
+  stockQuantity: Number(singleProductStock) || 0,
+  isActive: true,
+  colorHexPrimary: undefined as string | undefined,
+  colorHexSecondary: undefined as string | undefined,
+  colorSwatchUrl: undefined as string | undefined,
+};
+
+    const rawVariants = [baseVariantRow, ...(variantsEnabled ? meaningfulVariants : [])];
 
     const imagesPayload = images.map((img, idx) => ({
       id: img.id,
@@ -984,9 +983,9 @@ export const AdminProductForm: React.FC<AdminProductFormProps> = ({
               <p className="text-xs text-[#78716C] mt-1">Stock is managed per variant when variants are enabled.</p>
             </div>
             {variantsEnabled ? (
-              <div className="sm:text-right"><div className="text-[10px] uppercase tracking-wider text-[#78716C]">Total physical stock</div><div className="text-2xl font-semibold tabular-nums text-[#1C1917]">{variants.filter((v) => v.isActive !== false).reduce((sum, v) => sum + Math.max(0, Number(v.stockQuantity) || 0), 0)}</div><div className="text-[10px] text-[#78716C]">Sum of active variants</div></div>
+              <div className="sm:text-right"><div className="text-[10px] uppercase tracking-wider text-[#78716C]">Total physical stock</div><div className="text-2xl font-semibold tabular-nums text-[#1C1917]">{Math.max(0, Number(singleProductStock) || 0) + variants.filter((v) => v.isActive !== false).reduce((sum, v) => sum + Math.max(0, Number(v.stockQuantity) || 0), 0)}</div><div className="text-[10px] text-[#78716C]">Sum of active variants</div></div>
             ) : (
-              <div className="w-full sm:max-w-xs"><label className="block text-[10px] uppercase tracking-wider font-semibold text-[#78716C] mb-1">Available stock (units)</label><input type="number" min="0" step="1" value={singleProductStock} onChange={(e) => { setSingleProductStock(Math.max(0, Math.floor(Number(e.target.value) || 0))); setIsDirty(true); }} className="w-full bg-[#F4EFE6] p-2.5 border border-[#1C1917]/15 rounded-xs" /></div>
+              <p className="text-xs text-[#78716C] sm:max-w-xs">Stock is entered in the Stock &amp; Variant Ledger below (base variant).</p>
             )}
           </div>
         </section>
@@ -1606,14 +1605,20 @@ export const AdminProductForm: React.FC<AdminProductFormProps> = ({
 
           </div>
 
-          {!variantsEnabled ? (
-            <div className="p-4 bg-[#F4EFE6]/50 rounded-xs text-xs text-[#57534E] space-y-3">
-              <p>This is a single-item product. No colour/size variants will be shown to customers. Inventory is stored in its internal standard SKU.</p>
-              <p>Use the stock control in Product Essentials above. Create a variant below only if this product needs separate colour-level inventory.</p>
-            </div>
-          ) : (
-            <div className="space-y-3">
-              {variants.length === 0 && <p className="text-xs text-[#78716C]">Add the first variant below. Variant prices inherit the main product price; each variant gets its own colour, generated SKU, stock and images.</p>}
+          <div className="space-y-3">
+              <div className="p-4 bg-[#F4EFE6] border border-[#967029]/30 rounded-xs grid grid-cols-1 sm:grid-cols-[1fr_auto_10rem] gap-4 items-end">
+                <div>
+                  <p className="text-[10px] uppercase tracking-wider text-[#967029] font-semibold">Base variant</p>
+                  <p className="text-sm text-[#1C1917] mt-1">{color.trim() || 'Product colour not set yet'}</p>
+                  <p className="text-[11px] text-[#78716C] mt-0.5">Every product has this variant. It holds the product colour and its stock.</p>
+                </div>
+                <span className="w-7 h-7 rounded-full border border-[#1C1917]/20 justify-self-start sm:justify-self-center" style={{ backgroundColor: /^#[0-9A-Fa-f]{6}$/.test(primaryColourHex) ? primaryColourHex : '#EFE9DC' }} aria-hidden="true" />
+                <div>
+                  <label className="block text-[10px] uppercase tracking-wider font-semibold text-[#78716C] mb-1">Stock (units) *</label>
+                  <input type="number" min="0" step="1" value={singleProductStock} onChange={(e) => { setSingleProductStock(Math.max(0, Math.floor(Number(e.target.value) || 0))); setIsDirty(true); }} className="w-full bg-[#FAF8F5] p-2.5 border border-[#1C1917]/15 rounded-xs tabular-nums" />
+                </div>
+              </div>
+              <p className="text-xs text-[#78716C]">Need another colour or size? Add a variant. Each extra variant has its own name, colour, hex code and stock.</p>
               {variants.map((v, idx) => {
                 return (
                   <div
@@ -1650,10 +1655,9 @@ export const AdminProductForm: React.FC<AdminProductFormProps> = ({
                 );
               })}
             </div>
-          )}
           <div className="flex justify-end border-t border-[#1C1917]/10 pt-3">
-            <button type="button" onClick={() => { if (!variantsEnabled) setVariantsEnabled(true); handleAddVariant(); }} className="inline-flex items-center gap-2 px-4 py-2 bg-[#1C1917] text-[#FAF8F5] hover:bg-[#332C27] text-xs font-medium rounded-xs">
-              <Plus className="w-4 h-4" /> {variantsEnabled ? 'Create another variant' : 'Create variant'}
+            <button type="button" onClick={() => { setVariantsEnabled(true); handleAddVariant(); }} className="inline-flex items-center gap-2 px-4 py-2 bg-[#1C1917] text-[#FAF8F5] hover:bg-[#332C27] text-xs font-medium rounded-xs">
+              <Plus className="w-4 h-4" /> Add variant
             </button>
           </div>
         </div>

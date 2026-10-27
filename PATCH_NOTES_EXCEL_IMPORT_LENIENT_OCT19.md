@@ -267,3 +267,13 @@ Run migration 20261025000001 before testing.
   imported without one, had no variant row, so Inventory had nothing to adjust.
 - Migration 20261027000001 adds one Standard variant (stock 0) to every product that has none. Existing variants are untouched.
 - After running it, set the stock in the product form (single-item products) or in Inventory.
+
+---
+# Base variant, correct stock totals, and "create variant" removed (Oct 28)
+- Every product has one BASE variant (the first active variant row). It holds the product's colour, SKU and stock.
+  It is created automatically, is always shown first in the Stock & Variant Ledger, and no extra step is needed.
+- Extra variants (other colours or sizes) are optional. "Add variant" adds one with name, colour, hex and stock.
+- The error "add at least one variant" is removed; it only appears if an extra variant row is left half-filled.
+- The product list and the ledger total count only ACTIVE variant stock. Archived rows (kept for history) no longer add
+  to the total. This is why Wine Red Mulmul showed 2 units while only 1 was in stock.
+- Stock is entered in one place (the base variant row) instead of two.

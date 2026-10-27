@@ -357,8 +357,10 @@ export const adminService = {
           item.images?.[0]?.image_url ||
           '';
 
+        // Only active variants count. Archived rows keep their old stock for history and must not
+        // be added to the total again.
         const totalStock = item.variants?.reduce(
-          (sum: number, v: any) => sum + (v.stock_quantity || 0),
+          (sum: number, v: any) => (v.is_active === false ? sum : sum + (v.stock_quantity || 0)),
           0
         );
 

@@ -245,3 +245,18 @@ src/lib/invoiceTax.ts, src/components/checkout/CheckoutPage.tsx, OrderConfirmati
 src/components/admin/AdminOrders.tsx, src/components/product/MobileImageViewer.tsx
 Run the migration, restart the server. Set the real shop address in Admin > Store Settings (the default is a placeholder).
 Not run: type/syntax checks only; no database or phone test.
+
+---
+# Review links for guests + homepage reviews (Oct 26)
+- Cause: the review link pointed to /account, which only lists orders of a signed-in account. Guest orders have no account, so
+  the page showed nothing. The review form also needed login.
+- Delivered email now links to /review/<token>. The token is random (256-bit), bound to one order, stored only as a SHA-256 hash
+  (table order_review_links), and expires after 60 days. No login required; works for guest and signed-in customers.
+- Public endpoints: GET/POST /api/review-links/:token (rate limited). One order review per order; one product review per product per order.
+- reviews.user_id may now be empty (guest orders). Migration 20261025000001 also adds a unique index per (order, product).
+- Homepage: "Words that wear beautifully" section below the hero. One card per reviewed order (feedback shown once, with the
+  products and their star ratings, delivery and packaging stars, verified badge). Hidden when there are no reviews.
+  Feed: GET /api/reviews/showcase (customer shown as first name + last initial, no email or phone).
+- Emails sent before this change still carry the old /account link. Those orders can be reviewed by signed-in customers only;
+  guests need a new delivered email (re-set the status to Delivered, which is allowed once per status, or resend manually).
+Run migration 20261025000001 before testing.

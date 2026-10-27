@@ -101,6 +101,19 @@ async function dispatchAdminOrderAlert(orderId: string, eventType: 'new_order' |
  * repeated clicks or retries never send duplicates. The delivered email is also the review request.
  */
 const ORDER_STATUS_EMAIL_EVENTS = ['packed', 'shipped', 'delivered'] as const;
+
+/** Creates a private review link for an order. Only the SHA-256 hash is stored; the raw token goes in the email. */
+async function createOrderReviewToken(orderId: string): Promise<string | null> {
+  if (!db) return null;
+  const token = crypto.randomBytes(32).toString('base64url');
+  const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+  const expiresAt = new Date(Date.now() + 60 * 24 * 60 * 60 * 1000).toISOString();
+  const { error } = await db.from('order_review_links').upsert(
+    { order_id: orderId, token_hash: tokenHash, expires_at: expiresAt, created_at: new Date().toISOString() },
+    { onConflict: 'order_id' }
+  );
+  return error ? null : token;
+}
 async function dispatchOrderStatusEmail(orderId: string, status: string): Promise<void> {
   if (!db || !process.env.RESEND_API_KEY || !process.env.RESEND_FROM_EMAIL) return;
   if (!(ORDER_STATUS_EMAIL_EVENTS as readonly string[]).includes(status)) return;
@@ -156,11 +169,16 @@ async function dispatchOrderStatusEmail(orderId: string, status: string): Promis
         eyebrow: 'Delivered',
         headline: 'We hope you love it',
         body: 'Your order has been delivered. We would be grateful if you shared how it feels: your experience helps other customers choose with confidence.',
-        cta: { label: 'Share your experience', url: `${baseUrl}/account?review=${encodeURIComponent(orderNo)}` },
+        cta: { label: 'Share your experience', url: '' },
         extra: '<p style="margin:12px 0 0;color:#57534e;font-size:13px">One short review covers delivery, packaging and each piece you bought.</p>',
       },
     }[status as 'packed' | 'shipped' | 'delivered'];
 
+    if (status === 'delivered') {
+      const reviewToken = await createOrderReviewToken(orderId);
+      if (!reviewToken) throw new Error('could not create review link');
+      copy.cta = { label: 'Share your experience', url: `${baseUrl}/review/${reviewToken}` };
+    }
     if (isPickupOrder && status === 'packed') {
       copy.eyebrow = 'Ready for pickup';
       copy.headline = 'Your order is ready to collect';
@@ -735,6 +753,7 @@ async function startServer() {
   app.use('/api/payment/verify', rateLimit({ windowMs: 60_000, max: 12 , bucketName: 'payment-verify' }));
   app.use('/api/payment/failure', rateLimit({ windowMs: 60_000, max: 12 , bucketName: 'payment-failure' }));
   app.use('/api/payment/abandon', rateLimit({ windowMs: 60_000, max: 12 , bucketName: 'payment-abandon' }));
+  app.use('/api/review-links', rateLimit({ windowMs: 60_000, max: 30, bucketName: 'review-link' }));
   app.use('/api/coupons/validate', rateLimit({ windowMs: 60_000, max: 20 , bucketName: 'coupon-validate' }));
   app.use('/api/admin', rateLimit({ windowMs: 60_000, max: 120 , bucketName: 'admin' }));
   app.use('/api/auth', rateLimit({ windowMs: 60_000, max: 10 , bucketName: 'auth' }));
@@ -3356,6 +3375,186 @@ const orderPayload = {
     } catch (err: any) {
       console.error('[order-review] submit failed');
       res.status(500).json({ success: false, error: 'Could not save your review. Please try again.' });
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  // PUBLIC REVIEW LINK (no login needed). The link in the delivered email carries a private token
+  // that is bound to one order and expires after 60 days. Works for guest checkout too.
+  // ---------------------------------------------------------------------------
+  const loadOrderByReviewToken = async (token: string) => {
+    if (!/^[A-Za-z0-9_-]{30,80}$/.test(token)) return null;
+    const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+    const { data: link } = await db!.from('order_review_links').select('order_id,expires_at').eq('token_hash', tokenHash).maybeSingle();
+    if (!link || new Date(link.expires_at).getTime() < Date.now()) return null;
+    const { data: order } = await db!
+      .from('orders')
+      .select('id,order_number,order_status,user_id,customer_name,items:order_items(product_variant_id,product_name_snapshot,quantity)')
+      .eq('id', link.order_id)
+      .maybeSingle();
+    if (!order || order.order_status !== 'delivered') return null;
+    return order;
+  };
+
+  const productLinesForOrder = async (order: any) => {
+    const variantIds = (order.items || []).map((i: any) => i.product_variant_id).filter(Boolean);
+    let productByVariant = new Map<string, string>();
+    if (variantIds.length) {
+      const { data: variants, error } = await db!.from('product_variants').select('id,product_id').in('id', variantIds);
+      if (error) throw error;
+      productByVariant = new Map((variants || []).map((v: any) => [v.id, v.product_id]));
+    }
+    const products = new Map<string, { productId: string; name: string; quantity: number }>();
+    for (const i of order.items || []) {
+      const productId = productByVariant.get(i.product_variant_id);
+      if (!productId) continue;
+      const existing = products.get(productId);
+      if (existing) existing.quantity += Number(i.quantity || 1);
+      else products.set(productId, { productId, name: String(i.product_name_snapshot || 'VK VASTRAM piece'), quantity: Number(i.quantity || 1) });
+    }
+    return Array.from(products.values());
+  };
+
+  app.get('/api/review-links/:token', async (req: Request, res: Response) => {
+    try {
+      if (!db) { res.status(503).json({ success: false, error: 'Reviews are unavailable right now.' }); return; }
+      const order = await loadOrderByReviewToken(String(req.params.token || ''));
+      if (!order) { res.status(404).json({ success: false, error: 'This review link is invalid or has expired.' }); return; }
+      const products = await productLinesForOrder(order);
+      const { data: submitted } = await db.from('order_reviews').select('id').eq('order_id', order.id).maybeSingle();
+      const firstName = String(order.customer_name || '').trim().split(/\s+/)[0] || '';
+      res.json({
+        success: true,
+        orderNumber: order.order_number,
+        firstName,
+        submitted: Boolean(submitted),
+        products: products.map((p) => ({ ...p, alreadyReviewed: false })),
+      });
+    } catch {
+      res.status(500).json({ success: false, error: 'Could not load the review form.' });
+    }
+  });
+
+  app.post('/api/review-links/:token', async (req: Request, res: Response) => {
+    try {
+      if (!db) { res.status(503).json({ success: false, error: 'Reviews are unavailable right now.' }); return; }
+      const order = await loadOrderByReviewToken(String(req.params.token || ''));
+      if (!order) { res.status(404).json({ success: false, error: 'This review link is invalid or has expired.' }); return; }
+
+      const body = req.body || {};
+      const isRating = (v: unknown) => Number.isInteger(v) && (v as number) >= 1 && (v as number) <= 5;
+      const feedback = String(body.feedback || '').trim();
+      if (!isRating(body.deliveryRating) || !isRating(body.packagingRating)) {
+        res.status(400).json({ success: false, error: 'Please rate delivery and packaging from 1 to 5 stars.' }); return;
+      }
+      if (feedback.length < 10 || feedback.length > 2000) {
+        res.status(400).json({ success: false, error: 'Please write between 10 and 2000 characters of feedback.' }); return;
+      }
+
+      const { data: already } = await db.from('order_reviews').select('id').eq('order_id', order.id).maybeSingle();
+      if (already) { res.status(409).json({ success: false, error: 'You have already reviewed this order.' }); return; }
+
+      const products = await productLinesForOrder(order);
+      const orderProductIds = new Set(products.map((p) => p.productId));
+      const ratingByProduct = new Map<string, number>();
+      const ratingsInput: any[] = Array.isArray(body.productRatings) ? body.productRatings : [];
+      for (const entry of ratingsInput) {
+        if (!entry || !orderProductIds.has(String(entry.productId))) {
+          res.status(400).json({ success: false, error: 'A rated product does not belong to this order.' }); return;
+        }
+        if (!isRating(entry.rating)) {
+          res.status(400).json({ success: false, error: 'Every product rating must be from 1 to 5 stars.' }); return;
+        }
+        ratingByProduct.set(String(entry.productId), Number(entry.rating));
+      }
+      const missing = Array.from(orderProductIds).filter((pid) => !ratingByProduct.has(pid));
+      if (missing.length) { res.status(400).json({ success: false, error: 'Please give every purchased product a star rating.' }); return; }
+
+      const { data: orderReview, error: orderReviewError } = await db
+        .from('order_reviews')
+        .insert({
+          order_id: order.id,
+          user_id: order.user_id || null,
+          delivery_rating: Number(body.deliveryRating),
+          packaging_rating: Number(body.packagingRating),
+          feedback,
+        })
+        .select('id')
+        .single();
+      if (orderReviewError) {
+        const duplicate = (orderReviewError as any).code === '23505';
+        res.status(duplicate ? 409 : 500).json({ success: false, error: duplicate ? 'You have already reviewed this order.' : 'Could not save your review. Please try again.' });
+        return;
+      }
+
+      const now = new Date().toISOString();
+      const rows = Array.from(orderProductIds).map((pid) => ({
+        product_id: pid,
+        user_id: order.user_id || null,
+        order_id: order.id,
+        rating: ratingByProduct.get(pid)!,
+        title: '',
+        body: feedback,
+        status: 'approved',
+        verified_purchase: true,
+        moderation_metadata: { source: 'review_link', order_number: order.order_number, order_review_id: orderReview?.id },
+        created_at: now,
+        updated_at: now,
+      }));
+      const { error: insertError } = await db.from('reviews').insert(rows);
+      if (insertError) {
+        await db.from('order_reviews').delete().eq('id', orderReview!.id);
+        res.status(500).json({ success: false, error: 'Could not save your product reviews. Please try again.' });
+        return;
+      }
+      res.json({ success: true, message: 'Thank you. Your review has been published.', productsReviewed: rows.length });
+    } catch {
+      res.status(500).json({ success: false, error: 'Could not save your review. Please try again.' });
+    }
+  });
+
+  // Homepage showcase: one card per reviewed order (the same feedback is never repeated per product).
+  app.get('/api/reviews/showcase', async (_req: Request, res: Response) => {
+    try {
+      if (!db) { res.json({ success: true, items: [], stats: { average: 0, count: 0 } }); return; }
+      const { data: orderReviews, error } = await db
+        .from('order_reviews')
+        .select('order_id,delivery_rating,packaging_rating,feedback,created_at,orders(order_number,customer_name)')
+        .order('created_at', { ascending: false })
+        .limit(12);
+      if (error) throw error;
+      const orderIds = (orderReviews || []).map((r: any) => r.order_id);
+      let productRows: any[] = [];
+      if (orderIds.length) {
+        const { data } = await db.from('reviews').select('order_id,rating,product_id,products(name,slug)').in('order_id', orderIds);
+        productRows = data || [];
+      }
+      const { data: allRatings } = await db.from('reviews').select('rating').eq('status', 'approved');
+      const ratings = (allRatings || []).map((r: any) => Number(r.rating)).filter((n) => n >= 1 && n <= 5);
+      const average = ratings.length ? Math.round((ratings.reduce((a, b) => a + b, 0) / ratings.length) * 10) / 10 : 0;
+
+      const items = (orderReviews || []).map((r: any) => {
+        const mine = productRows.filter((p) => p.order_id === r.order_id);
+        const fullName = String(r.orders?.customer_name || '').trim().split(/\s+/);
+        const displayName = fullName[0] ? `${fullName[0]}${fullName[1] ? ` ${fullName[1][0]}.` : ''}` : 'VK VASTRAM customer';
+        const productRatings = mine.map((p) => Number(p.rating));
+        const overall = productRatings.length ? productRatings.reduce((a, b) => a + b, 0) / productRatings.length : 0;
+        return {
+          id: r.order_id,
+          feedback: r.feedback,
+          displayName,
+          deliveryRating: r.delivery_rating,
+          packagingRating: r.packaging_rating,
+          overallRating: Math.round(overall * 10) / 10,
+          products: mine.map((p) => ({ name: p.products?.name || 'VK VASTRAM piece', slug: p.products?.slug || '', rating: Number(p.rating) })),
+          createdAt: r.created_at,
+        };
+      }).filter((item: any) => item.feedback && item.products.length > 0);
+
+      res.setHeader('Cache-Control', 'public, max-age=300');
+      res.json({ success: true, items, stats: { average, count: ratings.length } });
+    } catch {
+      res.json({ success: true, items: [], stats: { average: 0, count: 0 } });
     }
   });
 

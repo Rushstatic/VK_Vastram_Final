@@ -9,7 +9,7 @@ interface OrderReviewModalProps {
 }
 
 /** Row of five stars. Keyboard accessible: each star is a radio-style button. */
-const StarPicker: React.FC<{ label: string; value: number; onChange: (value: number) => void }> = ({ label, value, onChange }) => (
+export const StarPicker: React.FC<{ label: string; value: number; onChange: (value: number) => void }> = ({ label, value, onChange }) => (
   <div className="flex items-center justify-between gap-3 py-2">
     <span className="text-sm text-[#1C1917]">{label}</span>
     <div role="radiogroup" aria-label={`${label} rating`} className="flex items-center gap-1">

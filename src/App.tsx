@@ -67,6 +67,7 @@ import { adminService, HomepageSectionData, CollectionAdminData } from './servic
 import { sanitizeQuantity, MAX_CART_ITEM_QUANTITY } from './lib/validation';
 import { resolveVariantCartImage } from './lib/cartVariantImage';
 import { MostLovedStyles } from './components/home/MostLovedStyles';
+import { ReviewsShowcase } from './components/home/ReviewsShowcase';
 
 // Client-side URL Path/SPA Routing helper maps
 const getPathFromPage = (page: PageView): string => {
@@ -945,6 +946,7 @@ export default function App() {
         {currentPage.type === 'home' && (
           <div className="space-y-0">
             {isHomepageSectionActive('hero') && <HeroSection onNavigate={handleNavigate} />}
+            <ReviewsShowcase onNavigate={handleNavigate} />
             {isHomepageSectionActive('categories') && <CategoryShowcase categories={categories} loading={!productsLoaded} onNavigate={handleNavigate} />}
 
             {/* Most Loved Styles: a rotating selection of sarees, changes every 2 minutes. */}

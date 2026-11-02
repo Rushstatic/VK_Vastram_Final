@@ -309,3 +309,8 @@ Resumable via migration-state/state.json. Originals are never deleted. Database 
   Photos are stored in the existing store-assets bucket under reviews/order/<order id>/. Migration 20261030000001 adds order_reviews.photo_urls.
   Homepage cards show the photos. Account-page review form does not offer photos yet.
 - Homepage average is now one rating per reviewed order (was per product row).
+- Homepage reviews moved to the bottom of the page (after the trust section). Cards: large photo (customer photo, or the
+  product photo when none), remark, stars, customer name with verified tick, and the product name linking to the product.
+  Sliding row with previous/next arrows.
+- Photo check: if customer photos still don't show, confirm the server's SUPABASE_URL matches the project URL. Photos are
+  only shown when their URL starts with SUPABASE_URL/storage/v1/object/public/store-assets/reviews/order/<order id>/.

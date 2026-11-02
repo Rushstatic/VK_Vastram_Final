@@ -3597,6 +3597,18 @@ const orderPayload = {
       const average = orderRatings.length ? Math.round((orderRatings.reduce((a, b) => a + b, 0) / orderRatings.length) * 10) / 10 : 0;
       const ratings = orderRatings;
 
+      // Primary image for each reviewed product (shown on the review card, like a product card).
+      const productIds = Array.from(new Set(productRows.map((p: any) => p.product_id).filter(Boolean)));
+      let primaryImageByProduct = new Map<string, string>();
+      if (productIds.length) {
+        const { data: imageRows } = await db.from('product_images').select('product_id,image_url,is_primary').in('product_id', productIds);
+        for (const img of imageRows || []) {
+          if (img.is_primary && !primaryImageByProduct.has(img.product_id)) primaryImageByProduct.set(img.product_id, img.image_url);
+        }
+        for (const img of imageRows || []) {
+          if (!primaryImageByProduct.has(img.product_id)) primaryImageByProduct.set(img.product_id, img.image_url);
+        }
+      }
       const items = (orderReviews || []).map((r: any) => {
         const mine = productRows.filter((p) => p.order_id === r.order_id);
         const fullName = String(r.orders?.customer_name || '').trim().split(/\s+/);
@@ -3610,7 +3622,12 @@ const orderPayload = {
           deliveryRating: r.delivery_rating,
           packagingRating: r.packaging_rating,
           overallRating: Math.round(overall * 10) / 10,
-          products: mine.map((p) => ({ name: p.products?.name || 'VK VASTRAM piece', slug: p.products?.slug || '', rating: Number(p.rating) })),
+          products: mine.map((p) => ({
+            name: p.products?.name || 'VK VASTRAM piece',
+            slug: p.products?.slug || '',
+            rating: Number(p.rating),
+            image: primaryImageByProduct.get(p.product_id) || '',
+          })),
           createdAt: r.created_at,
           photos: Array.isArray(r.photo_urls) ? r.photo_urls.slice(0, 3) : [],
         };

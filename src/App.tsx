@@ -1054,8 +1054,8 @@ export default function App() {
               />
             )}
 
-            <TrustGuarantees />
             <ReviewsShowcase onNavigate={handleNavigate} />
+            <TrustGuarantees />
           </div>
         )}
 

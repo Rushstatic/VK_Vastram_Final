@@ -314,3 +314,6 @@ Resumable via migration-state/state.json. Originals are never deleted. Database 
   Sliding row with previous/next arrows.
 - Photo check: if customer photos still don't show, confirm the server's SUPABASE_URL matches the project URL. Photos are
   only shown when their URL starts with SUPABASE_URL/storage/v1/object/public/store-assets/reviews/order/<order id>/.
+- Reviews section now sits above the trust values. Quote-card template restored (quote mark, stars, serif remark,
+  product chip, name with "Verified purchase"). Photo: customer photo if present, else product photo. Images are
+  never cropped (natural proportions, object-contain, lazy-loaded, with alt text).

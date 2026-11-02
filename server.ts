@@ -4267,6 +4267,29 @@ const orderPayload = {
   });
   // Removes an R2 image. Admin only. Refuses any URL that is not on our R2 public domain, so
   // Supabase Storage objects (kept for rollback) can never be deleted through this route.
+  // Admin: issue a fresh review link for a DELIVERED order (for older orders whose email link is gone).
+  // Creating a new link invalidates nothing else; the link works for that one order only.
+  app.post('/api/admin/orders/:orderId/review-link', authenticateUser, async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const isAdmin = await checkAdminRole(req.user?.id);
+      if (!isAdmin) { res.status(403).json({ success: false, error: 'Forbidden. Admin access required.' }); return; }
+      if (!db) { res.status(503).json({ success: false, error: 'Database unavailable.' }); return; }
+      const orderId = String(req.params.orderId || '');
+      if (!/^[0-9a-f-]{36}$/i.test(orderId)) { res.status(400).json({ success: false, error: 'Invalid order.' }); return; }
+      const { data: order } = await db.from('orders').select('id,order_number,order_status').eq('id', orderId).maybeSingle();
+      if (!order) { res.status(404).json({ success: false, error: 'Order not found.' }); return; }
+      if (order.order_status !== 'delivered') { res.status(409).json({ success: false, error: 'Review links are available only for delivered orders.' }); return; }
+      const token = await createOrderReviewToken(order.id);
+      if (!token) { res.status(500).json({ success: false, error: 'Could not create the review link.' }); return; }
+      const baseUrl = String(process.env.SITE_URL || process.env.APP_URL || '').replace(/\/$/, '');
+      if (!baseUrl) { res.status(500).json({ success: false, error: 'SITE_URL is not configured on the server.' }); return; }
+      res.json({ success: true, orderNumber: order.order_number, url: `${baseUrl}/review/${token}` });
+    } catch {
+      console.error('[admin/review-link] failed');
+      res.status(500).json({ success: false, error: 'Could not create the review link.' });
+    }
+  });
+
   app.post('/api/admin/media/delete', authenticateUser, async (req: AuthenticatedRequest, res: Response) => {
     try {
       const isAdmin = await checkAdminRole(req.user?.id);

@@ -25,7 +25,7 @@ import {
   ShoppingBag,
   ShieldCheck
 } from 'lucide-react';
-import { adminService } from '../../services/adminService';
+import { adminService, getOrderReviewLink } from '../../services/adminService';
 import { buildInvoiceTaxRows } from '../../lib/invoiceTax';
 import { formatCityLine, isStorePickup } from '../../lib/orderAddress';
 import { formatPrice } from '../ui/PriceDisplay';
@@ -94,6 +94,7 @@ export const AdminOrders: React.FC = () => {
   // Selected order details state
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
   const [showDetailsDrawer, setShowDetailsDrawer] = useState(false);
+  const [reviewLinkNotice, setReviewLinkNotice] = useState<string | null>(null);
   const [showCancelConfirm, setShowCancelConfirm] = useState(false);
   const [isUpdatingPaymentStatus, setIsUpdatingPaymentStatus] = useState(false);
   const [selectedOrder, setSelectedOrder] = useState<any | null>(null);
@@ -932,6 +933,42 @@ export const AdminOrders: React.FC = () => {
                 </p>
               </div>
               <div className="flex items-center gap-2">
+              {selectedOrder && String(selectedOrder.orderStatus) === 'delivered' && (
+                <>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      const result = await getOrderReviewLink(selectedOrder.id);
+                      if (result.success && result.url) {
+                        await navigator.clipboard?.writeText(result.url).catch(() => undefined);
+                        setReviewLinkNotice(`Review link copied: ${result.url}`);
+                      } else {
+                        setReviewLinkNotice(result.error || 'Could not create the review link.');
+                      }
+                    }}
+                    className="px-3 py-2 text-[10px] font-semibold uppercase tracking-wider border border-[#1C1917]/20 rounded-xs hover:bg-[#FAF8F5]"
+                  >
+                    Copy review link
+                  </button>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      const result = await getOrderReviewLink(selectedOrder.id);
+                      if (!result.success || !result.url) {
+                        setReviewLinkNotice(result.error || 'Could not create the review link.');
+                        return;
+                      }
+                      const phone = String(selectedOrder.customerPhone || '').replace(/\D/g, '');
+                      const text = `Hi ${selectedOrder.customerName || ''}, thank you for shopping with VK VASTRAM. We would love to hear about your order ${selectedOrder.orderNumber}. Share your review here: ${result.url}`;
+                      const link = `https://wa.me/${phone}?text=${encodeURIComponent(text)}`;
+                      window.open(link, '_blank', 'noopener,noreferrer');
+                    }}
+                    className="px-3 py-2 text-[10px] font-semibold uppercase tracking-wider border border-[#25D366]/60 text-[#128C4B] rounded-xs hover:bg-[#25D366]/10"
+                  >
+                    Send on WhatsApp
+                  </button>
+                </>
+              )}
               <button type="button" onClick={printSelectedOrderInvoice} disabled={!selectedOrder}
                 className="px-3 py-2 text-[10px] font-semibold uppercase tracking-wider border border-[#1C1917]/20 rounded-xs hover:bg-[#FAF8F5] disabled:opacity-40">Invoice / PDF</button>
               <button
@@ -1429,13 +1466,18 @@ export const AdminOrders: React.FC = () => {
             </div>
 
             {/* Modal Footer */}
-            <div className="p-4 bg-[#F4EFE6] border-t border-[#1C1917]/10 flex justify-end">
+            <div className="p-4 bg-[#F4EFE6] border-t border-[#1C1917]/10">
+              {reviewLinkNotice && (
+                <p role="status" className="mb-3 text-[11px] text-[#57534E] break-all">{reviewLinkNotice}</p>
+              )}
+              <div className="flex justify-end">
               <button
                 onClick={() => setShowDetailsDrawer(false)}
                 className="px-5 py-2 border border-[#1C1917]/20 rounded-xs text-[#1C1917] hover:bg-[#FAF8F5] font-semibold cursor-pointer text-xs uppercase tracking-wider transition-all"
               >
                 Close Ledger
               </button>
+              </div>
             </div>
           </div>
         </div>

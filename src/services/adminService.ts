@@ -122,6 +122,22 @@ const deleteR2Image = async (url: string): Promise<void> => {
   if (!res.ok) throw new Error('Could not remove the image from storage.');
 };
 
+/** Admin: creates a review link for a delivered order (returns the full URL to copy or send). */
+export const getOrderReviewLink = async (orderId: string): Promise<{ success: boolean; url?: string; error?: string }> => {
+  const { data } = await supabase.auth.getSession();
+  const token = data.session?.access_token;
+  try {
+    const res = await fetch(`/api/admin/orders/${encodeURIComponent(orderId)}/review-link`, {
+      method: 'POST',
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    const body = await res.json();
+    return res.ok && body.success ? { success: true, url: body.url } : { success: false, error: body.error || 'Could not create the link.' };
+  } catch {
+    return { success: false, error: 'Could not reach the server. Try again.' };
+  }
+};
+
 export const adminService = {
   /**
    * Synchronously get cached homepage sections from memory or sessionStorage/localStorage

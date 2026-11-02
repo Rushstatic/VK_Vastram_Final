@@ -303,3 +303,5 @@ Resumable via migration-state/state.json. Originals are never deleted. Database 
 - Lint fix: base variant row now carries colour fields (colorHexPrimary / colorHexSecondary / colorSwatchUrl) so the
   save mapping type-checks. Run `npm install` after pulling this change, so @aws-sdk/client-s3 is installed.
 - Lint fix 2: the base variant colour check uses showSecondaryColour (the form's actual state name).
+- Admin: delivered orders show "Copy review link" and "Send on WhatsApp" in the order ledger. Both call
+  POST /api/admin/orders/:orderId/review-link (admin only, delivered orders only). Requires SITE_URL on the server.

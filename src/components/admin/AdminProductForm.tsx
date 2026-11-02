@@ -682,22 +682,21 @@ export const AdminProductForm: React.FC<AdminProductFormProps> = ({
     });
     // The base variant always exists and always comes first. Extra variants (other colours/sizes)
     // follow only when the admin has added them.
-    
-const baseVariantRow = {
-  id: singleProductVariantId,
-  sku: singleProductVariantSku || formatVariantSku(sku || 'VKV-SAR-001', 1),
-  variantName: category === 'bedsheets' ? `${bedSize} / Standard` : 'Standard Free Size',
-  color: color.trim() || undefined,
-  size: category === 'bedsheets' ? bedSize : undefined,
-  bedSize: category === 'bedsheets' ? bedSize : undefined,
-  stockQuantity: Number(singleProductStock) || 0,
-  isActive: true,
-  colorHexPrimary: undefined as string | undefined,
-  colorHexSecondary: undefined as string | undefined,
-  colorSwatchUrl: undefined as string | undefined,
-};
-
-    const rawVariants = [baseVariantRow, ...(variantsEnabled ? meaningfulVariants : [])];
+    const baseVariantRow = {
+      id: singleProductVariantId,
+      sku: singleProductVariantSku || formatVariantSku(sku || 'VKV-SAR-001', 1),
+      variantName: category === 'bedsheets' ? `${bedSize} / Standard` : 'Standard Free Size',
+      color: color.trim() || undefined,
+      size: category === 'bedsheets' ? bedSize : undefined,
+      bedSize: category === 'bedsheets' ? bedSize : undefined,
+      stockQuantity: Number(singleProductStock) || 0,
+      isActive: true,
+      // The base variant carries the product's own colour codes, so the same fields exist on every row.
+      colorHexPrimary: /^#[0-9A-Fa-f]{6}$/.test(primaryColourHex) ? primaryColourHex.toUpperCase() : undefined,
+      colorHexSecondary: showSecondaryColour && /^#[0-9A-Fa-f]{6}$/.test(secondaryColourHex) ? secondaryColourHex.toUpperCase() : undefined,
+      colorSwatchUrl: undefined as string | undefined,
+    };
+    const rawVariants: any[] = [baseVariantRow, ...(variantsEnabled ? meaningfulVariants : [])];
 
     const imagesPayload = images.map((img, idx) => ({
       id: img.id,

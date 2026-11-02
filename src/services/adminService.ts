@@ -107,6 +107,21 @@ let cachedHomepageSectionsMemory: HomepageSectionData[] | null = null;
 
 const HOMEPAGE_CACHE_KEY = 'vk_homepage_sections_cache';
 
+/**
+ * Removes an image that is stored in R2 (through the admin API, which checks the admin role).
+ * Supabase Storage objects are removed with the Supabase client instead (see callers).
+ */
+const deleteR2Image = async (url: string): Promise<void> => {
+  const { data } = await supabase.auth.getSession();
+  const token = data.session?.access_token;
+  const res = await fetch('/api/admin/media/delete', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    body: JSON.stringify({ url }),
+  });
+  if (!res.ok) throw new Error('Could not remove the image from storage.');
+};
+
 export const adminService = {
   /**
    * Synchronously get cached homepage sections from memory or sessionStorage/localStorage
@@ -1996,10 +2011,16 @@ export const adminService = {
 
           if (!remainingCount || remainingCount === 0) {
             // Extract path from public URL
-            const parts = url.split('/store-assets/');
-            if (parts[1]) {
-              const filePath = decodeURIComponent(parts[1]);
-              await supabase.storage.from('store-assets').remove([filePath]);
+            if (url.includes('/store-assets/')) {
+              // Legacy Supabase Storage image.
+              const parts = url.split('/store-assets/');
+              if (parts[1]) {
+                const filePath = decodeURIComponent(parts[1]);
+                await supabase.storage.from('store-assets').remove([filePath]);
+              }
+            } else {
+              // R2 image (no-op for URLs outside our R2 domain, which the server refuses).
+              await deleteR2Image(url).catch(() => undefined);
             }
           }
         }

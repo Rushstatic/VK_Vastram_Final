@@ -277,3 +277,29 @@ Run migration 20261025000001 before testing.
 - The product list and the ledger total count only ACTIVE variant stock. Archived rows (kept for history) no longer add
   to the total. This is why Wine Red Mulmul showed 2 units while only 1 was in stock.
 - Stock is entered in one place (the base variant row) instead of two.
+
+---
+# Cloudflare R2 image storage (implemented, NOT switched on)
+Files: server/r2Storage.ts (new), server.ts (admin upload + new admin delete route), src/services/adminService.ts (delete),
+scripts/migrate-images-to-r2.mjs (new), package.json (@aws-sdk/client-s3).
+Environment (server only): STORAGE_PROVIDER (supabase | r2), R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY,
+R2_BUCKET_NAME, R2_PUBLIC_BASE_URL (custom domain, e.g. https://images.vkvastram.in).
+Default STORAGE_PROVIDER=supabase: nothing changes until it is set to r2.
+Review photos stay on Supabase (out of scope).
+Migration: node scripts/migrate-images-to-r2.mjs (dry run), then --apply [--limit 20] for a trial, then the full run.
+Resumable via migration-state/state.json. Originals are never deleted. Database URLs are NOT changed by this script.
+
+---
+# Common ratings (simplified reviews) + WhatsApp share (Oct 29)
+- Review form (account page and emailed link): one overall star rating and one written review. The per-product stars and
+  delivery/packaging stars were removed from the form. The server accepts {rating, feedback}; the rating is stored for each
+  product in the order (product pages unchanged) and in the order's delivery/packaging fields.
+- Homepage (below the hero): "What our loved customers are saying", the average rating and count, up to three verified
+  quotes, and a "Share on WhatsApp" link. Hidden until there are reviews.
+- After a review is published, the customer gets a "Share on WhatsApp" button that opens WhatsApp with their review text.
+- Files: server.ts (applyCommonRating, commonRatingEntries), src/components/home/ReviewsShowcase.tsx, src/components/reviews/ReviewLinkPage.tsx,
+  src/components/account/OrderReviewModal.tsx, src/services/orderReviewService.ts, src/lib/reviewShare.ts (new), src/App.tsx.
+- No database migration needed.
+- Lint fix: base variant row now carries colour fields (colorHexPrimary / colorHexSecondary / colorSwatchUrl) so the
+  save mapping type-checks. Run `npm install` after pulling this change, so @aws-sdk/client-s3 is installed.
+- Lint fix 2: the base variant colour check uses showSecondaryColour (the form's actual state name).

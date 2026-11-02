@@ -36,7 +36,7 @@ export const orderReviewService = {
 
   async submitReview(
     orderNumber: string,
-    payload: { deliveryRating: number; packagingRating: number; feedback: string; productRatings: Array<{ productId: string; rating: number }> }
+    payload: { rating: number; feedback: string }
   ): Promise<{ success: boolean; message?: string; error?: string }> {
     try {
       const response = await fetch(`/api/orders/${encodeURIComponent(orderNumber)}/review`, {

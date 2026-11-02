@@ -9,6 +9,7 @@ import { createClient } from '@supabase/supabase-js';
 import webpush from 'web-push';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { invokeCheckedRpc, OrderSafetyError, validateOrderLines } from './server/orderSafety.ts';
+import { getStorageProvider, isR2Configured, uploadToR2, deleteFromR2, keyFromR2Url, r2PublicUrl } from './server/r2Storage.ts';
 
 dotenv.config();
 
@@ -3278,6 +3279,7 @@ const orderPayload = {
       const userId = req.user?.id;
       if (!userId || !db) { res.status(503).json({ success: false, error: 'Reviews are unavailable right now.' }); return; }
       const body = req.body || {};
+      applyCommonRating(body);
       const isRating = (v: unknown) => Number.isInteger(v) && (v as number) >= 1 && (v as number) <= 5;
       const feedback = String(body.feedback || '').trim();
       if (!isRating(body.deliveryRating) || !isRating(body.packagingRating)) {
@@ -3297,7 +3299,7 @@ const orderPayload = {
       }
 
       const orderProductIds = new Set(loaded.products!.map((p) => p.productId));
-      const ratingsInput: Array<{ productId: string; rating: unknown }> = Array.isArray(body.productRatings) ? body.productRatings : [];
+      const ratingsInput: Array<{ productId: string; rating: unknown }> = commonRatingEntries(body, orderProductIds);
       const ratingByProduct = new Map<string, number>();
       for (const entry of ratingsInput) {
         if (!entry || !orderProductIds.has(String(entry.productId))) {
@@ -3382,6 +3384,21 @@ const orderPayload = {
   // PUBLIC REVIEW LINK (no login needed). The link in the delivered email carries a private token
   // that is bound to one order and expires after 60 days. Works for guest checkout too.
   // ---------------------------------------------------------------------------
+  // ONE common rating per order. The customer gives a single star rating and a written review.
+  // The rating is stored for every product in the order (product pages keep working) and in the
+  // order-level delivery/packaging fields, so existing data and rules stay unchanged.
+  const applyCommonRating = (body: any) => {
+    if (Number.isInteger(body.rating)) {
+      if (body.deliveryRating === undefined) body.deliveryRating = body.rating;
+      if (body.packagingRating === undefined) body.packagingRating = body.rating;
+    }
+  };
+  const commonRatingEntries = (body: any, productIds: Set<string>): Array<{ productId: string; rating: unknown }> => {
+    if (Array.isArray(body.productRatings)) return body.productRatings;
+    if (!Number.isInteger(body.rating)) return [];
+    return Array.from(productIds).map((productId) => ({ productId, rating: body.rating }));
+  };
+
   const loadOrderByReviewToken = async (token: string) => {
     if (!/^[A-Za-z0-9_-]{30,80}$/.test(token)) return null;
     const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
@@ -3442,6 +3459,7 @@ const orderPayload = {
       if (!order) { res.status(404).json({ success: false, error: 'This review link is invalid or has expired.' }); return; }
 
       const body = req.body || {};
+      applyCommonRating(body);
       const isRating = (v: unknown) => Number.isInteger(v) && (v as number) >= 1 && (v as number) <= 5;
       const feedback = String(body.feedback || '').trim();
       if (!isRating(body.deliveryRating) || !isRating(body.packagingRating)) {
@@ -3457,7 +3475,7 @@ const orderPayload = {
       const products = await productLinesForOrder(order);
       const orderProductIds = new Set(products.map((p) => p.productId));
       const ratingByProduct = new Map<string, number>();
-      const ratingsInput: any[] = Array.isArray(body.productRatings) ? body.productRatings : [];
+      const ratingsInput: any[] = commonRatingEntries(body, orderProductIds);
       for (const entry of ratingsInput) {
         if (!entry || !orderProductIds.has(String(entry.productId))) {
           res.status(400).json({ success: false, error: 'A rated product does not belong to this order.' }); return;
@@ -4247,6 +4265,23 @@ const orderPayload = {
       res.status(500).json({ success: false, error: err?.message || 'Error updating low-stock threshold.' });
     }
   });
+  // Removes an R2 image. Admin only. Refuses any URL that is not on our R2 public domain, so
+  // Supabase Storage objects (kept for rollback) can never be deleted through this route.
+  app.post('/api/admin/media/delete', authenticateUser, async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const isAdmin = await checkAdminRole(req.user?.id);
+      if (!isAdmin) { res.status(403).json({ success: false, error: 'Forbidden. Admin access required.' }); return; }
+      const key = keyFromR2Url(String(req.body?.url || ''));
+      if (!key) { res.status(400).json({ success: false, error: 'Only images stored in R2 can be removed here.' }); return; }
+      if (!isR2Configured()) { res.status(503).json({ success: false, error: 'Image storage is not configured.' }); return; }
+      await deleteFromR2(key);
+      res.json({ success: true });
+    } catch {
+      console.error('[admin/media/delete] failed');
+      res.status(500).json({ success: false, error: 'Could not remove the image.' });
+    }
+  });
+
   app.post(
     '/api/admin/media/upload',
     authenticateUser,
@@ -4288,6 +4323,22 @@ const orderPayload = {
           : 'uploads';
         const cleanName = filename.replace(/\.[^/.]+$/, '').replace(/[^a-zA-Z0-9_-]/g, '_');
         const storagePath = `${sanitizedFolder}/${Date.now()}-${cleanName}.${ext}`;
+
+        if (getStorageProvider() === 'r2') {
+          if (!isR2Configured()) {
+            console.error('[admin/media/upload] STORAGE_PROVIDER=r2 but R2 variables are missing');
+            res.status(503).json({ success: false, error: 'Image storage is not configured.' });
+            return;
+          }
+          try {
+            const url = await uploadToR2(storagePath, buffer, contentType, { uploadedBy: 'admin' });
+            res.json({ success: true, url, path: storagePath, provider: 'r2' });
+          } catch {
+            console.error('[admin/media/upload] R2 upload failed');
+            res.status(500).json({ success: false, error: 'Media upload failed.' });
+          }
+          return;
+        }
 
         if (!supabaseAdmin) {
           res.status(500).json({ success: false, error: 'Supabase storage service unavailable.' });

@@ -7,6 +7,7 @@ interface Quote {
   feedback: string;
   displayName: string;
   overallRating: number;
+  photos?: string[];
 }
 
 const Stars: React.FC<{ value: number }> = ({ value }) => (
@@ -59,6 +60,13 @@ export const ReviewsShowcase: React.FC = () => {
           {quotes.map((q) => (
             <figure key={q.id} className="bg-[#FAF8F5] border border-[#1C1917]/10 p-6">
               <Stars value={q.overallRating || 5} />
+              {q.photos && q.photos.length > 0 && (
+                <div className="mt-4 flex gap-2">
+                  {q.photos.slice(0, 3).map((src) => (
+                    <img key={src} src={src} alt="Photo shared by a customer" loading="lazy" decoding="async" className="w-16 h-16 object-cover border border-[#1C1917]/10" />
+                  ))}
+                </div>
+              )}
               <blockquote className="font-serif text-base leading-relaxed text-[#1C1917] mt-4">“{q.feedback}”</blockquote>
               <figcaption className="mt-4 flex items-center justify-between text-xs text-[#57534E]">
                 <span className="font-medium text-[#1C1917]">{q.displayName}</span>

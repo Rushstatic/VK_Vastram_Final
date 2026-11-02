@@ -305,3 +305,7 @@ Resumable via migration-state/state.json. Originals are never deleted. Database 
 - Lint fix 2: the base variant colour check uses showSecondaryColour (the form's actual state name).
 - Admin: delivered orders show "Copy review link" and "Send on WhatsApp" in the order ledger. Both call
   POST /api/admin/orders/:orderId/review-link (admin only, delivered orders only). Requires SITE_URL on the server.
+- Order reviews accept up to 3 customer photos (JPEG/PNG/WebP, 5 MB each), via the emailed/admin review link.
+  Photos are stored in the existing store-assets bucket under reviews/order/<order id>/. Migration 20261030000001 adds order_reviews.photo_urls.
+  Homepage cards show the photos. Account-page review form does not offer photos yet.
+- Homepage average is now one rating per reviewed order (was per product row).

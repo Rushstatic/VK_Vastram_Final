@@ -744,6 +744,7 @@ async function startServer() {
   }));
   app.use('/api/admin/media/upload', express.json({ limit: '16mb' }));
   app.use('/api/reviews/upload-image', express.json({ limit: '7mb' }));
+  app.use('/api/review-links', express.json({ limit: '7mb' }));
   app.use(express.json({ limit: '1mb' }));
 
   // Route families: payment/order/coupon endpoints get tighter limits; admin routes
@@ -3393,6 +3394,15 @@ const orderPayload = {
       if (body.packagingRating === undefined) body.packagingRating = body.rating;
     }
   };
+  // Photos attached to an order review must be files uploaded for that same order.
+  const sanitizeReviewPhotos = (input: unknown, orderId: string): string[] => {
+    const prefix = `${String(process.env.SUPABASE_URL || '').replace(/\/+$/, '')}/storage/v1/object/public/store-assets/reviews/order/${orderId}/`;
+    if (!Array.isArray(input)) return [];
+    return input
+      .map((url) => String(url || ''))
+      .filter((url) => url.startsWith(prefix) && url.length < 500)
+      .slice(0, 3);
+  };
   const commonRatingEntries = (body: any, productIds: Set<string>): Array<{ productId: string; rating: unknown }> => {
     if (Array.isArray(body.productRatings)) return body.productRatings;
     if (!Number.isInteger(body.rating)) return [];
@@ -3471,6 +3481,7 @@ const orderPayload = {
 
       const { data: already } = await db.from('order_reviews').select('id').eq('order_id', order.id).maybeSingle();
       if (already) { res.status(409).json({ success: false, error: 'You have already reviewed this order.' }); return; }
+      const photos = sanitizeReviewPhotos(body.photoUrls, order.id);
 
       const products = await productLinesForOrder(order);
       const orderProductIds = new Set(products.map((p) => p.productId));
@@ -3493,6 +3504,7 @@ const orderPayload = {
         .insert({
           order_id: order.id,
           user_id: order.user_id || null,
+          photo_urls: photos,
           delivery_rating: Number(body.deliveryRating),
           packaging_rating: Number(body.packagingRating),
           feedback,
@@ -3516,6 +3528,7 @@ const orderPayload = {
         status: 'approved',
         verified_purchase: true,
         moderation_metadata: { source: 'review_link', order_number: order.order_number, order_review_id: orderReview?.id },
+        review_images: photos,
         created_at: now,
         updated_at: now,
       }));
@@ -3531,13 +3544,42 @@ const orderPayload = {
     }
   });
 
+  // POST /api/review-links/:token/photo: a photo for this order's review (up to 3, JPEG/PNG/WebP, 5 MB each).
+  app.post('/api/review-links/:token/photo', async (req: Request, res: Response) => {
+    try {
+      if (!db) { res.status(503).json({ success: false, error: 'Photo upload is unavailable right now.' }); return; }
+      const order = await loadOrderByReviewToken(String(req.params.token || ''));
+      if (!order) { res.status(404).json({ success: false, error: 'This review link is invalid or has expired.' }); return; }
+      const { data: already } = await db.from('order_reviews').select('id').eq('order_id', order.id).maybeSingle();
+      if (already) { res.status(409).json({ success: false, error: 'This order has already been reviewed.' }); return; }
+
+      const dataUrl = String(req.body?.dataUrl || '');
+      const contentType = String(req.body?.contentType || '');
+      const match = dataUrl.match(/^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/);
+      if (!match || match[1] !== contentType) { res.status(400).json({ success: false, error: 'Please upload a JPEG, PNG or WebP image.' }); return; }
+      const buffer = Buffer.from(match[2], 'base64');
+      if (!buffer.length || buffer.length > 5 * 1024 * 1024) { res.status(413).json({ success: false, error: 'Each photo must be 5 MB or smaller.' }); return; }
+      if (!hasImageSignature(buffer, contentType)) { res.status(400).json({ success: false, error: 'That file is not a valid image.' }); return; }
+
+      const extension = contentType === 'image/jpeg' ? 'jpg' : contentType === 'image/png' ? 'png' : 'webp';
+      const objectPath = `reviews/order/${order.id}/${crypto.randomUUID()}.${extension}`;
+      const { error: uploadError } = await db.storage.from('store-assets').upload(objectPath, buffer, { contentType, upsert: false });
+      if (uploadError) { res.status(500).json({ success: false, error: 'Could not store the photo. Please try again.' }); return; }
+      const { data: publicData } = db.storage.from('store-assets').getPublicUrl(objectPath);
+      res.json({ success: true, url: publicData.publicUrl });
+    } catch {
+      console.error('[review-links] photo upload failed');
+      res.status(500).json({ success: false, error: 'Photo upload failed. Please try again.' });
+    }
+  });
+
   // Homepage showcase: one card per reviewed order (the same feedback is never repeated per product).
   app.get('/api/reviews/showcase', async (_req: Request, res: Response) => {
     try {
       if (!db) { res.json({ success: true, items: [], stats: { average: 0, count: 0 } }); return; }
       const { data: orderReviews, error } = await db
         .from('order_reviews')
-        .select('order_id,delivery_rating,packaging_rating,feedback,created_at,orders(order_number,customer_name)')
+        .select('order_id,delivery_rating,packaging_rating,feedback,photo_urls,created_at,orders(order_number,customer_name)')
         .order('created_at', { ascending: false })
         .limit(12);
       if (error) throw error;
@@ -3547,9 +3589,13 @@ const orderPayload = {
         const { data } = await db.from('reviews').select('order_id,rating,product_id,products(name,slug)').in('order_id', orderIds);
         productRows = data || [];
       }
-      const { data: allRatings } = await db.from('reviews').select('rating').eq('status', 'approved');
-      const ratings = (allRatings || []).map((r: any) => Number(r.rating)).filter((n) => n >= 1 && n <= 5);
-      const average = ratings.length ? Math.round((ratings.reduce((a, b) => a + b, 0) / ratings.length) * 10) / 10 : 0;
+      // One rating per reviewed order: the average of its delivery and packaging stars (both hold the common rating).
+      const { data: allOrderReviews } = await db.from('order_reviews').select('delivery_rating,packaging_rating');
+      const orderRatings = (allOrderReviews || [])
+        .map((r: any) => (Number(r.delivery_rating) + Number(r.packaging_rating)) / 2)
+        .filter((n) => n >= 1 && n <= 5);
+      const average = orderRatings.length ? Math.round((orderRatings.reduce((a, b) => a + b, 0) / orderRatings.length) * 10) / 10 : 0;
+      const ratings = orderRatings;
 
       const items = (orderReviews || []).map((r: any) => {
         const mine = productRows.filter((p) => p.order_id === r.order_id);
@@ -3566,6 +3612,7 @@ const orderPayload = {
           overallRating: Math.round(overall * 10) / 10,
           products: mine.map((p) => ({ name: p.products?.name || 'VK VASTRAM piece', slug: p.products?.slug || '', rating: Number(p.rating) })),
           createdAt: r.created_at,
+          photos: Array.isArray(r.photo_urls) ? r.photo_urls.slice(0, 3) : [],
         };
       }).filter((item: any) => item.feedback && item.products.length > 0);
 

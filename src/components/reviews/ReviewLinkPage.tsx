@@ -1,4 +1,16 @@
 import React, { useEffect, useState } from 'react';
+
+const MAX_PHOTOS = 3;
+const MAX_BYTES = 5 * 1024 * 1024;
+const ACCEPTED = ['image/jpeg', 'image/png', 'image/webp'];
+
+const readAsDataUrl = (file: File): Promise<string> =>
+  new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(new Error('read failed'));
+    reader.readAsDataURL(file);
+  });
 import { StarPicker } from '../account/OrderReviewModal';
 import { buildReviewShareLink } from '../../lib/reviewShare';
 
@@ -17,6 +29,34 @@ export const ReviewLinkPage: React.FC<{ token: string }> = ({ token }) => {
   const [submitting, setSubmitting] = useState(false);
   const [message, setMessage] = useState('');
   const [share, setShare] = useState<string | null>(null);
+  const [photos, setPhotos] = useState<Array<{ previewUrl: string; uploadedUrl?: string }>>([]);
+  const [uploading, setUploading] = useState(false);
+
+  const addPhotos = async (files: FileList | null) => {
+    if (!files) return;
+    const room = MAX_PHOTOS - photos.length;
+    const chosen = Array.from(files).slice(0, room);
+    for (const file of chosen) {
+      if (!ACCEPTED.includes(file.type)) { setMessage('Please add JPEG, PNG or WebP photos.'); continue; }
+      if (file.size > MAX_BYTES) { setMessage('Each photo must be 5 MB or smaller.'); continue; }
+      const dataUrl = await readAsDataUrl(file);
+      setUploading(true);
+      try {
+        const res = await fetch(`/api/review-links/${encodeURIComponent(token)}/photo`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ dataUrl, contentType: file.type }),
+        });
+        const data = await res.json();
+        if (res.ok && data.success) setPhotos((current) => [...current, { previewUrl: dataUrl, uploadedUrl: data.url }]);
+        else setMessage(data.error || 'Could not add that photo.');
+      } catch {
+        setMessage('Could not add that photo. Check your connection.');
+      } finally {
+        setUploading(false);
+      }
+    }
+  };
 
   useEffect(() => {
     let active = true;
@@ -46,7 +86,7 @@ export const ReviewLinkPage: React.FC<{ token: string }> = ({ token }) => {
       const response = await fetch(`/api/review-links/${encodeURIComponent(token)}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ rating, feedback: feedback.trim() }),
+        body: JSON.stringify({ rating, feedback: feedback.trim(), photoUrls: photos.map((p) => p.uploadedUrl).filter(Boolean) }),
       });
       const data = await response.json();
       if (response.ok && data.success) setShare(buildReviewShareLink(rating, feedback));
@@ -117,11 +157,43 @@ export const ReviewLinkPage: React.FC<{ token: string }> = ({ token }) => {
               <p className="text-[11px] text-[#78716C] text-right">{feedback.length}/2000</p>
             </section>
 
+            <section className="mt-8">
+              <p className="text-xs uppercase tracking-[0.15em] text-[#78716C]">Add photos (optional, up to {MAX_PHOTOS})</p>
+              <div className="mt-3 flex flex-wrap gap-3">
+                {photos.map((p, i) => (
+                  <div key={i} className="relative w-20 h-20">
+                    <img src={p.previewUrl} alt={`Your photo ${i + 1}`} className="w-full h-full object-cover border border-[#1C1917]/10" />
+                    <button
+                      type="button"
+                      aria-label={`Remove photo ${i + 1}`}
+                      onClick={() => setPhotos((current) => current.filter((_, idx) => idx !== i))}
+                      className="absolute -top-2 -right-2 bg-[#1C1917] text-white w-6 h-6 rounded-full text-xs cursor-pointer"
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+                {photos.length < MAX_PHOTOS && (
+                  <label className={`w-20 h-20 border border-dashed border-[#967029]/60 flex items-center justify-center text-[#967029] text-xs text-center px-1 cursor-pointer ${uploading ? 'opacity-50' : ''}`}>
+                    {uploading ? 'Adding...' : 'Add photo'}
+                    <input
+                      type="file"
+                      accept="image/jpeg,image/png,image/webp"
+                      multiple
+                      disabled={uploading}
+                      className="sr-only"
+                      onChange={(e) => { void addPhotos(e.target.files); e.target.value = ''; }}
+                    />
+                  </label>
+                )}
+              </div>
+            </section>
+
             {message && <p role="status" className="mt-4 text-sm text-[#78281F]">{message}</p>}
             <button
               type="button"
               onClick={submit}
-              disabled={submitting}
+              disabled={submitting || uploading}
               className="mt-6 w-full bg-[#78281F] text-[#FAF8F5] py-3.5 text-sm tracking-[0.14em] uppercase disabled:opacity-60 cursor-pointer"
             >
               {submitting ? 'Publishing...' : 'Publish my review'}

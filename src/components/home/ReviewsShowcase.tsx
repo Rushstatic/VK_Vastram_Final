@@ -89,16 +89,18 @@ export const ReviewsShowcase: React.FC<{ onNavigate?: (page: PageView) => void }
             {items.map((item) => {
               const product = item.products[0];
               const customerPhoto = item.photos && item.photos.length > 0 ? item.photos[0] : '';
-              const photo = customerPhoto || product?.image || '';
-              const photoAlt = customerPhoto
-                ? `Photo shared by ${item.displayName}`
-                : product ? `${product.name}` : 'VK VASTRAM handloom saree';
+              const photo = customerPhoto;
+              const photoAlt = `Photo shared by ${item.displayName}`;
               return (
                 <article key={item.id} className="snap-start shrink-0 w-[80%] sm:w-[calc(33.333%-14px)] lg:w-[calc(25%-15px)] bg-[#FAF8F5] border border-[#1C1917]/10 flex flex-col">
-                  {photo && (
+                  {/* Customer photo when they uploaded one (never cropped); otherwise the VK VASTRAM watermark. */}
+                  {photo ? (
                     <div className="bg-[#F4EFE6]">
-                      {/* No cropping: the image keeps its own proportions. */}
                       <img src={photo} alt={photoAlt} loading="lazy" decoding="async" className="block w-full h-auto max-h-[460px] object-contain mx-auto" />
+                    </div>
+                  ) : (
+                    <div className="bg-[#F4EFE6] h-44 flex items-center justify-center">
+                      <img src="/vk-vastram-logo.png" alt="VK VASTRAM" loading="lazy" decoding="async" className="w-2/3 max-w-[220px] h-auto object-contain opacity-60" />
                     </div>
                   )}
                   <div className="flex flex-col flex-1 p-6">

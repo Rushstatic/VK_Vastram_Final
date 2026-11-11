@@ -756,6 +756,7 @@ async function startServer() {
   app.use('/api/payment/failure', rateLimit({ windowMs: 60_000, max: 12 , bucketName: 'payment-failure' }));
   app.use('/api/payment/abandon', rateLimit({ windowMs: 60_000, max: 12 , bucketName: 'payment-abandon' }));
   app.use('/api/review-links', rateLimit({ windowMs: 60_000, max: 30, bucketName: 'review-link' }));
+  app.use('/api/review-campaign', rateLimit({ windowMs: 60_000, max: 10, bucketName: 'review-campaign' }));
   app.use('/api/coupons/validate', rateLimit({ windowMs: 60_000, max: 20 , bucketName: 'coupon-validate' }));
   app.use('/api/admin', rateLimit({ windowMs: 60_000, max: 120 , bucketName: 'admin' }));
   app.use('/api/auth', rateLimit({ windowMs: 60_000, max: 10 , bucketName: 'auth' }));
@@ -2275,6 +2276,24 @@ const orderPayload = {
     'refunded': []
   };
 
+  // "Buy from shop" orders have no packing or courier steps: confirmed -> delivered (collected) only.
+  function isValidTransitionFor(currentStatus: string, newStatus: string, isPickup: boolean): boolean {
+    const current = (currentStatus || 'pending').toLowerCase();
+    const next = (newStatus || '').toLowerCase();
+    if (!isPickup) return isValidTransition(currentStatus, newStatus);
+    if (current === next) return true;
+    const pickupTransitions: Record<string, string[]> = {
+      'pending': ['confirmed', 'cancelled'],
+      'confirmed': ['delivered', 'cancelled'],
+      'delivered': ['return_requested', 'returned'],
+      'return_requested': ['returned'],
+      'returned': [],
+      'cancelled': [],
+      'refunded': [],
+    };
+    return (pickupTransitions[current] || []).includes(next);
+  }
+
   function isValidTransition(currentStatus: string, newStatus: string): boolean {
     const current = (currentStatus || 'pending').toLowerCase();
     const next = (newStatus || '').toLowerCase();
@@ -2883,6 +2902,7 @@ const orderPayload = {
         }
 
         let currentOrderStatus = 'pending';
+        let currentIsPickup = false;
         let currentPaymentStatus = 'pending';
         let currentCourierName = '';
         let currentShippedAt: string | null = null;
@@ -2892,7 +2912,7 @@ const orderPayload = {
         if (db) {
           const { data: ord, error: ordError } = await db
             .from('orders')
-            .select('order_status, payment_status, courier_name, shipped_at, delivered_at')
+            .select('order_status, payment_status, courier_name, shipped_at, delivered_at, shipping_address_snapshot')
             .eq('id', id)
             .maybeSingle();
 
@@ -2909,6 +2929,7 @@ const orderPayload = {
             return;
           }
           currentOrderStatus = ord.order_status;
+          currentIsPickup = (ord as any).shipping_address_snapshot?.fulfillmentMethod === 'store_pickup';
           currentPaymentStatus = ord.payment_status;
           currentCourierName = String(ord.courier_name || '').trim();
           currentShippedAt = ord.shipped_at || null;
@@ -2926,7 +2947,7 @@ const orderPayload = {
           currentDeliveredAt = ord.delivered_at || ord.deliveredAt || null;
         }
 
-        if (!isValidTransition(currentOrderStatus, orderStatus)) {
+        if (!isValidTransitionFor(currentOrderStatus, orderStatus, currentIsPickup)) {
           res.status(400).json({
             success: false,
             error: `Invalid transition from "${currentOrderStatus}" to "${orderStatus}". Status flow must follow: Pending -> Confirmed -> Packed -> Shipped -> Out for Delivery -> Delivered.`
@@ -3570,6 +3591,105 @@ const orderPayload = {
     } catch {
       console.error('[review-links] photo upload failed');
       res.status(500).json({ success: false, error: 'Photo upload failed. Please try again.' });
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  // SHAREABLE REVIEW LINK (campaign). Admin opens it for a limited time (48 hours by default) and can
+  // stop it at any time. A visitor enters an order number and the email or phone used at checkout.
+  // Only a delivered order whose contact details match can be reviewed.
+  // ---------------------------------------------------------------------------
+  const REVIEW_CAMPAIGN_KEY = 'review_campaign';
+  const REVIEW_CAMPAIGN_HOURS = 48;
+  const readReviewCampaign = async (): Promise<{ active: boolean; open: boolean; expiresAt: string | null }> => {
+    const { data } = await db!.from('site_settings').select('value').eq('key', REVIEW_CAMPAIGN_KEY).maybeSingle();
+    const value: any = data?.value || {};
+    const expiresAt = typeof value.expiresAt === 'string' ? value.expiresAt : null;
+    const active = Boolean(value.active);
+    const open = active && Boolean(expiresAt) && new Date(expiresAt as string).getTime() > Date.now();
+    return { active, open, expiresAt: open ? expiresAt : null };
+  };
+  const digitsOnly = (value: string) => value.replace(/\D/g, '');
+
+  app.get('/api/review-campaign/status', async (_req: Request, res: Response) => {
+    try {
+      if (!db) { res.json({ success: true, open: false, expiresAt: null }); return; }
+      const campaign = await readReviewCampaign();
+      res.setHeader('Cache-Control', 'no-store');
+      res.json({ success: true, open: campaign.open, expiresAt: campaign.expiresAt });
+    } catch {
+      res.json({ success: true, open: false, expiresAt: null });
+    }
+  });
+
+  app.post('/api/review-campaign/lookup', async (req: Request, res: Response) => {
+    const notFound = 'We could not find a delivered order matching these details. Check the order number and the email or phone used at checkout.';
+    try {
+      if (!db) { res.status(503).json({ success: false, error: 'Reviews are unavailable right now.' }); return; }
+      const campaign = await readReviewCampaign();
+      if (!campaign.open) { res.status(403).json({ success: false, error: 'The review link is closed right now. Please try again later.' }); return; }
+
+      const orderNumber = String(req.body?.orderNumber || '').trim().toUpperCase().slice(0, 40);
+      const contact = String(req.body?.contact || '').trim().slice(0, 120);
+      if (!orderNumber || !contact) { res.status(400).json({ success: false, error: 'Please enter your order number and the email or phone used at checkout.' }); return; }
+
+      const { data: order } = await db
+        .from('orders')
+        .select('id,order_number,order_status,customer_email,customer_phone')
+        .eq('order_number', orderNumber)
+        .maybeSingle();
+      const emailMatches = Boolean(order?.customer_email) && contact.toLowerCase() === String(order?.customer_email).toLowerCase();
+      const phoneDigits = digitsOnly(contact);
+      const phoneMatches = Boolean(order?.customer_phone) && phoneDigits.length >= 10 && phoneDigits.slice(-10) === digitsOnly(String(order?.customer_phone)).slice(-10);
+      // The same message for every failure, so the page cannot be used to check which orders exist.
+      if (!order || !(emailMatches || phoneMatches) || order.order_status !== 'delivered') {
+        res.status(404).json({ success: false, error: notFound });
+        return;
+      }
+      const { data: already } = await db.from('order_reviews').select('id').eq('order_id', order.id).maybeSingle();
+      if (already) { res.status(409).json({ success: false, error: 'Thank you, this order has already been reviewed.' }); return; }
+
+      const token = await createOrderReviewToken(order.id);
+      if (!token) { res.status(500).json({ success: false, error: 'Could not open the review form. Please try again.' }); return; }
+      res.json({ success: true, path: `/review/${token}` });
+    } catch {
+      console.error('[review-campaign] lookup failed');
+      res.status(500).json({ success: false, error: 'Could not open the review form. Please try again.' });
+    }
+  });
+
+  // Admin: current state of the review link, and start / stop controls.
+  app.get('/api/admin/review-campaign', authenticateUser, async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      if (!(await checkAdminRole(req.user?.id))) { res.status(403).json({ success: false, error: 'Administrator access required.' }); return; }
+      const campaign = db ? await readReviewCampaign() : { active: false, open: false, expiresAt: null };
+      res.json({ success: true, ...campaign, hours: REVIEW_CAMPAIGN_HOURS });
+    } catch {
+      res.status(500).json({ success: false, error: 'Could not load the review link status.' });
+    }
+  });
+
+  app.post('/api/admin/review-campaign', authenticateUser, async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      if (!(await checkAdminRole(req.user?.id))) { res.status(403).json({ success: false, error: 'Administrator access required.' }); return; }
+      if (!db) { res.status(503).json({ success: false, error: 'Database unavailable.' }); return; }
+      const action = String(req.body?.action || '');
+      const value = action === 'start'
+        ? { active: true, expiresAt: new Date(Date.now() + REVIEW_CAMPAIGN_HOURS * 60 * 60 * 1000).toISOString(), startedBy: req.user?.id }
+        : action === 'stop'
+          ? { active: false, expiresAt: null, stoppedBy: req.user?.id }
+          : null;
+      if (!value) { res.status(400).json({ success: false, error: 'Unknown action.' }); return; }
+      const { error } = await db.from('site_settings').upsert(
+        { key: REVIEW_CAMPAIGN_KEY, value, updated_at: new Date().toISOString() },
+        { onConflict: 'key' }
+      );
+      if (error) throw error;
+      const campaign = await readReviewCampaign();
+      res.json({ success: true, ...campaign, hours: REVIEW_CAMPAIGN_HOURS });
+    } catch {
+      console.error('[review-campaign] admin update failed');
+      res.status(500).json({ success: false, error: 'Could not update the review link.' });
     }
   });
 

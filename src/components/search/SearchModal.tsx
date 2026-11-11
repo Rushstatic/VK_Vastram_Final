@@ -54,9 +54,9 @@ export const SearchModal: React.FC<SearchModalProps> = ({
         onClick={handleSmoothClose}
       />
 
-      <div className="relative min-h-screen px-4 pt-16 pb-12 sm:px-6 flex justify-center items-start">
+      <div className="relative min-h-screen bg-[#FAF8F5] px-4 pt-6 pb-12 sm:px-8 flex justify-center items-start">
         <div
-          className={`relative w-full max-w-2xl bg-[#FAF8F5] shadow-2xl rounded-xs border border-[#1C1917]/10 z-10 overflow-hidden transform transition-all duration-280 ease-[cubic-bezier(0.16,1,0.3,1)] ${
+          className={`relative w-full max-w-7xl min-h-[80vh] bg-[#FAF8F5] z-10 transform transition-all duration-280 ease-[cubic-bezier(0.16,1,0.3,1)] ${
             isClosing
               ? 'opacity-0 scale-95 -translate-y-2'
               : 'opacity-100 scale-100 translate-y-0'

@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { AdminReviewCampaign } from './AdminReviewCampaign';
 import * as XLSX from 'xlsx';
 import {
   Search,
@@ -603,6 +604,7 @@ export const AdminOrders: React.FC = () => {
         </div>
       </div>
 
+      <AdminReviewCampaign />
       {/* ORDER VIEW TABS: real orders first; unpaid / failed checkouts are kept separate */}
       <div className="space-y-2">
         <div className="flex flex-wrap gap-2" role="tablist" aria-label="Order views">
@@ -666,7 +668,10 @@ export const AdminOrders: React.FC = () => {
               onChange={(e) => setOrderStatus(e.target.value)}
               className="w-full bg-[#F4EFE6] text-xs text-[#1C1917] p-2.5 rounded-xs border border-transparent focus:border-[#B88E3E] focus:outline-none"
             >
-              {ORDER_STATUS_OPTIONS.map((opt) => (
+              {(selectedOrder?.shippingAddressSnapshot?.fulfillmentMethod === 'store_pickup'
+                ? ORDER_STATUS_OPTIONS.filter((opt) => ['pending', 'confirmed', 'delivered', 'cancelled', 'return_requested', 'returned'].includes(opt.value)).map((opt) => (opt.value === 'delivered' ? { ...opt, label: 'Collected by customer' } : opt))
+                : ORDER_STATUS_OPTIONS
+              ).map((opt) => (
                 <option key={opt.value} value={opt.value}>
                   {opt.label}
                 </option>

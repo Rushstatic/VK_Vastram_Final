@@ -317,3 +317,16 @@ Resumable via migration-state/state.json. Originals are never deleted. Database 
 - Reviews section now sits above the trust values. Quote-card template restored (quote mark, stars, serif remark,
   product chip, name with "Verified purchase"). Photo: customer photo if present, else product photo. Images are
   never cropped (natural proportions, object-contain, lazy-loaded, with alt text).
+
+---
+# Shareable review link, watermark for review images, search page, shop orders (Oct 31)
+- Shareable link: /review. Visitor enters order number + email or phone used at checkout. Only a DELIVERED order whose
+  contact matches can be reviewed; every failure shows the same message. Rate limited (10 lookups/min per IP).
+- Admin > Orders shows "Customer review link": Start 48-hour link / Stop now / Copy link. The link closes automatically
+  after 48 hours and can be stopped earlier. State is kept in site_settings key review_campaign.
+- Recommendation: a fixed short window (48h) limits how long a shared link can be used; the manual stop lets admin close
+  it sooner if it is shared too widely. Both are used.
+- Homepage review cards: customer photo when uploaded, otherwise the VK VASTRAM logo. Product photos are no longer used.
+- Search opens as a full page (not a floating panel).
+- Shop ("Buy from shop") orders: Confirmed -> Collected (no packed, shipped or out-for-delivery steps). Enforced on the server
+  (isValidTransitionFor) and limited in the admin status list.

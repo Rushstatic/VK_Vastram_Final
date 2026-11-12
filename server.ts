@@ -745,6 +745,8 @@ async function startServer() {
   app.use('/api/admin/media/upload', express.json({ limit: '16mb' }));
   app.use('/api/reviews/upload-image', express.json({ limit: '7mb' }));
   app.use('/api/review-links', express.json({ limit: '7mb' }));
+  app.use('/api/store-reviews', express.json({ limit: '7mb' }));
+  app.use('/api/store-reviews', rateLimit({ windowMs: 60_000, max: 8, bucketName: 'store-review' }));
   app.use(express.json({ limit: '1mb' }));
 
   // Route families: payment/order/coupon endpoints get tighter limits; admin routes
@@ -756,7 +758,6 @@ async function startServer() {
   app.use('/api/payment/failure', rateLimit({ windowMs: 60_000, max: 12 , bucketName: 'payment-failure' }));
   app.use('/api/payment/abandon', rateLimit({ windowMs: 60_000, max: 12 , bucketName: 'payment-abandon' }));
   app.use('/api/review-links', rateLimit({ windowMs: 60_000, max: 30, bucketName: 'review-link' }));
-  app.use('/api/review-campaign', rateLimit({ windowMs: 60_000, max: 10, bucketName: 'review-campaign' }));
   app.use('/api/coupons/validate', rateLimit({ windowMs: 60_000, max: 20 , bucketName: 'coupon-validate' }));
   app.use('/api/admin', rateLimit({ windowMs: 60_000, max: 120 , bucketName: 'admin' }));
   app.use('/api/auth', rateLimit({ windowMs: 60_000, max: 10 , bucketName: 'auth' }));
@@ -3595,101 +3596,55 @@ const orderPayload = {
   });
 
   // ---------------------------------------------------------------------------
-  // SHAREABLE REVIEW LINK (campaign). Admin opens it for a limited time (48 hours by default) and can
-  // stop it at any time. A visitor enters an order number and the email or phone used at checkout.
-  // Only a delivered order whose contact details match can be reviewed.
+  // PUBLIC STORE REVIEWS (simple link, no restrictions). Anyone can leave a review.
+  // Spam controls: rate limit per IP, a hidden field that bots fill in, length limits and image checks.
   // ---------------------------------------------------------------------------
-  const REVIEW_CAMPAIGN_KEY = 'review_campaign';
-  const REVIEW_CAMPAIGN_HOURS = 48;
-  const readReviewCampaign = async (): Promise<{ active: boolean; open: boolean; expiresAt: string | null }> => {
-    const { data } = await db!.from('site_settings').select('value').eq('key', REVIEW_CAMPAIGN_KEY).maybeSingle();
-    const value: any = data?.value || {};
-    const expiresAt = typeof value.expiresAt === 'string' ? value.expiresAt : null;
-    const active = Boolean(value.active);
-    const open = active && Boolean(expiresAt) && new Date(expiresAt as string).getTime() > Date.now();
-    return { active, open, expiresAt: open ? expiresAt : null };
-  };
-  const digitsOnly = (value: string) => value.replace(/\D/g, '');
+  const storePhotoPrefix = () => `${String(process.env.SUPABASE_URL || '').replace(/\/+$/, '')}/storage/v1/object/public/store-assets/reviews/store/`;
 
-  app.get('/api/review-campaign/status', async (_req: Request, res: Response) => {
+  app.post('/api/store-reviews/photo', async (req: Request, res: Response) => {
     try {
-      if (!db) { res.json({ success: true, open: false, expiresAt: null }); return; }
-      const campaign = await readReviewCampaign();
-      res.setHeader('Cache-Control', 'no-store');
-      res.json({ success: true, open: campaign.open, expiresAt: campaign.expiresAt });
+      if (!db) { res.status(503).json({ success: false, error: 'Photo upload is unavailable right now.' }); return; }
+      const dataUrl = String(req.body?.dataUrl || '');
+      const contentType = String(req.body?.contentType || '');
+      const match = dataUrl.match(/^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/);
+      if (!match || match[1] !== contentType) { res.status(400).json({ success: false, error: 'Please upload a JPEG, PNG or WebP image.' }); return; }
+      const buffer = Buffer.from(match[2], 'base64');
+      if (!buffer.length || buffer.length > 5 * 1024 * 1024) { res.status(413).json({ success: false, error: 'Each photo must be 5 MB or smaller.' }); return; }
+      if (!hasImageSignature(buffer, contentType)) { res.status(400).json({ success: false, error: 'That file is not a valid image.' }); return; }
+      const extension = contentType === 'image/jpeg' ? 'jpg' : contentType === 'image/png' ? 'png' : 'webp';
+      const objectPath = `reviews/store/${crypto.randomUUID()}.${extension}`;
+      const { error: uploadError } = await db.storage.from('store-assets').upload(objectPath, buffer, { contentType, upsert: false });
+      if (uploadError) { res.status(500).json({ success: false, error: 'Could not store the photo. Please try again.' }); return; }
+      const { data: publicData } = db.storage.from('store-assets').getPublicUrl(objectPath);
+      res.json({ success: true, url: publicData.publicUrl });
     } catch {
-      res.json({ success: true, open: false, expiresAt: null });
+      console.error('[store-reviews] photo upload failed');
+      res.status(500).json({ success: false, error: 'Photo upload failed. Please try again.' });
     }
   });
 
-  app.post('/api/review-campaign/lookup', async (req: Request, res: Response) => {
-    const notFound = 'We could not find a delivered order matching these details. Check the order number and the email or phone used at checkout.';
+  app.post('/api/store-reviews', async (req: Request, res: Response) => {
     try {
       if (!db) { res.status(503).json({ success: false, error: 'Reviews are unavailable right now.' }); return; }
-      const campaign = await readReviewCampaign();
-      if (!campaign.open) { res.status(403).json({ success: false, error: 'The review link is closed right now. Please try again later.' }); return; }
-
-      const orderNumber = String(req.body?.orderNumber || '').trim().toUpperCase().slice(0, 40);
-      const contact = String(req.body?.contact || '').trim().slice(0, 120);
-      if (!orderNumber || !contact) { res.status(400).json({ success: false, error: 'Please enter your order number and the email or phone used at checkout.' }); return; }
-
-      const { data: order } = await db
-        .from('orders')
-        .select('id,order_number,order_status,customer_email,customer_phone')
-        .eq('order_number', orderNumber)
-        .maybeSingle();
-      const emailMatches = Boolean(order?.customer_email) && contact.toLowerCase() === String(order?.customer_email).toLowerCase();
-      const phoneDigits = digitsOnly(contact);
-      const phoneMatches = Boolean(order?.customer_phone) && phoneDigits.length >= 10 && phoneDigits.slice(-10) === digitsOnly(String(order?.customer_phone)).slice(-10);
-      // The same message for every failure, so the page cannot be used to check which orders exist.
-      if (!order || !(emailMatches || phoneMatches) || order.order_status !== 'delivered') {
-        res.status(404).json({ success: false, error: notFound });
-        return;
-      }
-      const { data: already } = await db.from('order_reviews').select('id').eq('order_id', order.id).maybeSingle();
-      if (already) { res.status(409).json({ success: false, error: 'Thank you, this order has already been reviewed.' }); return; }
-
-      const token = await createOrderReviewToken(order.id);
-      if (!token) { res.status(500).json({ success: false, error: 'Could not open the review form. Please try again.' }); return; }
-      res.json({ success: true, path: `/review/${token}` });
-    } catch {
-      console.error('[review-campaign] lookup failed');
-      res.status(500).json({ success: false, error: 'Could not open the review form. Please try again.' });
-    }
-  });
-
-  // Admin: current state of the review link, and start / stop controls.
-  app.get('/api/admin/review-campaign', authenticateUser, async (req: AuthenticatedRequest, res: Response) => {
-    try {
-      if (!(await checkAdminRole(req.user?.id))) { res.status(403).json({ success: false, error: 'Administrator access required.' }); return; }
-      const campaign = db ? await readReviewCampaign() : { active: false, open: false, expiresAt: null };
-      res.json({ success: true, ...campaign, hours: REVIEW_CAMPAIGN_HOURS });
-    } catch {
-      res.status(500).json({ success: false, error: 'Could not load the review link status.' });
-    }
-  });
-
-  app.post('/api/admin/review-campaign', authenticateUser, async (req: AuthenticatedRequest, res: Response) => {
-    try {
-      if (!(await checkAdminRole(req.user?.id))) { res.status(403).json({ success: false, error: 'Administrator access required.' }); return; }
-      if (!db) { res.status(503).json({ success: false, error: 'Database unavailable.' }); return; }
-      const action = String(req.body?.action || '');
-      const value = action === 'start'
-        ? { active: true, expiresAt: new Date(Date.now() + REVIEW_CAMPAIGN_HOURS * 60 * 60 * 1000).toISOString(), startedBy: req.user?.id }
-        : action === 'stop'
-          ? { active: false, expiresAt: null, stoppedBy: req.user?.id }
-          : null;
-      if (!value) { res.status(400).json({ success: false, error: 'Unknown action.' }); return; }
-      const { error } = await db.from('site_settings').upsert(
-        { key: REVIEW_CAMPAIGN_KEY, value, updated_at: new Date().toISOString() },
-        { onConflict: 'key' }
-      );
+      const body = req.body || {};
+      // Honeypot: real visitors never fill this in. Bots that do are told it worked, and nothing is saved.
+      if (String(body.website || '').trim() !== '') { res.json({ success: true, message: 'Thank you for your review.' }); return; }
+      const rating = Number(body.rating);
+      const feedback = String(body.feedback || '').trim();
+      const name = String(body.name || '').trim().replace(/[<>]/g, '').slice(0, 60) || 'Customer';
+      if (!Number.isInteger(rating) || rating < 1 || rating > 5) { res.status(400).json({ success: false, error: 'Please choose a star rating from 1 to 5.' }); return; }
+      if (feedback.length < 10 || feedback.length > 2000) { res.status(400).json({ success: false, error: 'Please write between 10 and 2000 characters.' }); return; }
+      const prefix = storePhotoPrefix();
+      const photos = (Array.isArray(body.photoUrls) ? body.photoUrls : [])
+        .map((url: unknown) => String(url || ''))
+        .filter((url: string) => url.startsWith(prefix) && url.length < 500)
+        .slice(0, 3);
+      const { error } = await db.from('store_reviews').insert({ customer_name: name, rating, feedback, photo_urls: photos, status: 'approved' });
       if (error) throw error;
-      const campaign = await readReviewCampaign();
-      res.json({ success: true, ...campaign, hours: REVIEW_CAMPAIGN_HOURS });
+      res.json({ success: true, message: 'Thank you. Your review has been published.' });
     } catch {
-      console.error('[review-campaign] admin update failed');
-      res.status(500).json({ success: false, error: 'Could not update the review link.' });
+      console.error('[store-reviews] submit failed');
+      res.status(500).json({ success: false, error: 'Could not save your review. Please try again.' });
     }
   });
 
@@ -3753,8 +3708,29 @@ const orderPayload = {
         };
       }).filter((item: any) => item.feedback && item.products.length > 0);
 
+      // Store reviews (public link) appear alongside order reviews. They are not labelled as verified purchases.
+      const { data: storeRows } = await db.from('store_reviews').select('customer_name,rating,feedback,photo_urls,created_at,id').eq('status', 'approved').order('created_at', { ascending: false }).limit(12);
+      const storeItems = (storeRows || []).map((r: any) => ({
+        id: `store-${r.id}`,
+        feedback: r.feedback,
+        displayName: r.customer_name || 'Customer',
+        deliveryRating: r.rating,
+        packagingRating: r.rating,
+        overallRating: Number(r.rating),
+        products: [],
+        verified: false,
+        photos: Array.isArray(r.photo_urls) ? r.photo_urls.slice(0, 3) : [],
+        createdAt: r.created_at,
+      }));
+      const storeRatings = (storeRows || []).map((r: any) => Number(r.rating)).filter((n: number) => n >= 1 && n <= 5);
+      const allRatings = [...orderRatings, ...storeRatings];
+      const combinedAverage = allRatings.length ? Math.round((allRatings.reduce((a, b) => a + b, 0) / allRatings.length) * 10) / 10 : 0;
+      const merged = [...items.map((i: any) => ({ ...i, verified: true })), ...storeItems]
+        .sort((a: any, b: any) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')))
+        .slice(0, 12);
+
       res.setHeader('Cache-Control', 'public, max-age=300');
-      res.json({ success: true, items, stats: { average, count: ratings.length } });
+      res.json({ success: true, items: merged, stats: { average: combinedAverage, count: allRatings.length } });
     } catch {
       res.json({ success: true, items: [], stats: { average: 0, count: 0 } });
     }

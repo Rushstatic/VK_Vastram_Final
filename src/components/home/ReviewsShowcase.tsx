@@ -17,6 +17,7 @@ interface ReviewItem {
   overallRating: number;
   photos?: string[];
   products: ReviewProduct[];
+  verified?: boolean;
 }
 
 const Stars: React.FC<{ value: number }> = ({ value }) => (
@@ -117,9 +118,11 @@ export const ReviewsShowcase: React.FC<{ onNavigate?: (page: PageView) => void }
                     )}
                     <div className="mt-auto pt-5 flex items-center justify-between gap-3 text-sm">
                       <span className="font-medium text-[#1C1917]">{item.displayName}</span>
-                      <span className="inline-flex items-center gap-1 text-[#2F5D3A] whitespace-nowrap text-xs">
-                        <BadgeCheck className="w-3.5 h-3.5" aria-hidden="true" /> Verified purchase
-                      </span>
+                      {item.verified && (
+                        <span className="inline-flex items-center gap-1 text-[#2F5D3A] whitespace-nowrap text-xs">
+                          <BadgeCheck className="w-3.5 h-3.5" aria-hidden="true" /> Verified purchase
+                        </span>
+                      )}
                     </div>
                   </div>
                 </article>

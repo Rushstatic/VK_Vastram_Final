@@ -2,7 +2,7 @@ import {createRoot} from 'react-dom/client';
 import App from './App.tsx';
 import { AppErrorBoundary } from './components/common/AppErrorBoundary';
 import { ReviewLinkPage } from './components/reviews/ReviewLinkPage';
-import { ReviewLookupPage } from './components/reviews/ReviewLookupPage';
+import { ReviewStorePage } from './components/reviews/ReviewStorePage';
 import './index.css';
 
 // /review/<token> is a standalone page for the emailed review link (no storefront shell, no login).
@@ -11,6 +11,6 @@ const isReviewLookup = /^\/review\/?$/.test(window.location.pathname);
 
 createRoot(document.getElementById('root')!).render(
   <AppErrorBoundary>
-    {reviewMatch ? <ReviewLinkPage token={reviewMatch[1]} /> : isReviewLookup ? <ReviewLookupPage /> : <App />}
+    {reviewMatch ? <ReviewLinkPage token={reviewMatch[1]} /> : isReviewLookup ? <ReviewStorePage /> : <App />}
   </AppErrorBoundary>
 );

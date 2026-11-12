@@ -330,3 +330,13 @@ Resumable via migration-state/state.json. Originals are never deleted. Database 
 - Search opens as a full page (not a floating panel).
 - Shop ("Buy from shop") orders: Confirmed -> Collected (no packed, shipped or out-for-delivery steps). Enforced on the server
   (isValidTransitionFor) and limited in the admin status list.
+
+---
+# Simple public review link (Nov 1)
+- /review is a plain review form: optional name, star rating, written review, up to 3 photos. No order, login or expiry.
+- Stored in store_reviews (migration 20261101000001). Public POST /api/store-reviews and /api/store-reviews/photo are
+  rate limited (8 per minute per IP), with a hidden honeypot field and image checks. Photos go to store-assets/reviews/store/.
+- The 48-hour campaign is removed (server and admin). Admin > Orders shows the link with Copy and Send on WhatsApp.
+- Homepage cards: customer photo, otherwise the VK VASTRAM logo (no product photos). Store reviews have no product chip and
+  no "Verified purchase" label. Order reviews keep both.
+- To hide a review: set its status to 'hidden' in the Supabase table editor (store_reviews). An admin screen for this is not built yet.

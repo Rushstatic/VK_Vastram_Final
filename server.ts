@@ -3599,7 +3599,33 @@ const orderPayload = {
   // PUBLIC STORE REVIEWS (simple link, no restrictions). Anyone can leave a review.
   // Spam controls: rate limit per IP, a hidden field that bots fill in, length limits and image checks.
   // ---------------------------------------------------------------------------
-  const storePhotoPrefix = () => `${String(process.env.SUPABASE_URL || '').replace(/\/+$/, '')}/storage/v1/object/public/store-assets/reviews/store/`;
+  // Use the same resolved URL as the Supabase client (SUPABASE_URL or VITE_SUPABASE_URL).
+  // This keeps photo URL validation correct on deployments that only define VITE_SUPABASE_URL.
+  const storePhotoPrefix = () => `${String(SUPABASE_URL || '').replace(/\/+$/, '')}/storage/v1/object/public/store-assets/reviews/store/`;
+
+  const logStoreReviewDbError = (stage: string, error: any) => {
+    // Do not log customer names, review text, photo URLs or request bodies.
+    console.error(`[store-reviews] ${stage} failed`, {
+      code: String(error?.code || 'unknown'),
+      message: String(error?.message || 'Unknown database error').slice(0, 500),
+      details: String(error?.details || '').slice(0, 300),
+      hint: String(error?.hint || '').slice(0, 300),
+    });
+  };
+
+  const storeReviewDatabaseError = (error: any): { status: number; message: string } => {
+    const code = String(error?.code || '');
+    if (code === '42P01' || code === 'PGRST205') {
+      return { status: 503, message: 'Public reviews are temporarily unavailable because the review database is not set up. Please try again later.' };
+    }
+    if (code === '42501') {
+      return { status: 503, message: 'Public reviews are temporarily unavailable because database permissions need attention. Please try again later.' };
+    }
+    if (code === '23514' || code === '23502' || code === '22P02') {
+      return { status: 400, message: 'Please check your rating and review details, then try again.' };
+    }
+    return { status: 500, message: 'Could not save your review. Please try again.' };
+  };
 
   app.post('/api/store-reviews/photo', async (req: Request, res: Response) => {
     try {
@@ -3614,11 +3640,15 @@ const orderPayload = {
       const extension = contentType === 'image/jpeg' ? 'jpg' : contentType === 'image/png' ? 'png' : 'webp';
       const objectPath = `reviews/store/${crypto.randomUUID()}.${extension}`;
       const { error: uploadError } = await db.storage.from('store-assets').upload(objectPath, buffer, { contentType, upsert: false });
-      if (uploadError) { res.status(500).json({ success: false, error: 'Could not store the photo. Please try again.' }); return; }
+      if (uploadError) {
+        logStoreReviewDbError('photo upload', uploadError);
+        res.status(500).json({ success: false, error: 'Could not store the photo. Please try again.' });
+        return;
+      }
       const { data: publicData } = db.storage.from('store-assets').getPublicUrl(objectPath);
       res.json({ success: true, url: publicData.publicUrl });
-    } catch {
-      console.error('[store-reviews] photo upload failed');
+    } catch (error) {
+      logStoreReviewDbError('photo upload exception', error);
       res.status(500).json({ success: false, error: 'Photo upload failed. Please try again.' });
     }
   });
@@ -3639,11 +3669,22 @@ const orderPayload = {
         .map((url: unknown) => String(url || ''))
         .filter((url: string) => url.startsWith(prefix) && url.length < 500)
         .slice(0, 3);
-      const { error } = await db.from('store_reviews').insert({ customer_name: name, rating, feedback, photo_urls: photos, status: 'approved' });
-      if (error) throw error;
+      const { error } = await db.from('store_reviews').insert({
+        customer_name: name,
+        rating,
+        feedback,
+        photo_urls: photos,
+        status: 'approved',
+      });
+      if (error) {
+        logStoreReviewDbError('submit', error);
+        const failure = storeReviewDatabaseError(error);
+        res.status(failure.status).json({ success: false, error: failure.message });
+        return;
+      }
       res.json({ success: true, message: 'Thank you. Your review has been published.' });
-    } catch {
-      console.error('[store-reviews] submit failed');
+    } catch (error) {
+      logStoreReviewDbError('submit exception', error);
       res.status(500).json({ success: false, error: 'Could not save your review. Please try again.' });
     }
   });
